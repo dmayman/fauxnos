@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Blob Experiments</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      #toggle-container {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 10px;
+        border-radius: 5px;
+        color: white;
+        font-family: Arial, sans-serif;
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+      }
+      .toggle-switch {
+        position: relative;
+        display: inline-block;
+        width: 60px;
+        height: 30px;
+        margin: 0 10px;
+      }
+      .toggle-switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: #ccc;
+        transition: .4s;
+        border-radius: 34px;
+      }
+      .slider:before {
+        position: absolute;
+        content: "";
+        height: 22px;
+        width: 22px;
+        left: 4px;
+        bottom: 4px;
+        background-color: white;
+        transition: .4s;
+        border-radius: 50%;
+      }
+      input:checked + .slider {
+        background-color: #2196F3;
+      }
+      input:checked + .slider:before {
+        transform: translateX(30px);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="toggle-container">
+      <span>Single Blob</span>
+      <label class="toggle-switch">
+        <input type="checkbox" id="scene-toggle">
+        <span class="slider"></span>
+      </label>
+      <span>pile</span>
+    </div>
+
+    <script>
+      // Initialize scene based on saved preference or default to main scene
+      const toggle = document.getElementById('scene-toggle');
+      const storedPreference = localStorage.getItem('scenePreference');
+      
+      // Set toggle based on stored preference
+      if (storedPreference === 'pile') {
+        toggle.checked = true;
+      }
+      
+      // Load saved preference or default to 'main'
+      const savedPreference = localStorage.getItem('scenePreference') || 'main';
+      toggle.checked = savedPreference === 'pile';
+      
+      // Load the appropriate script
+      function loadScript() {
+        const script = document.createElement('script');
+        script.type = 'module';
+        script.src = toggle.checked ? 'pile.js' : 'main.js';
+        document.body.appendChild(script);
+      }
+      
+      // Load script immediately
+      loadScript();
+      
+      // Listen for toggle changes
+      toggle.addEventListener('change', () => {
+        // Save preference to localStorage
+        localStorage.setItem('scenePreference', toggle.checked ? 'pile' : 'main');
+        
+        // Reload page to switch scenes
+        window.location.reload();
+      });
+    </script>
+  </body>
+</html>

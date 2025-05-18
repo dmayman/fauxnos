@@ -1,0 +1,19 @@
+{
+    "name": "living_room",
+    "display_name": "Living Room",
+    
+    "lms_server": {
+        "ip": "192.168.5.147",
+        "port": 9000
+    },
+    
+    "mac": "2c:cf:67:af:61:6a",
+    
+    "sounds": {
+        "switch": "~/sounds/source_switch.wav",
+        "volume_up": "~/sounds/volume_up.wav", 
+        "volume_down": "~/sounds/volume_down.wav"
+    },
+    
+    "log_file": "~/logs/audio_controller_{name}.log"
+}
