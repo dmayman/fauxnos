@@ -3,6 +3,37 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import * as CANNON from 'cannon-es';
 import GUI from 'lil-gui';
 
+// Define params first to ensure it's available for BlobVisual instances
+const params = {
+  numBlobs: 6,
+  minRadius: 1.5,
+  maxRadius: 1.75,
+  radiusRandomness: 0.5,
+  padding: 0.4,
+  gravityStrength: 200, // Reduced for slower movement
+  outerRadius: 8,
+  dropZoneRadius: 2,
+  centerBlobScale: 2.2,
+  previewBounds: false,
+  dragHoverScale: 1.3,
+  centerNodeSize: .4,
+  otherBlobsScale: 0.7,
+  useCenterBlobScaling: true,
+  blobActiveScale: 1.2, // Scale when blob is being actively dragged
+  transitionSpeed: 1 // Controls how quickly blobs animate between states
+};
+
+// Export params for debugging
+window.params = params;
+
+// Collision groups (must be powers of 2)
+// Collision groups (must be powers of 2)
+const COLLISION_GROUPS = {
+  BLOBS: 1,     // 0001 - Regular blobs
+  CENTER: 2,    // 0010 - Center blob
+  DRAGGED: 4    // 0100 - Currently dragged blob
+};
+
 let fadeCenterNodeOut = false;
 let fadeCenterNodeIn = false;
 
@@ -21,23 +52,6 @@ let outerZone;
 let outerWall;
 let gui;
 let centerNode;
-let params = {
-  numBlobs: 6,
-  minRadius: 1.5,
-  maxRadius: 1.75,
-  radiusRandomness: 0.5,
-  padding: 0.4,
-  gravityStrength: 200, // Reduced for slower movement
-  outerRadius: 8,
-  dropZoneRadius: 2,
-  centerBlobScale: 2.2,
-  previewBounds: false,
-  dragHoverScale: 1.3,
-  centerNodeSize: .4,
-  otherBlobsScale: 0.7,
-  useCenterBlobScaling: true,
-  blobActiveScale: 1.1 // Scale when blob is being actively dragged
-};
 let dropZoneScale = params.centerBlobScale;
 // Store visual properties for each blob
 const blobVisuals = [];
@@ -55,17 +69,55 @@ function logCenteredBlobs() {
 
 // Blob visual state class
 class BlobVisual {
-  constructor(radius) {
+  constructor(radius, params) {
     this.radius = radius;
     this.targetScale = 1;  // Target scale (1 = normal scale)
     this.currentScale = 1; // Current rendered scale
+    this.params = params;  // Reference to params for dynamic values
+    this.animationSpeed = 4.0; // Base animation speed (multiplied by transitionSpeed)
+  }
+  
+  // Update the current scale based on target scale and time
+  update(deltaTime = 1) {
+    // Skip if we're already at the target
+    if (Math.abs(this.currentScale - this.targetScale) < 0.001) {
+      this.currentScale = this.targetScale;
+      return this.currentScale;
+    }
+    
+    // Calculate the animation step based on time and speed
+    const delta = this.targetScale - this.currentScale;
+    const step = delta * this.params.transitionSpeed * this.animationSpeed * deltaTime;
+    
+    // Apply the step with a minimum step size to ensure completion
+    if (Math.abs(step) < 0.001) {
+      this.currentScale = this.targetScale;
+    } else {
+      this.currentScale += step;
+    }
+    
+    return this.currentScale;
+  }
+  
+  // Set a new target scale
+  setTargetScale(scale, caller = '') {
+    if (this.targetScale !== scale) {
+      // Scale target changed
+      this.targetScale = scale;
+    }
+    return this;
+  }
+  
+  // Get the current visual scale
+  getVisualScale() {
+    return this.currentScale * this.radius;
   }
 }
 
 // Helper function to get or create blob visual state
 function getBlobVisual(index, radius) {
   if (!blobVisuals[index]) {
-    blobVisuals[index] = new BlobVisual(radius);
+    blobVisuals[index] = new BlobVisual(radius, params);
   }
   return blobVisuals[index];
 }
@@ -130,6 +182,7 @@ function init() {
   gui.add(params, 'centerNodeSize', 0.1, 10, 0.1).name('Center Node Size');
   gui.add(params, 'otherBlobsScale', 0.1, 2, 0.05).name('Other Blobs Scale');
   gui.add(params, 'useCenterBlobScaling').name('Enable Center Blob Scaling');
+  gui.add(params, 'transitionSpeed', 0.01, 1, 0.01).name('Transition Speed');
   gui.add({ resetCamera }, 'resetCamera').name('Reset Camera');
 
   // Gravity well center (0,0,0)
@@ -225,13 +278,13 @@ function createBlobs() {
     let radius = THREE.MathUtils.lerp(params.minRadius, params.maxRadius, Math.random());
     radius += (Math.random() - 0.5) * params.radiusRandomness;
     radius = Math.max(params.minRadius, Math.min(params.maxRadius, radius));
-    // Visual state is now managed by blobVisuals array
-
+    
     // Position blobs at random within outer sphere and outside drop zone
     let x = 0, y = 0, z = 0;
     const dropRadius = params.dropZoneRadius + radius + params.padding;
     const outerRadius = params.outerRadius - radius - params.padding;
     let valid = false;
+    
     while (!valid) {
       x = (Math.random() * 2 - 1) * outerRadius;
       y = (Math.random() * 2 - 1) * outerRadius;
@@ -243,12 +296,14 @@ function createBlobs() {
     const totalRadius = radius + params.padding;
 
     // Initialize visual state for this blob
-    const blobVisual = new BlobVisual(radius);
+    const blobVisual = new BlobVisual(radius, params);
     blobVisuals.push(blobVisual);
     
     // Three.js mesh
     const geometry = new THREE.SphereGeometry(radius, 32, 32);
-    const material = new THREE.MeshStandardMaterial({ color: new THREE.Color(Math.random(), Math.random(), Math.random()) });
+    const material = new THREE.MeshStandardMaterial({ 
+      color: new THREE.Color(Math.random(), Math.random(), Math.random()) 
+    });
     const mesh = new THREE.Mesh(geometry, material);
     mesh.position.set(x, y, z);
     scene.add(mesh);
@@ -259,7 +314,14 @@ function createBlobs() {
 
     // Physics body
     const shape = new CANNON.Sphere(totalRadius);
-    const body = new CANNON.Body({ mass: 1, shape: shape, position: new CANNON.Vec3(x, y, z) });
+    const body = new CANNON.Body({ 
+      mass: 1, 
+      shape: shape, 
+      position: new CANNON.Vec3(x, y, z),
+      collisionFilterGroup: COLLISION_GROUPS.BLOBS,
+      collisionFilterMask: COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.CENTER
+    });
+    
     // Increased damping for more fluid resistance
     body.linearDamping = 0.95;
     body.angularDamping = 0.95;
@@ -330,8 +392,18 @@ function onPointerDown(event) {
     isDragging = true;
     const index = blobMeshes.indexOf(dragObject);
     if (index !== -1) {
+      console.log(`Started dragging blob`);
+      
       // Set target scale for active drag
-      blobVisuals[index].targetScale = params.blobActiveScale;
+      blobVisuals[index].setTargetScale(params.blobActiveScale);
+      
+      // Change collision group to DRAGGED
+      blobs[index].collisionFilterGroup = COLLISION_GROUPS.DRAGGED;
+      blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS; // Only collide with BLOBS, not CENTER
+      
+      // Set collision group to DRAGGED for the dragged blob
+      blobs[index].collisionFilterGroup = COLLISION_GROUPS.DRAGGED;
+      blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS; // Only collide with BLOBS, not CENTER
     }
   }
 }
@@ -350,15 +422,20 @@ function onPointerMove(event) {
   if (index !== -1) {
     const centerIndex = centerBlobIndices.indexOf(index);
     if (centerIndex !== -1) {
-      // If we've moved away from the center, remove center state
+      // If we've moved away from the center, update physics but don't log yet
       const distToCenter = blobs[index].position.length();
       if (distToCenter > params.dropZoneRadius * 0.8) { 
         const body = blobs[index];
         body.mass = 1; // Restore mass
         body.updateMassProperties();
+        
+        // Update collision group back to BLOBS
+        body.collisionFilterGroup = COLLISION_GROUPS.BLOBS;
+        body.collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.CENTER;
+        
         centerBlobIndices.splice(centerIndex, 1); // Remove from center
         blobMeshes[index].visible = true; // Make sure it's visible
-        logCenteredBlobs();
+        // Logging will happen on pointer up if the blob is dropped outside
       }
     }
   }
@@ -393,6 +470,11 @@ function onPointerUp(event) {
           blobs[index].angularVelocity.set(0, 0, 0);
           blobs[index].mass = 0;
           blobs[index].updateMassProperties();
+          
+          // Update collision group to CENTER
+          blobs[index].collisionFilterGroup = COLLISION_GROUPS.CENTER;
+          blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS; // Only collide with BLOBS
+          
           // Only hide the blob if it's not the first one in the center
           if (centerBlobIndices.length > 1) {
             blobMeshes[index].visible = false;
@@ -404,7 +486,14 @@ function onPointerUp(event) {
         }
       } else {
         // Reset target scale when dropped (actual scale will animate to this)
-        blobVisuals[index].targetScale = 1.0;
+        blobVisuals[index].setTargetScale(1.0);
+        
+        // Reset collision group to BLOBS when dropped outside center
+        blobs[index].collisionFilterGroup = COLLISION_GROUPS.BLOBS;
+        blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.CENTER;
+        
+        // Log the updated center state
+        logCenteredBlobs();
       }
     }
   }
@@ -418,7 +507,7 @@ function applyGravityWell() {
     const dir = gravityWell.vsub(body.position);
     const distance = dir.length();
 
-    if (!isDragging || blobMeshes[i] !== dragObject) {
+    if (!isDragging && blobMeshes[i] !== dragObject) {
       body.position.z = 0;
       body.velocity.z = 0;
       body.angularVelocity.z = 0;
@@ -536,27 +625,29 @@ function animate() {
     mesh.position.copy(blobs[i].position);
     mesh.quaternion.copy(blobs[i].quaternion);
     
-    // Update target scale based on state
-    if (centerBlobIndices.includes(i)) {
-      // Center blob gets special scaling
-      blobVisual.targetScale = params.centerBlobScale / blobVisual.radius;
-    } else if (params.useCenterBlobScaling && centerBlobIndices.length > 0) {
-      // Other blobs when there's a center blob
-      blobVisual.targetScale = params.otherBlobsScale;
-    } else {
-      // Normal state
-      blobVisual.targetScale = 1.0;
+    // Only update target scale if not currently dragging this blob
+    if (mesh !== dragObject) {
+      if (centerBlobIndices.includes(i)) {
+        // Center blob gets special scaling
+        blobVisual.setTargetScale(params.centerBlobScale / blobVisual.radius, 'center blob');
+      } else if (params.useCenterBlobScaling && centerBlobIndices.length > 0) {
+        // Other blobs when there's a center blob
+        blobVisual.setTargetScale(params.otherBlobsScale, 'other blob with center');
+      } else {
+        // Normal state - only set target if not currently being animated to a different scale
+        if (blobVisual.targetScale !== 1.0 && 
+            Math.abs(blobVisual.currentScale - 1.0) > 0.01) {
+          blobVisual.setTargetScale(1.0, 'normal state');
+        }
+      }
     }
     
-    // Smoothly interpolate to target scale
-    blobVisual.currentScale = THREE.MathUtils.lerp(
-      blobVisual.currentScale,
-      blobVisual.targetScale,
-      scaleLerpFactor
-    );
-    
-    // Apply the scale to the mesh
-    mesh.scale.setScalar(blobVisual.currentScale);
+    // Update the blob's animation and apply scale
+    blobVisual.update(deltaTime); // Use actual deltaTime for smooth animation
+    mesh.scale.setScalar(blobVisual.getVisualScale() / blobVisual.radius);
+    if (mesh === dragObject) {
+      // Updating blob scale
+    }
   }
 
   // Handle center dot hover scaling and visibility
@@ -609,10 +700,8 @@ function animate() {
     
     // Smoothly animate to center
     if (!isDragging || mesh !== dragObject) {
-      // Calculate target scale for centered blobs
-      const targetScale = idx === 0 ? 
-        (params.centerBlobScale / visual.radius) : 
-        (params.otherBlobsScale / visual.radius);
+      // Scale is handled by BlobVisual's targetScale in the main loop
+      // Just handle position animation here
       
       // Smoothly interpolate position to center
       const center = new CANNON.Vec3(0, 0, 0);
@@ -624,17 +713,13 @@ function animate() {
         const springForce = 10.0; // Adjust for snappier/slower animation
         const damping = 0.8; // Damping factor (0-1)
         
+        // Update position with spring physics
         toCenter.normalize();
         const targetVelocity = toCenter.scale(Math.min(distance * springForce, 5));
         const velocityDiff = targetVelocity.vsub(body.velocity);
         
         body.velocity.x += velocityDiff.x * (1 - damping) * timeScale;
         body.velocity.y += velocityDiff.y * (1 - damping) * timeScale;
-        
-        // Update visual scale smoothly
-        visual.targetScale = targetScale;
-        visual.currentScale += (visual.targetScale - visual.currentScale) * 0.2 * timeScale;
-        mesh.scale.setScalar(visual.currentScale);
       } else {
         // Snap to center and stop when close enough
         body.position.set(0, 0, 0);
@@ -642,18 +727,10 @@ function animate() {
         body.angularVelocity.set(0, 0, 0);
         body.force.set(0, 0, 0);
         body.torque.set(0, 0, 0);
-        
-        // Set final scale
-        mesh.scale.setScalar(targetScale);
-        visual.currentScale = targetScale;
       }
       
       // Only hide the blob if it's not the first one in the center
-      if (idx > 0) {
-        mesh.visible = false;
-      } else {
-        mesh.visible = true;
-      }
+      mesh.visible = idx === 0;
     }
   });
 
