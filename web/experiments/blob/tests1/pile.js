@@ -11,7 +11,6 @@ const params = {
   radiusRandomness: 0.5,
   padding: 0.4,
   gravityStrength: 200, // Reduced for slower movement
-  outerRadius: 8,
   dropZoneRadius: 2,
   centerBlobScale: 2.2,
   previewBounds: false,
@@ -20,19 +19,24 @@ const params = {
   otherBlobsScale: 0.7,
   useCenterBlobScaling: true,
   blobActiveScale: 1.2, // Scale when blob is being actively dragged
-  transitionSpeed: 1 // Controls how quickly blobs animate between states
+  transitionSpeed: 1, // Controls how quickly blobs animate between states
+  planeLRspacing: 6, // Left/right plane spacing
+  planeTBspacing: 10  // Top/bottom plane spacing
 };
 
 // Export params for debugging
 window.params = params;
 
 // Collision groups (must be powers of 2)
-// Collision groups (must be powers of 2)
 const COLLISION_GROUPS = {
   BLOBS: 1,     // 0001 - Regular blobs
   CENTER: 2,    // 0010 - Center blob
-  DRAGGED: 4    // 0100 - Currently dragged blob
+  DRAGGED: 4,   // 0100 - Currently dragged blob
+  BOUNDARY: 8   // 1000 - Boundary planes
 };
+
+// Boundary plane bodies
+let boundaryBodies = [];
 
 let fadeCenterNodeOut = false;
 let fadeCenterNodeIn = false;
@@ -41,6 +45,7 @@ let scene, camera, renderer, controls;
 let world;
 let blobs = [];
 let blobMeshes = [];
+let plane1, plane2, plane3, plane4; // Plane meshes for boundary visualization
 let fixedBlobs = [];
 let dragControls = [];
 let raycaster, mouse;
@@ -48,8 +53,8 @@ let dragObject = null;
 let plane;
 let gravityWell;
 let dropZone;
-let outerZone;
-let outerWall;
+// Drop zone visualization only
+// Boundary planes handle all containment now
 let gui;
 let centerNode;
 let dropZoneScale = params.centerBlobScale;
@@ -174,10 +179,13 @@ function init() {
   gui.add(params, 'radiusRandomness', 0, 1, 0.01).name('Radius Randomness').onChange(resetBlobs);
   gui.add(params, 'padding', 0, 1, 0.01).name('Padding').onChange(updateBlobPadding);
   gui.add(params, 'gravityStrength', 0, 1000, 1).name('Gravity Strength');
-  gui.add(params, 'outerRadius', 1, 50, 0.1).name('Outer Radius').onChange(updateBounds);
   gui.add(params, 'dropZoneRadius', 0.1, 10, 0.1).name('Drop Zone Radius').onChange(updateBounds);
   gui.add(params, 'centerBlobScale', 0.1, 10, 0.1).name('Center Blob Size');
-  gui.add(params, 'previewBounds').name('Preview Bounds').onChange(updateBoundsVisibility);
+  // Add boundary controls
+  const boundaryFolder = gui.addFolder('Boundary Planes');
+  boundaryFolder.add(params, 'planeLRspacing', 5, 50, 0.5).name('Left/Right Spacing').onChange(updatePlanePositions);
+  boundaryFolder.add(params, 'planeTBspacing', 5, 50, 0.5).name('Top/Bottom Spacing').onChange(updatePlanePositions);
+  boundaryFolder.add(params, 'previewBounds').name('Preview Bounds').onChange(updateBoundsVisibility);
   gui.add(params, 'dragHoverScale', 1, 2, 0.01).name('Hover Scale');
   gui.add(params, 'centerNodeSize', 0.1, 10, 0.1).name('Center Node Size');
   gui.add(params, 'otherBlobsScale', 0.1, 2, 0.05).name('Other Blobs Scale');
@@ -200,26 +208,62 @@ function init() {
   dropZone = new THREE.Mesh(dropZoneGeometry, dropZoneMaterial);
   scene.add(dropZone);
 
-  // Outer zone - wireframe sphere
-  const outerZoneGeometry = new THREE.SphereGeometry(params.outerRadius, 32, 32);
-  const outerZoneMaterial = new THREE.MeshBasicMaterial({
-    color: 0xff0000,
-    wireframe: true,
+  // 2 planes in the YZ direction spaced by a parameter
+  const planeLRspacing = params.planeLRspacing;
+  const planeTBspacing = params.planeTBspacing;
+  const planeSize = 20;
+  const planeThickness = 0.1; // Thickness for collision
+  const planeGeometry = new THREE.PlaneGeometry(planeSize, planeSize);
+  const planeMaterial = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
     transparent: true,
     opacity: 0.3,
-    visible: true
+    visible: true,
+    wireframe: true
   });
-  outerZone = new THREE.Mesh(outerZoneGeometry, outerZoneMaterial);
-  scene.add(outerZone);
+  // Left plane
+  plane1 = new THREE.Mesh(planeGeometry, planeMaterial);
+  plane1.rotation.y = Math.PI / 2;
+  plane1.position.set(-planeLRspacing, 0, 0);
+  scene.add(plane1);
+  
+  // Right plane
+  plane2 = new THREE.Mesh(planeGeometry, planeMaterial);
+  plane2.rotation.y = Math.PI / 2;
+  plane2.position.set(planeLRspacing, 0, 0);
+  scene.add(plane2);
 
-  // Create outer wall physics body using Trimesh
-  const outerGeometry = new THREE.SphereGeometry(params.outerRadius, 32, 32);
-  const outerVertices = outerGeometry.attributes.position.array;
-  const outerIndices = Array.from({ length: outerVertices.length / 3 }, (_, i) => i);
-  const outerShape = new CANNON.Trimesh(outerVertices, outerIndices);
-  outerWall = new CANNON.Body({ mass: 0 });
-  outerWall.addShape(outerShape);
-  world.addBody(outerWall);
+  // Bottom plane
+  plane3 = new THREE.Mesh(planeGeometry, planeMaterial);
+  plane3.rotation.x = Math.PI / 2;
+  plane3.position.set(0, -planeTBspacing, 0);
+  scene.add(plane3);
+  
+  // Top plane
+  plane4 = new THREE.Mesh(planeGeometry, planeMaterial);
+  plane4.rotation.x = Math.PI / 2;
+  plane4.position.set(0, planeTBspacing, 0);
+  scene.add(plane4);
+
+  // Create physics bodies for boundaries
+  createBoundaryBodies();
+  
+  // Configure physics world for better collision detection
+  world.defaultContactMaterial.friction = 0.0;
+  world.defaultContactMaterial.restitution = 0.6; // Add some bounciness
+  
+  // Set up collision detection between blobs and boundaries
+  const blobBoundaryMaterial = new CANNON.ContactMaterial(
+    world.defaultMaterial, // Blob material
+    world.defaultMaterial, // Boundary material
+    {
+      friction: 0.0,
+      restitution: 0.6
+    }
+  );
+  world.addContactMaterial(blobBoundaryMaterial);
+
+  // Boundary planes handle all containment now
 
   // Create blobs
   createBlobs();
@@ -243,27 +287,91 @@ function init() {
   updateBoundsVisibility();
 }
 
+function createBoundaryBodies() {
+  // Remove any existing boundary bodies
+  if (boundaryBodies && boundaryBodies.length > 0) {
+    boundaryBodies.forEach(body => world.removeBody(body));
+    boundaryBodies = [];
+  }
+  
+  const planeSize = 100;
+  const planeThickness = 0.1;
+  
+  // Left and right walls (thicker for better collision detection)
+  const wallThickness = 0.5; // Increased thickness for better collision detection
+  const wallSize = planeSize * 2; // Make walls larger than visual
+  
+  const leftWall = new CANNON.Body({
+    mass: 0, // Static body
+    shape: new CANNON.Box(new CANNON.Vec3(wallThickness, wallSize, wallSize)),
+    position: new CANNON.Vec3(-params.planeLRspacing, 0, 0),
+    collisionFilterGroup: COLLISION_GROUPS.BOUNDARY,
+    collisionFilterMask: COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.DRAGGED | COLLISION_GROUPS.CENTER,
+    collisionResponse: true
+  });
+  
+  const rightWall = new CANNON.Body({
+    mass: 0, // Static body
+    shape: new CANNON.Box(new CANNON.Vec3(wallThickness, wallSize, wallSize)),
+    position: new CANNON.Vec3(params.planeLRspacing, 0, 0),
+    collisionFilterGroup: COLLISION_GROUPS.BOUNDARY,
+    collisionFilterMask: COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.DRAGGED | COLLISION_GROUPS.CENTER,
+    collisionResponse: true
+  });
+  
+  // Top and bottom walls
+  const bottomWall = new CANNON.Body({
+    mass: 0, // Static body
+    shape: new CANNON.Box(new CANNON.Vec3(wallSize, wallThickness, wallSize)),
+    position: new CANNON.Vec3(0, -params.planeTBspacing, 0),
+    collisionFilterGroup: COLLISION_GROUPS.BOUNDARY,
+    collisionFilterMask: COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.DRAGGED | COLLISION_GROUPS.CENTER,
+    collisionResponse: true
+  });
+  
+  const topWall = new CANNON.Body({
+    mass: 0, // Static body
+    shape: new CANNON.Box(new CANNON.Vec3(wallSize, wallThickness, wallSize)),
+    position: new CANNON.Vec3(0, params.planeTBspacing, 0),
+    collisionFilterGroup: COLLISION_GROUPS.BOUNDARY,
+    collisionFilterMask: COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.DRAGGED | COLLISION_GROUPS.CENTER,
+    collisionResponse: true
+  });
+  
+  // Add all walls to the world and our array
+  world.addBody(leftWall);
+  world.addBody(rightWall);
+  world.addBody(bottomWall);
+  world.addBody(topWall);
+  
+  boundaryBodies.push(leftWall, rightWall, bottomWall, topWall);
+}
+
+function updatePlanePositions() {
+  // Update visual positions
+  plane1.position.x = -params.planeLRspacing;
+  plane2.position.x = params.planeLRspacing;
+  plane3.position.y = -params.planeTBspacing;
+  plane4.position.y = params.planeTBspacing;
+  
+  // Update physics bodies
+  createBoundaryBodies();
+}
+
 function updateBoundsVisibility() {
   dropZone.visible = params.previewBounds;
-  outerZone.visible = params.previewBounds;
+  plane1.visible = params.previewBounds;
+  plane2.visible = params.previewBounds;
+  plane3.visible = params.previewBounds;
+  plane4.visible = params.previewBounds;
 }
 
 function updateBounds() {
   dropZone.geometry.dispose();
   dropZone.geometry = new THREE.SphereGeometry(params.dropZoneRadius, 32, 32);
-
-  outerZone.geometry.dispose();
-  outerZone.geometry = new THREE.SphereGeometry(params.outerRadius, 32, 32);
-
-  // Update outerWall shape to match new outerRadius
-  world.removeBody(outerWall);
-  const outerGeometry = new THREE.SphereGeometry(params.outerRadius, 32, 32);
-  const outerVertices = outerGeometry.attributes.position.array;
-  const outerIndices = Array.from({ length: outerVertices.length / 3 }, (_, i) => i);
-  const outerShape = new CANNON.Trimesh(outerVertices, outerIndices);
-  outerWall = new CANNON.Body({ mass: 0 });
-  outerWall.addShape(outerShape);
-  world.addBody(outerWall);
+  
+  // Update boundary planes when spacing changes
+  createBoundaryBodies();
 }
 
 function updateCenterBlobScale() {
@@ -274,24 +382,26 @@ function updateCenterBlobScale() {
 function createBlobs() {
   clearBlobs();
 
+  // Calculate angle step between blobs
+  const angleStep = (Math.PI * 2) / params.numBlobs;
+  const radiusFromCenter = params.dropZoneRadius * 2.5; // 2.5x drop zone radius
+  
   for (let i = 0; i < params.numBlobs; i++) {
+    // Randomize blob size within limits
     let radius = THREE.MathUtils.lerp(params.minRadius, params.maxRadius, Math.random());
     radius += (Math.random() - 0.5) * params.radiusRandomness;
     radius = Math.max(params.minRadius, Math.min(params.maxRadius, radius));
     
-    // Position blobs at random within outer sphere and outside drop zone
-    let x = 0, y = 0, z = 0;
-    const dropRadius = params.dropZoneRadius + radius + params.padding;
-    const outerRadius = params.outerRadius - radius - params.padding;
-    let valid = false;
+    // Calculate position in a circle
+    const angle = i * angleStep;
+    let x = Math.cos(angle) * radiusFromCenter;
+    let y = Math.sin(angle) * radiusFromCenter;
+    const z = 0; // Keep blobs in the same Z plane for 2D-like behavior
     
-    while (!valid) {
-      x = (Math.random() * 2 - 1) * outerRadius;
-      y = (Math.random() * 2 - 1) * outerRadius;
-      z = (Math.random() * 2 - 1) * outerRadius;
-      const d = Math.sqrt(x * x + y * y + z * z);
-      valid = d > dropRadius && d < outerRadius;
-    }
+    // Ensure position is within boundaries with padding
+    const buffer = radius + params.padding;
+    x = THREE.MathUtils.clamp(x, -params.planeLRspacing + buffer, params.planeLRspacing - buffer);
+    y = THREE.MathUtils.clamp(y, -params.planeTBspacing + buffer, params.planeTBspacing - buffer);
 
     const totalRadius = radius + params.padding;
 
@@ -319,12 +429,16 @@ function createBlobs() {
       shape: shape, 
       position: new CANNON.Vec3(x, y, z),
       collisionFilterGroup: COLLISION_GROUPS.BLOBS,
-      collisionFilterMask: COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.CENTER
+      collisionFilterMask: COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.CENTER | COLLISION_GROUPS.BOUNDARY | COLLISION_GROUPS.DRAGGED,
+      collisionResponse: true,
+      material: world.defaultMaterial
     });
     
-    // Increased damping for more fluid resistance
-    body.linearDamping = 0.95;
-    body.angularDamping = 0.95;
+    // Physics properties
+    body.linearDamping = 0.3; // Reduced damping for more responsive movement
+    body.angularDamping = 0.3;
+    body.linearSleepingThreshold = 0.5;
+    body.angularSleepingThreshold = 0.5;
     world.addBody(body);
     blobs.push(body);
   }
@@ -397,13 +511,10 @@ function onPointerDown(event) {
       // Set target scale for active drag
       blobVisuals[index].setTargetScale(params.blobActiveScale);
       
-      // Change collision group to DRAGGED
-      blobs[index].collisionFilterGroup = COLLISION_GROUPS.DRAGGED;
-      blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS; // Only collide with BLOBS, not CENTER
-      
       // Set collision group to DRAGGED for the dragged blob
       blobs[index].collisionFilterGroup = COLLISION_GROUPS.DRAGGED;
-      blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS; // Only collide with BLOBS, not CENTER
+      // Collide with BLOBS, BOUNDARY, and other DRAGGED blobs
+      blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.BOUNDARY | COLLISION_GROUPS.DRAGGED;
     }
   }
 }
@@ -429,9 +540,9 @@ function onPointerMove(event) {
         body.mass = 1; // Restore mass
         body.updateMassProperties();
         
-        // Update collision group back to BLOBS
+        // Update collision group and mask back to BLOBS
         body.collisionFilterGroup = COLLISION_GROUPS.BLOBS;
-        body.collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.CENTER;
+        body.collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.CENTER | COLLISION_GROUPS.BOUNDARY | COLLISION_GROUPS.DRAGGED;
         
         centerBlobIndices.splice(centerIndex, 1); // Remove from center
         blobMeshes[index].visible = true; // Make sure it's visible
@@ -473,7 +584,7 @@ function onPointerUp(event) {
           
           // Update collision group to CENTER
           blobs[index].collisionFilterGroup = COLLISION_GROUPS.CENTER;
-          blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS; // Only collide with BLOBS
+          blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.BOUNDARY | COLLISION_GROUPS.DRAGGED;
           
           // Only hide the blob if it's not the first one in the center
           if (centerBlobIndices.length > 1) {
@@ -490,7 +601,7 @@ function onPointerUp(event) {
         
         // Reset collision group to BLOBS when dropped outside center
         blobs[index].collisionFilterGroup = COLLISION_GROUPS.BLOBS;
-        blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.CENTER;
+        blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.CENTER | COLLISION_GROUPS.BOUNDARY | COLLISION_GROUPS.DRAGGED;
         
         // Log the updated center state
         logCenteredBlobs();
@@ -524,7 +635,8 @@ function applyGravityWell() {
     const isDraggingThisBlob = dragObject === blobMeshes[i];
     if (isDraggingThisBlob && centerBlobIndices.length > 0) continue;
     
-    if (!isDragging) {
+    // Always apply gravity to non-dragged blobs, regardless of drag state
+    if (!isDraggingThisBlob) {
       dir.normalize();
       const strength = params.gravityStrength / (distance * distance); // inverse square law
       const force = dir.scale(strength);
