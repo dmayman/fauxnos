@@ -1,0 +1,13 @@
+{
+  "data" : [
+    {
+      "filename" : "index.html",
+      "idiom" : "universal",
+      "universal-type-identifier" : "public.html"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
