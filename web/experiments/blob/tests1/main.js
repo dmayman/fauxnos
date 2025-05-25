@@ -8,24 +8,24 @@ let previewPlane, previewMaterial;
 let controls;
 
 let params = {
-    useArtTexture: true,
+    useArtTexture: false,
     envMapIntensity: 1.25,
     color1: '#be62df',
     color2: '#628fea',
-    color3: '#000000',
+    color3: '#a47f98',
     bgcolor: '#000000',
-    roughness: 0.3,
-    metalness: 0.0,
-    clearcoat: 0.1,
+    roughness: 0,
+    metalness: 0.09,
+    clearcoat: 1,
     clearcoatRoughness: 0,
-    transmission: 0.34,
+    transmission: 1,
     reflectivity: 1,
     ior: 1.93,
-    speed: 1,
-    distortAmount: 0.43,
+    speed: 2,
+    distortAmount: 0.18,
     stop1: 0.0,
-    stop2: 0.35,
-    stop3: 0.62,
+    stop2: 0.6,
+    stop3: 0.9,
     fresnelStrength: 1,
     bulgeAmount: 0.9,
     envMapRotation: 90,
@@ -33,7 +33,7 @@ let params = {
     pixelRatio: window.devicePixelRatio,
     glowColor: '#ffffff',
     glowIntensity: 0.25,
-    iridescence: 0.75,
+    iridescence: 1,
     iridescenceIOR: 1.3,
 };
 
@@ -85,7 +85,7 @@ function init() {
     controls.maxDistance = 10;
 
     // Add background plane with album art texture
-    const artTexturePlane = new THREE.TextureLoader().load('public/art3.png');
+    const artTexturePlane = new THREE.TextureLoader().load('../public/art3.png');
     const planeGeometry = new THREE.PlaneGeometry(2.5, 2.5);
     const planeMaterial = new THREE.MeshBasicMaterial({ map: artTexturePlane });
     plane = new THREE.Mesh(planeGeometry, planeMaterial);
@@ -181,7 +181,7 @@ function init() {
     // Create vertical background plane
     const bgPlaneGeometry = new THREE.PlaneGeometry(20, 20);
     const bgPlaneMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0xa98ea9,
+        color: 0x000000,
         roughness: 0.9,
         metalness: 0.1,
         envMapIntensity: 0.5
@@ -200,71 +200,140 @@ function init() {
 
     clock = new THREE.Clock();
 
+    // GUI Controls
+    const gui = new GUI({ width: 350 });
+    
+    // Helper function to create sliders with value display
+    function addSlider(folder, object, property, min, max, step, name, onChange = null) {
+        const controller = folder.add(object, property, min, max, step);
+        // Store the original name as a property on the controller
+        controller.originalName = name;
+        updateSliderDisplay(controller, object[property]);
+        controller.onChange(value => {
+            updateSliderDisplay(controller, value);
+            if (onChange) onChange(value);
+        });
+        return controller;
+    }
+
+    function updateSliderDisplay(controller, value) {
+        // Format the value to show appropriate decimal places
+        const displayValue = Number.isInteger(controller._step) ? 
+            value.toFixed(0) : value.toFixed(2);
+        // Always use the original name when updating
+        controller.name(`${controller.originalName}: ${displayValue}`);
+    }
+
+    // Material Settings
+    const materialFolder = gui.addFolder('Material');
+    addSlider(materialFolder, params, 'roughness', 0, 1, 0.01, 'Roughness', 
+        value => { material.roughness = value; });
+    addSlider(materialFolder, params, 'metalness', 0, 1, 0.01, 'Metalness',
+        value => { material.metalness = value; });
+    addSlider(materialFolder, params, 'clearcoat', 0, 1, 0.01, 'Clearcoat',
+        value => { material.clearcoat = value; });
+    addSlider(materialFolder, params, 'clearcoatRoughness', 0, 1, 0.01, 'Clearcoat Roughness',
+        value => { material.clearcoatRoughness = value; });
+    addSlider(materialFolder, params, 'transmission', 0, 1, 0.01, 'Transmission',
+        value => { material.transmission = value; });
+    addSlider(materialFolder, params, 'reflectivity', 0, 1, 0.01, 'Reflectivity',
+        value => { material.reflectivity = value; });
+    addSlider(materialFolder, params, 'ior', 1, 2.5, 0.01, 'IOR',
+        value => { material.ior = value; });
+    addSlider(materialFolder, params, 'envMapIntensity', 0, 5, 0.01, 'Env Map Intensity',
+        value => { material.envMapIntensity = value; });
+    addSlider(materialFolder, params, 'iridescence', 0, 1, 0.01, 'Iridescence',
+        value => { material.iridescence = value; });
+    addSlider(materialFolder, params, 'iridescenceIOR', 1, 2.33, 0.01, 'Iridescence IOR',
+        value => { material.iridescenceIOR = value; });
+    
+    // Color Settings
+    const colorFolder = gui.addFolder('Colors');
+    colorFolder.addColor(params, 'color1').name('Color 1').onChange(updateEnvMap);
+    colorFolder.addColor(params, 'color2').name('Color 2').onChange(updateEnvMap);
+    colorFolder.addColor(params, 'color3').name('Color 3').onChange(updateEnvMap);
+    colorFolder.addColor(params, 'bgcolor').name('Background').onChange((value) => {
+        scene.background = new THREE.Color(value);
+    });
+    addSlider(colorFolder, params, 'glowIntensity', 0, 1, 0.01, 'Glow Intensity');
+    colorFolder.addColor(params, 'glowColor').name('Glow Color');
+    
+    // Animation Settings
+    const animationFolder = gui.addFolder('Animation');
+    addSlider(animationFolder, params, 'speed', 0.1, 5, 0.1, 'Wave Speed');
+    addSlider(animationFolder, params, 'distortAmount', 0, 1, 0.01, 'Distortion');
+    addSlider(animationFolder, params, 'bulgeAmount', -1, 1, 0.01, 'Bulge');
+    addSlider(animationFolder, params, 'fresnelStrength', 0, 5, 0.1, 'Fresnel');
+    addSlider(animationFolder, params, 'envMapRotation', 0, 360, 1, 'Env Rotation')
+        .onChange(() => {
+            material.envMapRotation.y = THREE.MathUtils.degToRad(params.envMapRotation);
+            material.needsUpdate = true;
+        });
+    
+    // Gradient Stops
+    const gradientFolder = gui.addFolder('Gradient Stops');
+    addSlider(gradientFolder, params, 'stop1', 0, 1, 0.01, 'Stop 1').onChange(updateEnvMap);
+    addSlider(gradientFolder, params, 'stop2', 0, 1, 0.01, 'Stop 2').onChange(updateEnvMap);
+    addSlider(gradientFolder, params, 'stop3', 0, 1, 0.01, 'Stop 3').onChange(updateEnvMap);
+    addSlider(gradientFolder, params, 'stopEase', 0.1, 5, 0.1, 'Easing').onChange(updateEnvMap);
+    
+    // Toggles
+    const toggleFolder = gui.addFolder('Toggles');
+    toggleFolder.add(params, 'useArtTexture').name('Show Album Art').onChange((value) => {
+        plane.visible = value;
+        updateEnvMap();
+    });
+    
+    // Display Settings
+    const displayFolder = gui.addFolder('Display');
+    displayFolder.add(params, 'pixelRatio', 0.5, 2, 0.1).name('Pixel Ratio').onChange(() => {
+        renderer.setPixelRatio(params.pixelRatio);
+    });
+    
+    // Add a button to capture the current view as PNG
+    gui.add({ capture: capturePNG }, 'capture').name('📸 Capture PNG');
+    
+    // Open all folders by default
+    materialFolder.open();
+    colorFolder.open();
+    animationFolder.open();
+    gradientFolder.open();
+    toggleFolder.open();
+    displayFolder.open();
+
     const artTexture = new THREE.TextureLoader().load('public/art3.png');
     artTexture.mapping = THREE.EquirectangularReflectionMapping;
     artTexture.needsUpdate = true;
 
-    // Rotate the scene + counter-rotate the group to align the env map visually
-    // without needing custom shader hacks. This is lightweight and production-safe.
-    // scene.rotation.y = Math.PI / 2;
-    // group.rotation.y = -Math.PI / 2;
-
-    // GUI controls
-    const gui = new GUI();
-    gui.add(material, 'envMapIntensity', 0, 5, 0.01).name('Env Map Intensity').onChange(value => {
-        material.envMapIntensity = value;
-    });
-    gui.addColor(params, 'color1').name('Color 1').onChange(updateEnvMap);
-    gui.addColor(params, 'color2').name('Color 2').onChange(updateEnvMap);
-    gui.addColor(params, 'color3').name('Color 3').onChange(updateEnvMap);
-    gui.add(params, 'stop1', 0, 1, 0.01).name('Stop 1').onChange(updateEnvMap);
-    gui.add(params, 'stop2', 0, 1, 0.01).name('Stop 2').onChange(updateEnvMap);
-    gui.add(params, 'stop3', 0, 1, 0.01).name('Stop 3').onChange(updateEnvMap);
-    gui.add(params, 'stopEase', 0, 1, 0.01).name('Stop Ease').onChange(updateEnvMap);
-    gui.add(params, 'roughness', 0, 1, 0.01).onChange(() => { material.roughness = params.roughness; });
-    gui.add(params, 'metalness', 0, 1, 0.01).onChange(() => { material.metalness = params.metalness; });
-    gui.add(params, 'clearcoat', 0, 1, 0.01).onChange(() => { material.clearcoat = params.clearcoat; });
-    gui.add(params, 'clearcoatRoughness', 0, 1, 0.01).onChange(() => { material.clearcoatRoughness = params.clearcoatRoughness; });
-    gui.add(params, 'transmission', 0, 1, 0.01).onChange(() => { material.transmission = params.transmission; });
-    gui.add(params, 'reflectivity', 0, 1, 0.01).onChange(() => { material.reflectivity = params.reflectivity; });
-    gui.add(params, 'ior', 1, 2.5, 0.01).onChange(() => { material.ior = params.ior; });
-    gui.add(params, 'speed', 0, 5, 0.01).name('Wave Speed');
-    gui.add(params, 'distortAmount', 0, 1, 0.01).name('Distort Amount');
-    gui.add(params, 'bulgeAmount', -1.0, 1.0, 0.01).name('Bulge Amount');
-    gui.add(params, 'useArtTexture').name('Use Art Texture').onChange(updateEnvMap);
-    gui.add(params, 'fresnelStrength', 0, 50, 0.1).name('Fresnel Strength');
-    gui.addColor(params, 'bgcolor').name('Background Color').onChange(() => {
-        scene.background.set(params.bgcolor);
-    });
-    gui.add(params, 'envMapRotation', 0, 360, 0.01).name('Env Map Rotation').onChange(() => {
-        material.envMapRotation.y = THREE.MathUtils.degToRad(params.envMapRotation);
-        material.needsUpdate = true;
-    });
-    gui.add(params, 'pixelRatio', 0.5, 2, 0.1).name('Pixel Ratio').onChange(() => {
-        renderer.setPixelRatio(params.pixelRatio);
-    });
-    gui.addColor(params, 'glowColor').name('Glow Color').onChange(() => {
-        glowMat.color.set(params.glowColor);
-    });
-    gui.add(params, 'glowIntensity', 0, 1, 0.01).name('Glow Intensity').onChange(() => {
-        glowMat.opacity = params.glowIntensity;
-    });
-    gui.add(params, 'iridescence', 0, 1, 0.01).onChange(() => { material.iridescence = params.iridescence; });
-    gui.add(params, 'iridescenceIOR', 1, 2.5, 0.01).onChange(() => { material.iridescenceIOR = params.iridescenceIOR; });
-    gui.add({ 'Copy PNG': capturePNG }, 'Copy PNG').name('Copy PNG');
-
-    // Update the GUI
-    const shadowFolder = gui.addFolder('Simple Shadow');
-    shadowFolder.add(shadowLight.position, 'x', -10, 10, 0.1).name('Light X');
-    shadowFolder.add(shadowLight.position, 'y', -10, 10, 0.1).name('Light Y');
-    shadowFolder.add(shadowLight.position, 'z', 0, 15, 0.1).name('Light Z');
-    shadowFolder.add(shadowLight, 'intensity', 0, 2, 0.05).name('Light Intensity');
-    shadowFolder.add(ambientLight, 'intensity', 0, 2, 0.05).name('Ambient Light');
-    shadowFolder.add(shadowLight.shadow, 'radius', 0, 3000, 0.5).name('Shadow Softness');
-    shadowFolder.add(bgPlane.position, 'z', -5, 0, 0.1).name('Wall Distance');
-    shadowFolder.addColor({wallColor: '#a98ea9'}, 'wallColor').onChange(value => {
+    // Shadow & Lighting Settings
+    const shadowFolder = gui.addFolder('Shadow & Lighting');
+    
+    // Light position controls
+    const lightXCtrl = addSlider(shadowFolder, shadowLight.position, 'x', -10, 10, 0.1, 'Light X');
+    const lightYCtrl = addSlider(shadowFolder, shadowLight.position, 'y', -10, 10, 0.1, 'Light Y');
+    const lightZCtrl = addSlider(shadowFolder, shadowLight.position, 'z', 0, 15, 0.1, 'Light Z');
+    
+    // Light intensity controls
+    addSlider(shadowFolder, shadowLight, 'intensity', 0, 2, 0.05, 'Light Intensity');
+    addSlider(shadowFolder, ambientLight, 'intensity', 0, 2, 0.05, 'Ambient Light');
+    
+    // Shadow controls
+    addSlider(shadowFolder, shadowLight.shadow, 'radius', 0, 3000, 0.5, 'Shadow Softness');
+    addSlider(shadowFolder, bgPlane.position, 'z', -5, 0, 0.1, 'Wall Distance');
+    
+    // Wall color control
+    shadowFolder.addColor({wallColor: '#000000'}, 'wallColor').name('Wall Color').onChange(value => {
         bgPlane.material.color.set(value);
     });
+    
+    // Update light position displays when changed through other means
+    shadowLight.position.onChange = () => {
+        updateSliderDisplay(lightXCtrl, shadowLight.position.x);
+        updateSliderDisplay(lightYCtrl, shadowLight.position.y);
+        updateSliderDisplay(lightZCtrl, shadowLight.position.z);
+    };
+
+    // Handle window resize
 
     // Handle resize
     window.addEventListener('resize', () => {
@@ -377,7 +446,8 @@ function animate() {
 
     material.reflectivity = params.reflectivity + params.fresnelStrength * Math.abs(Math.sin(time));
     material.ior = params.ior + 0.05 * Math.sin(time * 0.4);
-    material.transmission = params.transmission + 0.05 * Math.sin(time * 0.6);
+    material.transmission = params.transmission + 0.01 * Math.sin(time * 0.6);
+    material.iridescenceIOR = params.iridescenceIOR + 0.2 * Math.sin(time * 0.8);
     // Removed material.envMapRotation assignment here per instructions
 
     controls.update();

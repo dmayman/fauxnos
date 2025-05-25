@@ -1,0 +1,61 @@
+body, html {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: linear-gradient(135deg, #152a8e, #b1376c);
+}
+
+.app {
+  width: 100vw;
+  height: 100vh;
+  position: relative;
+}
+
+.blob-container {
+  width: 100%;
+  height: 100%;
+  position: fixed;
+  top: 0;
+  left: 0;
+}
+
+.blobs {
+  width: 100%;
+  height: 100%;
+}
+
+.blob {
+  fill: rgba(255, 255, 255, 0);
+  stroke: white;
+  cursor: move;
+  transition: transform 0.1s ease, fill 0.2s ease;
+  transform-origin: center;
+}
+
+.blob.dragging {
+  filter: brightness(1.1);
+  transform: scale(1.05);
+  fill: rgba(255, 255, 255, 1);
+  stroke: none;
+  transition: transform 0.1s ease, fill 0.2s ease;
+}
+
+/* Style for the second blob specifically */
+#blob2 {
+  fill: white;
+}
+
+/* The .goo class is now defined in index.html */
+
+/* Add this if you're applying the filter to individual elements */
+.blob {
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+}
+
+/* .goo{
+  filter: url(#goo);
+} */
+

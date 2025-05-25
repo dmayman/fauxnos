@@ -12,6 +12,7 @@
     "vite": "^6.3.5"
   },
   "dependencies": {
+    "@dnd-kit/dom": "^0.1.13",
     "cannon-es": "^0.20.0",
     "dat.gui": "^0.7.9",
     "lil-gui": "^0.20.0",

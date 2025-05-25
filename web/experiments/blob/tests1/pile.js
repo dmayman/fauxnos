@@ -155,14 +155,33 @@ function init() {
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
 
-  // Physics world
+  // Physics world with optimized performance settings
   world = new CANNON.World();
   world.gravity.set(0, 0, 0); // We'll implement central gravity manually
-  world.broadphase = new CANNON.NaiveBroadphase();
-  world.solver.iterations = 10;
-  // Add more damping for fluid-like movement
-  world.defaultContactMaterial.contactEquationStiffness = 1e6;
-  world.defaultContactMaterial.contactEquationRelaxation = 4;
+  world.broadphase = new CANNON.SAPBroadphase(world); // More efficient broadphase
+  world.solver.iterations = 15; // Balanced between accuracy and performance
+  
+  // Create and configure the blob material with springy properties
+  const blobMaterial = new CANNON.Material('blobMaterial');
+  world.addContactMaterial(
+    new CANNON.ContactMaterial(
+      blobMaterial,
+      blobMaterial,
+      {
+        restitution: 0.6,          // Bouncy but not too much
+        friction: 0.1,             // Low friction for smooth movement
+        contactEquationStiffness: 1e5,  // Softer contacts between blobs
+        contactEquationRelaxation: 8,   // Slightly reduced for performance
+        frictionEquationStiffness: 1e5  // Softer friction response
+      }
+    )
+  );
+  world.defaultMaterial = blobMaterial;  // Set as default material for all bodies
+  
+  // Add some damping to the world to prevent excessive bouncing
+  world.quatNormalizeSkip = 0;
+  world.quatNormalizeFast = false;
+  world.solver.tolerance = 0.001; // More precise solving
 
   // Plane for dragging calculations
   plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
@@ -514,7 +533,7 @@ function onPointerDown(event) {
       // Set collision group to DRAGGED for the dragged blob
       blobs[index].collisionFilterGroup = COLLISION_GROUPS.DRAGGED;
       // Collide with BLOBS, BOUNDARY, and other DRAGGED blobs
-      blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.BOUNDARY | COLLISION_GROUPS.DRAGGED;
+      blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.BOUNDARY;
     }
   }
 }
@@ -533,20 +552,53 @@ function onPointerMove(event) {
   if (index !== -1) {
     const centerIndex = centerBlobIndices.indexOf(index);
     if (centerIndex !== -1) {
-      // If we've moved away from the center, update physics but don't log yet
+      // Get the position difference from the last frame
+      const currentPos = new THREE.Vector3().copy(blobs[index].position);
+      const delta = new THREE.Vector3().subVectors(currentPos, blobs[index].previousPosition || currentPos);
+      
+      // Update all centered blobs' positions
+      centerBlobIndices.forEach(blobIndex => {
+        if (blobIndex !== index) { // Skip the blob we're directly controlling
+          const body = blobs[blobIndex];
+          const newPos = new CANNON.Vec3(
+            body.position.x + delta.x,
+            body.position.y + delta.y,
+            body.position.z + delta.z
+          );
+          body.position.copy(newPos);
+          body.velocity.set(0, 0, 0);
+          body.angularVelocity.set(0, 0, 0);
+          
+          // Update the corresponding mesh position
+          if (blobMeshes[blobIndex]) {
+            blobMeshes[blobIndex].position.copy(new THREE.Vector3(newPos.x, newPos.y, newPos.z));
+          }
+        }
+      });
+      
+      // Store current position for next frame
+      blobs[index].previousPosition = currentPos.clone();
+      
+      // If we've moved away from the center, update physics for all centered blobs
       const distToCenter = blobs[index].position.length();
       if (distToCenter > params.dropZoneRadius * 0.8) { 
-        const body = blobs[index];
-        body.mass = 1; // Restore mass
-        body.updateMassProperties();
+        centerBlobIndices.forEach(blobIndex => {
+          const body = blobs[blobIndex];
+          body.mass = 1; // Restore mass
+          body.updateMassProperties();
+          
+          // Update collision group and mask back to BLOBS
+          body.collisionFilterGroup = COLLISION_GROUPS.BLOBS;
+          body.collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.CENTER | COLLISION_GROUPS.BOUNDARY | COLLISION_GROUPS.DRAGGED;
+          
+          // Make sure the mesh is visible
+          if (blobMeshes[blobIndex]) {
+            blobMeshes[blobIndex].visible = true;
+          }
+        });
         
-        // Update collision group and mask back to BLOBS
-        body.collisionFilterGroup = COLLISION_GROUPS.BLOBS;
-        body.collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.CENTER | COLLISION_GROUPS.BOUNDARY | COLLISION_GROUPS.DRAGGED;
-        
-        centerBlobIndices.splice(centerIndex, 1); // Remove from center
-        blobMeshes[index].visible = true; // Make sure it's visible
-        // Logging will happen on pointer up if the blob is dropped outside
+        // Clear all centered blobs
+        centerBlobIndices = [];
       }
     }
   }
@@ -572,7 +624,7 @@ function onPointerUp(event) {
     const index = blobMeshes.indexOf(dragObject);
     if (index !== -1) {
       const distToCenter = blobs[index].position.length();
-      if (distToCenter < params.dropZoneRadius) {
+      if (distToCenter < params.dropZoneRadius) { // if we're in the drop zone
         // Add to center if not already centered
         if (!centerBlobIndices.includes(index)) {
           centerBlobIndices.push(index);
@@ -584,7 +636,7 @@ function onPointerUp(event) {
           
           // Update collision group to CENTER
           blobs[index].collisionFilterGroup = COLLISION_GROUPS.CENTER;
-          blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.BOUNDARY | COLLISION_GROUPS.DRAGGED;
+          blobs[index].collisionFilterMask = COLLISION_GROUPS.BLOBS | COLLISION_GROUPS.BOUNDARY;
           
           // Only hide the blob if it's not the first one in the center
           if (centerBlobIndices.length > 1) {
@@ -595,7 +647,7 @@ function onPointerUp(event) {
           fadeCenterNodeIn = false;
           logCenteredBlobs();
         }
-      } else {
+      } else { // if we're not in the drop zone
         // Reset target scale when dropped (actual scale will animate to this)
         blobVisuals[index].setTargetScale(1.0);
         

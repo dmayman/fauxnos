@@ -1,24 +1,27 @@
-//
-//  ContentView.swift
-//  Fauxnos
-//
-//  Created by David Mayman on 5/21/25.
-//
-
 import SwiftUI
 
 struct ContentView: View {
+    @State private var isLoading = true
+    
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        NavigationView {
+            ZStack {
+                ReactWebView(isLoading: $isLoading)
+                
+                if isLoading {
+                    VStack {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .blue))
+                            .scaleEffect(1.5)
+                        
+                        Text("Loading & Debugging...")
+                            .foregroundColor(.secondary)
+                            .padding(.top)
+                    }
+                }
+            }
+            .navigationTitle("Debug React App")
+            .navigationBarTitleDisplayMode(.inline)
         }
-        .padding()
     }
-}
-
-#Preview {
-    ContentView()
 }

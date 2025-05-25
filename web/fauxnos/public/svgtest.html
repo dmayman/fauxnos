@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>SVG Filter Test</title>
+<style>
+  .goo {
+    filter: url(#goo);
+  }
+</style>
+</head>
+<body>
+
+<svg style="position: absolute; width: 0; height: 0; visibility: hidden">
+    <defs>
+        <filter id="goo" colorInterpolationFilters="sRGB">
+        <feGaussianBlur in="SourceGraphic" stdDeviation="10" result="blur" />
+        <feColorMatrix 
+            in="blur" 
+            mode="matrix" 
+            values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" 
+            result="goo" 
+        />
+        <feBlend in="SourceGraphic" in2="goo" />
+        </filter>
+    </defs>
+    </svg>
+
+<div class="goo">
+  <style>
+    .circle {
+      position: absolute;
+      top: 50px;
+      left: 50px;
+      width: 100px;
+      height: 100px;
+      background: black;
+      border-radius: 50%;
+    }
+    .circle2 {
+      transform: translate(50px, 50px);
+    }
+  </style>
+  <div class="circle"></div>
+  <div class="circle circle2"></div>
+
+  
+</div>
+
+</body>
+</html>

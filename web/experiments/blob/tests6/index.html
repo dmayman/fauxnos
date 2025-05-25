@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Draggable Blobs with dnd-kit</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://unpkg.com/@dnd-kit/core@6.1.0/dist/umd/dnd-kit-core.umd.js"></script>
+  <script src="https://unpkg.com/@dnd-kit/modifiers@6.0.1/dist/umd/dnd-kit-modifiers.umd.js"></script>
+  <script src="https://unpkg.com/@dnd-kit/sortable@7.0.2/dist/umd/dnd-kit-sortable.umd.js">
+  </script>
+</head>
+<body>
+  <div class="container">
+    <svg version="1.1" xmlns="http://www.w3.org/2000/svg" id="blob-container">
+      <defs>
+        <filter id="goo">
+          <feGaussianBlur in="SourceGraphic" result="blur" stdDeviation="10" />
+          <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -7" result="goo" />
+          <feBlend in2="goo" in="SourceGraphic" result="mix" />
+        </filter>
+        <linearGradient id="blobGradient">
+          <stop offset="5%" stop-color="#40204c"/>
+          <stop offset="40%" stop-color="#a3225c"/>
+          <stop offset="100%" stop-color="#e24926"/>
+        </linearGradient>
+      </defs>
+      <!-- <mask id="maska"> -->
+        <g class="blobs">
+          <!-- Blobs will be added here by JavaScript -->
+        </g>
+      <!-- </mask> -->
+      <!-- <rect x="0" y="0" mask="url(#maska)" fill="url(#blobGradient)" width="100%" height="100%"/> -->
+    </svg>
+  </div>
+  <script src="main.js"></script>
+</body>
+</html>
