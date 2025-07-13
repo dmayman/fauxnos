@@ -1,27 +1,47 @@
 import SwiftUI
 
 struct ContentView: View {
-    @State private var isLoading = true
+    @State private var position: CGSize = .zero
+    @State private var isPressed = false
     
     var body: some View {
-        NavigationView {
+        GeometryReader { geometry in
             ZStack {
-                ReactWebView(isLoading: $isLoading)
+                Color.white
+                    .edgesIgnoringSafeArea(.all)
                 
-                if isLoading {
-                    VStack {
-                        ProgressView()
-                            .progressViewStyle(CircularProgressViewStyle(tint: .blue))
-                            .scaleEffect(1.5)
-                        
-                        Text("Loading & Debugging...")
-                            .foregroundColor(.secondary)
-                            .padding(.top)
-                    }
-                }
+                Circle()
+                    .fill(Color.black)
+                    .frame(width: isPressed ? 100 : 20, 
+                          height: isPressed ? 100 : 20)
+                    .offset(position)
+                    .gesture(
+                        DragGesture()
+                            .onChanged { gesture in
+                                self.position = gesture.translation
+                            }
+                    )
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { _ in
+                                withAnimation(.spring()) {
+                                    isPressed = true
+                                }
+                            }
+                            .onEnded { _ in
+                                withAnimation(.spring()) {
+                                    isPressed = false
+                                }
+                            }
+                    )
             }
-            .navigationTitle("Debug React App")
-            .navigationBarTitleDisplayMode(.inline)
+            .frame(width: geometry.size.width, height: geometry.size.height)
         }
+    }
+}
+
+struct ContentView_Previews: PreviewProvider {
+    static var previews: some View {
+        ContentView()
     }
 }
