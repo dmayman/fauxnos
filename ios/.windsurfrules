@@ -4,8 +4,8 @@
 - Do not make any changes, until you have 95% confidence that you know what to build. Ask me follow up questions until you have that confidence.
 
 # Project structure
-- All the files go inside /Fauxnos
-- The main swift file is FauxnosApp.swift
+- All the files go inside /WSTest
+- The main swift file is WSTestApp.swift
 
 # Tech Stack
 - SwiftUI for frontend (Fallback with UIKit if absolutely necessary)

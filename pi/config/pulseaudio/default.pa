@@ -1,0 +1,27 @@
+.include /etc/pulse/default.pa
+
+# Create virtual sinks
+load-module module-null-sink sink_name=libresink sink_properties="device.description='Librespot Output'"
+load-module module-null-sink sink_name=systemsink sink_properties="device.description='System Sounds'"
+load-module module-null-sink sink_name=analogsink sink_properties="device.description='Analog Loopback'"
+load-module module-null-sink sink_name=snapsink sink_properties="device.description='Snapcast Output'"
+
+# Create the loopback from analog input
+load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallback" sink=analogsink latency_msec=1
+
+# Add LADSPA equalizer
+load-module module-ladspa-sink sink_name=equalizer sink_master=alsa_output.platform-soc_sound.stereo-fallback plugin=mbeq_1197 label=mbeq control=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+# Create combined output (not used)
+# load-module module-combine-sink sink_name=combined_output sink_properties="device.description='Combined Output'" slaves=equalizer
+
+# Route everything to equalizer (which goes directly to hardware)
+load-module module-loopback source=libresink.monitor sink=equalizer latency_msec=1
+load-module module-loopback source=systemsink.monitor sink=equalizer latency_msec=1
+load-module module-loopback source=analogsink.monitor sink=equalizer latency_msec=1
+load-module module-loopback source=snapsink.monitor sink=equalizer latency_msec=1
+
+
+# Make snapsink the default
+set-default-sink snapsink
+
