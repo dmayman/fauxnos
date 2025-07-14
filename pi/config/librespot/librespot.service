@@ -1,0 +1,14 @@
+[Unit]
+Description=Librespot (an open source Spotify client)
+Documentation=https://github.com/dmayman/librespot_dm
+Wants=network.target sound.target
+After=network.target sound.target
+
+[Service]
+Restart=always
+RestartSec=10
+Environment="PULSE_SINK=libresink"
+ExecStart=/usr/local/bin/librespot --name "Fauxnos1" --disable-audio-cache
+
+[Install]
+WantedBy=default.target
