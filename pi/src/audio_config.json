@@ -14,6 +14,24 @@
         "volume_up": "~/sounds/volume_up.wav", 
         "volume_down": "~/sounds/volume_down.wav"
     },
+
+    "sources": {
+        "analogsink": {
+            "name": "analogsink",
+            "display_name": "Analog In",
+            "starting_volume": 30
+        },
+        "snapsink": {
+            "name": "snapsink",
+            "display_name": "Multiroom Audio",
+            "starting_volume": 30
+        },
+        "libresink": {
+            "name": "libresink",
+            "display_name": "Spotify",
+            "starting_volume": 30
+        }
+    },
     
     "log_file": "~/logs/audio_controller_{name}.log"
 }
