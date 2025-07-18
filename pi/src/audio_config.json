@@ -1,37 +1,89 @@
 {
     "name": "living_room",
     "display_name": "Living Room",
-    
     "lms_server": {
         "ip": "192.168.5.147",
         "port": 9000
     },
-    
     "mac": "2c:cf:67:af:61:6a",
-    
     "sounds": {
         "switch": "~/sounds/source_switch.wav",
-        "volume_up": "~/sounds/volume_up.wav", 
+        "volume_up": "~/sounds/volume_up.wav",
         "volume_down": "~/sounds/volume_down.wav"
     },
-
-    "sources": {
-        "analogsink": {
-            "name": "analogsink",
-            "display_name": "Analog In",
-            "starting_volume": 30
+    "sources": [
+        { 
+            "id": "spotify",
+            "label": "Spotify",
+            "type": "internal",
+            "sink": "libresink",
+            "starting_volume": 30,
+            "requires_external_switch": true,
+            "external_switch": {
+                "id": "fauxnos",
+                "control_api": "https://webhook.site/5b3cf0ea-e41c-400e-b7a5-9d99b1abc5b1",
+                "control_payload": {
+                    "source": "fauxnos"
+                }
+            }
         },
-        "snapsink": {
-            "name": "snapsink",
-            "display_name": "Multiroom Audio",
-            "starting_volume": 30
+        {
+            "id": "multiroom",
+            "label": "Multiroom",
+            "type": "internal",
+            "sink": "snapsink",
+            "starting_volume": 30,
+            "requires_external_switch": true,
+            "external_switch": {
+                "id": "fauxnos",
+                "control_api": "https://webhook.site/5b3cf0ea-e41c-400e-b7a5-9d99b1abc5b1",
+                "control_payload": {
+                    "source": "fauxnos"
+                }
+            }
         },
-        "libresink": {
-            "name": "libresink",
-            "display_name": "Spotify",
-            "starting_volume": 30
+        { 
+            "id": "analog",
+            "label": "Analog",
+            "type": "internal",
+            "sink": "analogsink",
+            "starting_volume": 30,
+            "requires_external_switch": true,
+            "external_switch": {
+                "id": "fauxnos",
+                "control_api": "https://webhook.site/5b3cf0ea-e41c-400e-b7a5-9d99b1abc5b1",
+                "control_payload": {
+                    "source": "fauxnos"
+                }
+            }
+        },
+        { 
+            "id": "alexa",
+            "label": "Alexa",
+            "type": "external",
+            "control_api": "https://webhook.site/5b3cf0ea-e41c-400e-b7a5-9d99b1abc5b1",
+            "control_payload": {
+                "source": "alexa"
+            }
+        },
+        {
+            "id": "vinyl",
+            "label": "Analog",
+            "type": "external",
+            "control_api": "https://webhook.site/5b3cf0ea-e41c-400e-b7a5-9d99b1abc5b1",
+            "control_payload": {
+                "source": "vinyl"
+            }
+        },
+        {
+            "id": "aux",
+            "label": "Aux",
+            "type": "external",
+            "control_api": "https://webhook.site/5b3cf0ea-e41c-400e-b7a5-9d99b1abc5b1",
+            "control_payload": {
+                "source": "aux"
+            }
         }
-    },
-    
-    "log_file": "~/logs/audio_controller_{name}.log"
+    ],
+    "log_file": "~/logs/audio_controller.log"
 }

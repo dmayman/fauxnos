@@ -19,7 +19,7 @@ with open(os.path.join(os.path.dirname(__file__), 'audio_config.json'), 'r') as 
 
 # Set up logging
 logger = logging.getLogger('AudioController')
-logger.setLevel(logging.INFO)
+logger.setLevel(logging.DEBUG)
 
 # Create formatters
 file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -48,8 +48,25 @@ VOLUME_DOWN_SOUND = os.path.expanduser(PLAYER_CONFIG["sounds"]["volume_down"])
 class AudioController:
     def __init__(self):
         # Load configuration and initialize sources dynamically
-        self.sources = PLAYER_CONFIG.get("sources", {})
-        self.source_names = list(self.sources.keys())
+        sources_config = PLAYER_CONFIG.get("sources", [])
+        
+        # Filter to only internal sources with sink property and create lookup dictionaries
+        self.sources = {}  # id -> source config
+        self.source_ids = []  # list of source IDs
+        self.id_to_sink = {}  # id -> sink name mapping
+        
+        for source_config in sources_config:
+            # Skip if source_config is not a dict (defensive programming)
+            if not isinstance(source_config, dict):
+                logger.warning(f"Skipping invalid source config: {source_config}")
+                continue
+                
+            if (source_config.get("type") == "internal" and 
+                "sink" in source_config and "id" in source_config):
+                source_id = source_config["id"]
+                self.sources[source_id] = source_config
+                self.source_ids.append(source_id)
+                self.id_to_sink[source_id] = source_config["sink"]
         
         # Initialize with neutral values first
         self.current_source = None
@@ -57,17 +74,16 @@ class AudioController:
         # Track the desired volume level (0-100) for each audio source when it's active.
         # These values persist when switching between sources.
         self.source_volumes = {}
-        for source_name, source_config in self.sources.items():
-            self.source_volumes[source_name] = source_config.get("starting_volume", 20)
+        for source_id, source_config in self.sources.items():
+            self.source_volumes[source_id] = source_config.get("starting_volume", 30)
         
         # Track the current actual volume (0-100) of each PulseAudio sink.
         # These values represent the hardware/software volume levels in the audio system.
         # Used during volume fades and audio routing.
-        self.sink_volumes = {source_name: 0 for source_name in self.source_names}
+        self.sink_volumes = {source_id: 0 for source_id in self.source_ids}
         
-        # Audio monitoring state (excluding snapsink by default)
-        self.monitored_sources = [name for name in self.source_names if name != "snapsink"]
-        self.source_silent_states = {name: False for name in self.monitored_sources}
+        # Simplified monitoring - only track analog input activity
+        # No need for per-source state tracking since we only monitor analog input hardware
         self.auto_switching_enabled = False
         self.monitoring_thread = None
         self.monitoring_stop_event = threading.Event()
@@ -81,7 +97,7 @@ class AudioController:
         # If no previous state was loaded or source is still None, set default source
         if self.current_source is None:
             # Use first available source as default
-            default_source = self.source_names[0] if self.source_names else None
+            default_source = self.source_ids[0] if self.source_ids else None
             if default_source:
                 logger.info(f"No previous state found, setting default source to {default_source}")
                 self.switch_source(default_source)
@@ -133,9 +149,10 @@ class AudioController:
     def _mute_all_sinks(self):
         """Mute all configured sinks to 0 volume"""
         logger.info("Muting all sinks on startup")
-        for source_name in self.source_names:
-            self._set_sink_volume(source_name, 0)
-            self.sink_volumes[source_name] = 0
+        for source_id in self.source_ids:
+            sink_name = self.id_to_sink[source_id]
+            self._set_sink_volume(sink_name, 0)
+            self.sink_volumes[source_id] = 0
         logger.info("All sinks muted")
 
 
@@ -176,101 +193,89 @@ class AudioController:
         logger.info(f"Faded {sink} volume from {start_vol} to {end_vol}")
         return end_vol
 
-    def _is_sink_playing_audio(self, sink_name):
-        """Check if a sink is currently playing audio using pactl"""
+    def _is_analog_input_active(self):
+        """Check if analog input has active audio by sampling the audio stream"""
         try:
-            # Get sink info from pactl
+            # Monitor the actual analog INPUT source, not the sink output
+            # This detects input regardless of which sink is currently active
+            input_source = "alsa_input.platform-soc_sound.stereo-fallback"
+            
+            logger.debug(f"Sampling audio from {input_source} to detect activity")
+            
+            # Use parec to capture a brief, low-quality sample and check for data
+            # --rate 1000: Very low sample rate for quick detection
+            # timeout 2: Maximum 2 seconds to detect audio
+            # fgrep -qm 1 .: Look for any non-null data (audio present)
+            
+            cmd = [
+                "timeout", "2",
+                "sh", "-c", 
+                f"parec --rate=1000 -d '{input_source}' 2>/dev/null | LC_ALL=C fgrep -qm 1 ."
+            ]
+            
             result = subprocess.run(
-                ["pactl", "list", "sinks"],
+                cmd,
                 capture_output=True,
-                text=True,
-                timeout=5
+                timeout=3  # Python timeout as backup
             )
             
-            if result.returncode != 0:
-                logger.error(f"Failed to get sink info: {result.stderr}")
+            # fgrep returns 0 if data found (audio playing), 1 if no data (silence)
+            if result.returncode == 0:
+                logger.debug(f"Audio data detected on {input_source}")
+                return True
+            elif result.returncode == 1:
+                logger.debug(f"No audio data detected on {input_source}")
+                return False
+            elif result.returncode == 124:  # timeout command exit code
+                logger.debug(f"Timeout waiting for audio data on {input_source} - assuming silence")
+                return False
+            else:
+                logger.warning(f"Unexpected return code {result.returncode} from audio detection")
                 return False
                 
-            output = result.stdout
-            
-            # Find the specific sink section
-            sink_found = False
-            for line in output.split('\n'):
-                if f"Name: {sink_name}" in line:
-                    sink_found = True
-                    continue
-                    
-                if sink_found and line.strip().startswith("State:"):
-                    state = line.split(":", 1)[1].strip()
-                    # Check if sink is in RUNNING state (actively playing audio)
-                    is_playing = state == "RUNNING"
-                    logger.debug(f"Sink {sink_name} state: {state}, playing: {is_playing}")
-                    return is_playing
-                    
-                # If we hit another sink, stop looking
-                if sink_found and line.strip().startswith("Sink #"):
-                    break
-                    
-            logger.warning(f"Sink {sink_name} not found in pactl output")
-            return False
-            
         except subprocess.TimeoutExpired:
-            logger.error(f"Timeout checking audio state for {sink_name}")
+            logger.warning(f"Python timeout checking analog input activity - assuming silence")
+            return False
+        except FileNotFoundError:
+            logger.error(f"parec command not found - install pulseaudio-utils")
             return False
         except Exception as e:
-            logger.error(f"Error checking audio state for {sink_name}: {e}")
+            logger.error(f"Error checking analog input activity: {e}")
             return False
 
     def _auto_source_control(self):
-        """Automatic source control with silence state tracking"""
+        """Simplified automatic source control - only checks analog input"""
         if not self.auto_switching_enabled:
             return
             
         try:
-            # Check audio state for monitored sources
-            current_states = {}
-            previous_states = {}
+            # Check if analog input is active
+            analog_active = self._is_analog_input_active()
             
-            for source_name in self.monitored_sources:
-                current_states[source_name] = self._is_sink_playing_audio(source_name)
-                previous_states[source_name] = not self.source_silent_states[source_name]
-                self.source_silent_states[source_name] = not current_states[source_name]
+            # Track previous state for edge detection
+            previous_analog_state = getattr(self, '_previous_analog_active', False)
+            self._previous_analog_active = analog_active
             
-            # Log current audio states
-            state_info = ", ".join([
-                f"{name}: {'playing' if current_states[name] else 'silent'}"
-                for name in self.monitored_sources
-            ])
-            logger.debug(f"Audio states - {state_info}")
+            logger.debug(f"Analog input: {'active' if analog_active else 'inactive'}")
             
-            # Only switch if a source has gone from silent to playing
-            # and the current source is silent
-            should_switch = False
-            new_source = None
+            # Only switch to analog if:
+            # 1. Analog input just became active (edge detection)
+            # 2. OR analog is active and we're not already on analog
+            if analog_active and (self.current_source != "analog" or not previous_analog_state):
+                if self.current_source != "analog":
+                    logger.info(f"Analog input detected - switching from {self.current_source} to analog")
+                    self.switch_source("analog")
+                else:
+                    logger.debug("Analog input active and already on analog source")
             
-            for source_name in self.monitored_sources:
-                if source_name == self.current_source:
-                    continue
-                    
-                # Check if this source started playing and current source is silent
-                if (not previous_states[source_name] and current_states[source_name] and
-                    self.current_source in self.source_silent_states and
-                    self.source_silent_states[self.current_source]):
-                    should_switch = True
-                    new_source = source_name
-                    break
-                    
-                # Also switch if current source is silent and another is playing
-                elif (self.current_source in self.source_silent_states and
-                      self.source_silent_states[self.current_source] and
-                      current_states[source_name]):
-                    should_switch = True
-                    new_source = source_name
-                    break
-            
-            if should_switch and new_source:
-                logger.info(f"Auto-switching from {self.current_source} to {new_source}")
-                self.switch_source(new_source)
+            # Optional: Switch away from analog when input stops
+            # (Comment out if you want to stay on analog even when input stops)
+            # elif not analog_active and self.current_source == "analog":
+            #     # Switch to default source (first available)
+            #     default_source = self.source_ids[0] if self.source_ids else None
+            #     if default_source and default_source != "analog":
+            #         logger.info(f"Analog input stopped - switching to {default_source}")
+            #         self.switch_source(default_source)
                 
         except Exception as e:
             logger.error(f"Error in automatic source control: {e}")
@@ -322,8 +327,8 @@ class AudioController:
         new_source = source.lower()
         
         # Validate source exists in config
-        if new_source not in self.source_names:
-            logger.error(f"Invalid source: {new_source}. Available sources: {self.source_names}")
+        if new_source not in self.source_ids:
+            logger.error(f"Invalid source: {new_source}. Available sources: {self.source_ids}")
             return
         
         if self.current_source is not None:
@@ -337,17 +342,19 @@ class AudioController:
         logger.info(f"Switching to {new_source}")
         
         # Fade out all other sinks first, then fade in the selected sink
-        for source_name in self.source_names:
-            if source_name != new_source:
+        for source_id in self.source_ids:
+            if source_id != new_source:
                 # Fade out other sources
-                self.sink_volumes[source_name] = self._fade_volume(
-                    source_name, self.sink_volumes[source_name], 0
+                sink_name = self.id_to_sink[source_id]
+                self.sink_volumes[source_id] = self._fade_volume(
+                    sink_name, self.sink_volumes[source_id], 0
                 )
         
         # Fade in the selected source to its stored volume level
         target_volume = self.source_volumes[new_source]
+        selected_sink = self.id_to_sink[new_source]
         self.sink_volumes[new_source] = self._fade_volume(
-            new_source, self.sink_volumes[new_source], target_volume
+            selected_sink, self.sink_volumes[new_source], target_volume
         )
             
         self.current_source = new_source
@@ -362,11 +369,12 @@ class AudioController:
                 logger.error(f"Invalid volume level: {volume}")
                 return
                 
-            if self.current_source and self.current_source in self.source_names:
-                self._set_sink_volume(self.current_source, volume)
+            if self.current_source and self.current_source in self.source_ids:
+                sink_name = self.id_to_sink[self.current_source]
+                self._set_sink_volume(sink_name, volume)
                 self.source_volumes[self.current_source] = volume
                 self.sink_volumes[self.current_source] = volume
-                source_display = self.sources[self.current_source].get("display_name", self.current_source)
+                source_display = self.sources[self.current_source].get("label", self.current_source)
                 logger.info(f"Set {source_display} volume to {volume}")
             else:
                 logger.error("No active source to set volume for")
@@ -380,13 +388,14 @@ class AudioController:
         try:
             increment = int(increment)
             
-            if self.current_source and self.current_source in self.source_names:
+            if self.current_source and self.current_source in self.source_ids:
                 current_volume = self.source_volumes[self.current_source]
                 new_volume = max(0, min(100, current_volume + increment))
-                self._set_sink_volume(self.current_source, new_volume)
+                sink_name = self.id_to_sink[self.current_source]
+                self._set_sink_volume(sink_name, new_volume)
                 self.source_volumes[self.current_source] = new_volume
                 self.sink_volumes[self.current_source] = new_volume
-                source_display = self.sources[self.current_source].get("display_name", self.current_source)
+                source_display = self.sources[self.current_source].get("label", self.current_source)
                 logger.info(f"Adjusted {source_display} volume to {new_volume}")
             else:
                 logger.error("No active source to adjust volume for")
@@ -427,7 +436,7 @@ def main():
             
             if command == 'help':
                 print("\nAvailable commands:")
-                source_list = "|".join(controller.source_names)
+                source_list = "|".join(controller.source_ids)
                 print(f"  source [{source_list}] - Switch audio source")
                 print("  volume [0-100]         - Set volume level")
                 print("  adjust [+/-N]          - Adjust volume by N")
@@ -437,8 +446,8 @@ def main():
                 print("  help                   - Show this help")
                 
             elif command == 'source':
-                if not args or args[0] not in controller.source_names:
-                    source_list = "', '".join(controller.source_names)
+                if not args or args[0] not in controller.source_ids:
+                    source_list = "', '".join(controller.source_ids)
                     print(f"Error: source must be one of: '{source_list}'")
                     continue
                 controller.switch_source(args[0])
@@ -479,20 +488,21 @@ def main():
                 if controller.current_source is None:
                     print(f"  Source: Not set")
                 else:
-                    source_display = controller.sources[controller.current_source].get("display_name", controller.current_source)
+                    source_display = controller.sources[controller.current_source].get("label", controller.current_source)
                     print(f"  Source: {source_display} ({controller.current_source})")
                     
-                for source_name in controller.source_names:
-                    source_display = controller.sources[source_name].get("display_name", source_name)
-                    volume = controller.source_volumes[source_name]
-                    sink_volume = controller.sink_volumes[source_name]
-                    print(f"  {source_display} volume: {volume}% (sink volume: {sink_volume}%)")
+                for source_id in controller.source_ids:
+                    source_display = controller.sources[source_id].get("label", source_id)
+                    volume = controller.source_volumes[source_id]
+                    sink_volume = controller.sink_volumes[source_id]
+                    sink_name = controller.id_to_sink[source_id]
+                    print(f"  {source_display} volume: {volume}% (sink {sink_name}: {sink_volume}%)")
                     
                 print(f"  Auto-switching: {'enabled' if controller.auto_switching_enabled else 'disabled'}")
                 if controller.auto_switching_enabled:
-                    for source_name in controller.monitored_sources:
-                        source_display = controller.sources[source_name].get("display_name", source_name)
-                        silent = controller.source_silent_states[source_name]
+                    for source_id in controller.monitored_sources:
+                        source_display = controller.sources[source_id].get("label", source_id)
+                        silent = controller.source_silent_states[source_id]
                         print(f"  {source_display} silent: {silent}")
                 
             elif command == 'quit':
