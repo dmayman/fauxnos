@@ -20,19 +20,14 @@ load-module module-null-sink sink_name=snapsink sink_properties="device.descript
 # Removed the aggressive latency_msec=1. PulseAudio will now use system defaults.
 load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallback" sink=analogsink latency_msec=20
 
-# --- LADSPA Equalizer Sink ---
-# This creates a new sink called 'equalizer' that applies the LADSPA plugin.
-# It *masters* the actual hardware output (alsa_output.platform-soc_sound.stereo-fallback).
-load-module module-ladspa-sink sink_name=equalizer sink_master=alsa_output.platform-soc_sound.stereo-fallback plugin=mbeq_1197 label=mbeq control=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-
-# --- Routing to Equalizer ---
+# --- Direct Routing to Master ---
 # These lines take the *monitor output* of your virtual sinks and loop them
-# into the 'equalizer' sink. This is where all audio streams converge.
+# directly into the hardware output, bypassing the equalizer.
 # Removed the aggressive latency_msec=1. PulseAudio will now use system defaults.
-load-module module-loopback source=libresink.monitor sink=equalizer latency_msec=20
-load-module module-loopback source=systemsink.monitor sink=equalizer latency_msec=20
-load-module module-loopback source=analogsink.monitor sink=equalizer latency_msec=20
-load-module module-loopback source=snapsink.monitor sink=equalizer latency_msec=20
+load-module module-loopback source=libresink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
+load-module module-loopback source=systemsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
+load-module module-loopback source=analogsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
+load-module module-loopback source=snapsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
 
 # --- Set Default Sink ---
 # This makes 'snapsink' the default. Applications that don't specify a sink

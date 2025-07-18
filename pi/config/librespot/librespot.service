@@ -8,7 +8,7 @@ After=network.target sound.target
 Restart=always
 RestartSec=10
 Environment="PULSE_SINK=libresink"
-ExecStart=/usr/local/bin/librespot --name "Fauxnos1" --disable-audio-cache
+ExecStart=/usr/local/bin/librespot --name "FauxnosOne" --disable-audio-cache --onevent /home/user/src/librespot-hook.py --initial-volume 50
 
 [Install]
 WantedBy=default.target
