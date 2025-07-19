@@ -6,6 +6,10 @@ This script manages audio source switching between analogsink, snapsink, and lib
 with smooth volume transitions and appropriate notification sounds.
 """
 
+# TODO: add support for squeezelite instead of librespot
+# TODO: automatically set sink-inputs based on their name via pactl move-sink-input <sink-input-name> <sink-name>
+# TODO: automatically set sink-input-volume of librespot input sink to 100%
+
 import os
 import time
 import logging
@@ -499,7 +503,7 @@ class AudioController:
                             
             # Play notification sound for source switch
             self._play_sound(SWITCH_SOUND)
-            
+
         logger.info(f"Switching to {new_source}")
         
         # Fade out all other sinks first, then fade in the selected sink

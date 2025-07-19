@@ -1,0 +1,17 @@
+# /etc/systemd/system/spotifyd.service
+[Unit]
+Description=Spotifyd (with private D-Bus session)
+After=network.target
+
+[Service]
+Type=simple
+PrivateTmp=false
+# call dbus-launch on your wrapper so it gets a session bus and writes /tmp/spotifyd_bus
+ExecStart=/usr/bin/dbus-launch --exit-with-session /home/user/.config/spotifyd/spotifyd_launch.sh
+Restart=on-failure
+# ensure it keeps running if the network flaps
+RestartSec=5
+
+
+[Install]
+WantedBy=multi-user.target

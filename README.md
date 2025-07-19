@@ -13,3 +13,4 @@
 | `get/`              | `get/clients/<deviceId>/status`      | (empty or `{}`)                                                                                         | Request device to publish its current mode                                         |
 | `get/`              | `get/clients/<deviceId>/activity`    | `"playing"` / `"silent"`                                                                                | Request device to report whether audio is playing                                  |
 
+Install DBus

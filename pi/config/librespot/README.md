@@ -19,7 +19,7 @@ This configuration sets up Librespot as a Spotify Connect endpoint for Fauxnos, 
 
 3. Copy the service file and enable it:
    ```bash
-   sudo cp librespot.service /usr/lib/systemd/user/
+   sudo cp librespot.service 
    systemctl --user daemon-reload
    systemctl --user enable --now librespot
    ```

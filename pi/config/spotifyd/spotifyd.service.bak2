@@ -1,0 +1,17 @@
+[Unit]
+Description=Spotifyd with private D-Bus session
+After=network.target dbus.service
+
+[Service]
+PrivateTmp=false
+# use a shell so the “>” is honored
+ExecStartPre=/bin/sh -c 'dbus-launch --sh-syntax > "$XDG_RUNTIME_DIR/spotifyd_dbus.env"'
+# then load that file
+EnvironmentFile=$XDG_RUNTIME_DIR/spotifyd_dbus.env
+
+ExecStart=spotifyd --no-daemon --config-path ~/.config/spotifyd/spotifyd.conf
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

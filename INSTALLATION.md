@@ -24,7 +24,7 @@ The Fauxnos system includes:
 ### 1. Prepare Raspberry Pi OS Lite
 
 1. Flash Raspberry Pi OS Lite using Raspberry Pi Imager with pre-configured WiFi and SSH
-2. Create user account 'fauxnos' for security (avoiding root access)
+2. Create user account 'user' for security (avoiding root access)
 3. Boot up and perform initial system updates:
    ```bash
    sudo apt update && sudo apt upgrade -y
@@ -43,7 +43,7 @@ The Fauxnos system includes:
    FileZilla connection settings:
    - Protocol: SFTP
    - Host: [Pi IP address]
-   - Username: fauxnos
+   - Username: user
    - Port: 22
 
 ### 2. Install Essential System Packages
@@ -175,7 +175,6 @@ amixer set softvol_system 80%
 
 ---
 
-*This document is actively maintained. Last updated: Based on current project status*
 
 
 Install snapclient
@@ -199,3 +198,18 @@ sudo dpkg -i snapserver_0.31.0-1_armhf_bookworm.deb
 
 # If there are still dependency issues, fix them with
 sudo apt-get -f install
+
+
+--------
+
+Install spotifyd and sp
+
+### move sp to /usr/local/bin
+### Make sure you’ve also got dbus-send, grep, cut, tr, column installed
+sudo apt install dbus-user-session bsdmainutils
+
+sudo apt install dbus-x11
+
+### install playerctl
+sudo apt update
+sudo apt install playerctl

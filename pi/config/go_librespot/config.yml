@@ -1,0 +1,8 @@
+device_name: "FauxnosGo"
+initial_volume: 50
+external_volume: true
+device_type: speaker
+server:
+  enabled: true
+  address: localhost # Which address to bind to
+  port: 3678 # The server port

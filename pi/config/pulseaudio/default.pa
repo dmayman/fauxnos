@@ -29,8 +29,14 @@ load-module module-loopback source=systemsink.monitor sink=alsa_output.platform-
 load-module module-loopback source=analogsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
 load-module module-loopback source=snapsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
 
+# --- Application Routing ---
+# Automatically route specific applications to their designated sinks
+# This ensures apps go to the correct sink regardless of default sink setting
+load-module module-match-properties on_client_disconnect=dont-restore add_match_property="application.name=ALSA plug-in [snapclient]" sink=snapsink
+load-module module-match-properties on_client_disconnect=dont-restore add_match_property="application.name=ALSA plug-in [squeezelite]" sink=libresink
+
 # --- Set Default Sink ---
-# This makes 'snapsink' the default. Applications that don't specify a sink
-# will send their audio to 'snapsink'. This audio will then be routed
-# via the 'snapsink.monitor' loopback into the 'equalizer' and finally to the hardware.
-set-default-sink snapsink
+# This makes 'libresink' the default. Applications that don't specify a sink
+# will send their audio to 'libresink'. This audio will then be routed
+# directly to the hardware output.
+set-default-sink libresink
