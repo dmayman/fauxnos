@@ -217,3 +217,6 @@ sudo apt install playerctl
 
 ## Install dbus next python lib
 pip3 install dbus-next --break-system-packages
+
+## Install gdbus
+sudo apt install libglib2.0-bin

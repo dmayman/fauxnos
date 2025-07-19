@@ -18,6 +18,10 @@ import threading
 import json
 import socket
 import select
+import asyncio
+from dbus_next.aio import MessageBus
+from dbus_next import Message
+from dbus_next.constants import BusType
 
 # Load configuration
 with open(os.path.join(os.path.dirname(__file__), 'audio_config.json'), 'r') as f:
@@ -98,6 +102,11 @@ class AudioController:
         self.librespot_thread = None
         self.librespot_stop_event = threading.Event()
         
+        # Spotifyd DBUS monitoring
+        self.spotifyd_thread = None
+        self.spotifyd_stop_event = threading.Event()
+        self.spotifyd_loop = None
+        
         # Read current state from config if available
         self._load_state()
         
@@ -124,6 +133,9 @@ class AudioController:
             
         # Start librespot monitoring automatically (separate from auto-switching)
         self.start_librespot_monitoring()
+        
+        # Start spotifyd DBUS monitoring
+        self.start_spotifyd_monitoring()
         
         # Start auto-switching for analog monitoring
         self.start_auto_switching()
@@ -460,6 +472,115 @@ class AudioController:
             
         logger.info("Stopped librespot event monitoring")
 
+    async def _find_spotifyd_name(self, bus):
+        """Find spotifyd MPRIS bus name"""
+        msg = Message(
+            destination='org.freedesktop.DBus',
+            path='/org/freedesktop/DBus',
+            interface='org.freedesktop.DBus',
+            member='ListNames'
+        )
+        reply = await bus.call(msg)
+        names = reply.body[0]
+        for name in names:
+            if name.startswith('org.mpris.MediaPlayer2.spotifyd'):
+                return name
+        raise RuntimeError("spotifyd MPRIS bus name not found")
+
+    async def _spotifyd_monitoring_loop(self):
+        """Spotifyd DBUS event monitoring loop"""
+        logger.info("🎵 Started spotifyd DBUS monitoring")
+        
+        try:
+            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+            
+            mpris_name = await self._find_spotifyd_name(bus)
+            logger.info(f"Found spotifyd on D-Bus as: {mpris_name}")
+
+            introspection = await bus.introspect(
+                mpris_name,
+                '/org/mpris/MediaPlayer2'
+            )
+            proxy = bus.get_proxy_object(mpris_name, '/org/mpris/MediaPlayer2', introspection)
+            props = proxy.get_interface('org.freedesktop.DBus.Properties')
+
+            def on_props_changed(interface, changed, invalidated):
+                logger.debug(f"DBUS Event - Interface: {interface}")
+                for prop, value in changed.items():
+                    if prop == 'PlaybackStatus':
+                        status = value.value
+                        logger.info(f"🎵 Spotifyd PlaybackStatus: {status}")
+                        
+                        # Auto-switch to spotify when spotifyd goes from paused to playing
+                        if status == 'Playing':
+                            spotify_sources = [sid for sid in self.source_ids if 'spotify' in sid.lower()]
+                            if spotify_sources:
+                                logger.info("🎵 Spotifyd started playing - switching to Spotify")
+                                # Use thread-safe call to switch source
+                                threading.Thread(
+                                    target=self.switch_source, 
+                                    args=(spotify_sources[0],), 
+                                    daemon=True
+                                ).start()
+                            else:
+                                logger.warning("No Spotify source found in configuration")
+                    elif prop == 'Metadata':
+                        metadata = value.value
+                        if 'xesam:title' in metadata and 'xesam:artist' in metadata:
+                            title = metadata['xesam:title'].value
+                            artists = metadata['xesam:artist'].value
+                            logger.info(f"🎵 Now playing: {title} by {', '.join(artists)}")
+                        
+            props.on_properties_changed(on_props_changed)
+            logger.info("🎵 Listening for spotifyd events...")
+            
+            # Keep the async loop running
+            while not self.spotifyd_stop_event.is_set():
+                await asyncio.sleep(0.5)
+                
+        except Exception as e:
+            logger.error(f"Error in spotifyd monitoring: {e}")
+        finally:
+            logger.info("🎵 Stopped spotifyd DBUS monitoring")
+
+    def _run_spotifyd_loop(self):
+        """Run the spotifyd async loop in a thread"""
+        self.spotifyd_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.spotifyd_loop)
+        try:
+            self.spotifyd_loop.run_until_complete(self._spotifyd_monitoring_loop())
+        except Exception as e:
+            logger.error(f"Error in spotifyd loop: {e}")
+        finally:
+            self.spotifyd_loop.close()
+
+    def start_spotifyd_monitoring(self):
+        """Start spotifyd DBUS monitoring"""
+        if self.spotifyd_thread and self.spotifyd_thread.is_alive():
+            logger.info("Spotifyd monitoring is already running")
+            return
+            
+        self.spotifyd_stop_event.clear()
+        self.spotifyd_thread = threading.Thread(target=self._run_spotifyd_loop, daemon=True)
+        self.spotifyd_thread.start()
+        logger.info("Started spotifyd DBUS monitoring")
+
+    def stop_spotifyd_monitoring(self):
+        """Stop spotifyd DBUS monitoring"""
+        if not self.spotifyd_thread or not self.spotifyd_thread.is_alive():
+            logger.info("Spotifyd monitoring is not running")
+            return
+            
+        self.spotifyd_stop_event.set()
+        
+        if self.spotifyd_loop:
+            self.spotifyd_loop.call_soon_threadsafe(self.spotifyd_loop.stop)
+        
+        if self.spotifyd_thread.is_alive():
+            self.spotifyd_thread.join(timeout=5.0)
+            
+        logger.info("Stopped spotifyd DBUS monitoring")
+
     def start_auto_switching(self):
         """Start automatic source switching (analog input monitoring only)"""
         if self.auto_switching_enabled:
@@ -576,6 +697,183 @@ class AudioController:
         except ValueError:
             logger.error(f"Invalid increment value: {increment}")
 
+    def _get_spotifyd_player_name(self):
+        """Get the spotifyd player name from playerctl"""
+        try:
+            result = subprocess.run(
+                ["playerctl", "-l"], 
+                capture_output=True, 
+                text=True, 
+                timeout=5
+            )
+            if result.returncode == 0:
+                players = result.stdout.strip().split('\n')
+                spotifyd_players = [p for p in players if p.startswith('spotifyd')]
+                if spotifyd_players:
+                    return spotifyd_players[0]
+            return None
+        except Exception as e:
+            logger.error(f"Error getting spotifyd player name: {e}")
+            return None
+
+    def spotify_play_pause(self):
+        """Toggle play/pause for spotifyd using playerctl"""
+        player = self._get_spotifyd_player_name()
+        if not player:
+            logger.error("No spotifyd player found")
+            return False
+            
+        try:
+            subprocess.run(
+                ["playerctl", "-p", player, "play-pause"], 
+                check=True, 
+                capture_output=True, 
+                timeout=5
+            )
+            logger.info("🎵 Toggled Spotify play/pause")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error toggling Spotify play/pause: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error with playerctl command: {e}")
+            return False
+
+    def spotify_play(self):
+        """Start playback for spotifyd using playerctl"""
+        player = self._get_spotifyd_player_name()
+        if not player:
+            logger.error("No spotifyd player found")
+            return False
+            
+        try:
+            subprocess.run(
+                ["playerctl", "-p", player, "play"], 
+                check=True, 
+                capture_output=True, 
+                timeout=5
+            )
+            logger.info("▶️ Started Spotify playback")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error starting Spotify playback: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error with playerctl command: {e}")
+            return False
+
+    def spotify_pause(self):
+        """Pause playback for spotifyd using playerctl"""
+        player = self._get_spotifyd_player_name()
+        if not player:
+            logger.error("No spotifyd player found")
+            return False
+            
+        try:
+            subprocess.run(
+                ["playerctl", "-p", player, "pause"], 
+                check=True, 
+                capture_output=True, 
+                timeout=5
+            )
+            logger.info("⏸️ Paused Spotify playback")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error pausing Spotify playback: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error with playerctl command: {e}")
+            return False
+
+    def spotify_next(self):
+        """Skip to next track for spotifyd using playerctl"""
+        player = self._get_spotifyd_player_name()
+        if not player:
+            logger.error("No spotifyd player found")
+            return False
+            
+        try:
+            subprocess.run(
+                ["playerctl", "-p", player, "next"], 
+                check=True, 
+                capture_output=True, 
+                timeout=5
+            )
+            logger.info("⏭️ Skipped to next track")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error skipping to next track: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error with playerctl command: {e}")
+            return False
+
+    def spotify_previous(self):
+        """Skip to previous track for spotifyd using playerctl"""
+        player = self._get_spotifyd_player_name()
+        if not player:
+            logger.error("No spotifyd player found")
+            return False
+            
+        try:
+            subprocess.run(
+                ["playerctl", "-p", player, "previous"], 
+                check=True, 
+                capture_output=True, 
+                timeout=5
+            )
+            logger.info("⏮️ Skipped to previous track")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error skipping to previous track: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error with playerctl command: {e}")
+            return False
+
+    def spotify_set_volume(self, volume):
+        """Set volume for spotifyd using gdbus (bypassing playerctl)"""
+        try:
+            # Get spotifyd PID
+            result = subprocess.run(
+                ["pidof", "spotifyd"], 
+                capture_output=True, 
+                text=True, 
+                timeout=5
+            )
+            if result.returncode != 0:
+                logger.error("No spotifyd process found")
+                return False
+                
+            spotifyd_pid = result.stdout.strip()
+            if not spotifyd_pid:
+                logger.error("Could not get spotifyd PID")
+                return False
+            
+            # Convert 0-100 to 0.0-1.0 for D-Bus
+            volume_float = max(0.0, min(1.0, float(volume) / 100.0))
+            
+            # Use gdbus to set volume directly via D-Bus
+            subprocess.run([
+                "gdbus", "call", "--system",
+                "--dest", f"org.mpris.MediaPlayer2.spotifyd.instance{spotifyd_pid}",
+                "--object-path", "/org/mpris/MediaPlayer2",
+                "--method", "org.freedesktop.DBus.Properties.Set",
+                "org.mpris.MediaPlayer2.Player",
+                "Volume",
+                f"<double {volume_float}>"
+            ], check=True, capture_output=True, timeout=5)
+            
+            logger.info(f"🔊 Set Spotify volume to {volume}%")
+            return True
+            
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Error setting Spotify volume via gdbus: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"Error with gdbus command: {e}")
+            return False
+
 def parse_command(command_str):
     """Parse a command string into command and arguments"""
     parts = command_str.strip().split()
@@ -609,6 +907,13 @@ def main():
                 print("  status                 - Show current state")
                 print("  quit                   - Exit program")
                 print("  help                   - Show this help")
+                print("\nSpotify controls:")
+                print("  spotify play           - Start Spotify playback")
+                print("  spotify pause          - Pause Spotify playback")
+                print("  spotify toggle         - Toggle play/pause")
+                print("  spotify next           - Skip to next track")
+                print("  spotify prev           - Skip to previous track")
+                print("  spotify volume [0-100] - Set Spotify volume")
                 
             elif command == 'source':
                 if not args or args[0] not in controller.source_ids:
@@ -664,15 +969,66 @@ def main():
                     print(f"  {source_display} volume: {volume}% (sink {sink_name}: {sink_volume}%)")
                     
                 print(f"  Auto-switching: {'enabled' if controller.auto_switching_enabled else 'disabled'}")
-                if controller.auto_switching_enabled:
-                    for source_id in controller.monitored_sources:
-                        source_display = controller.sources[source_id].get("label", source_id)
-                        silent = controller.source_silent_states[source_id]
-                        print(f"  {source_display} silent: {silent}")
                 
+            elif command == 'spotify':
+                if not args:
+                    print("Error: spotify command requires an action")
+                    print("Available actions: play, pause, toggle, next, prev, volume")
+                    continue
+                    
+                spotify_action = args[0].lower()
+                
+                if spotify_action == 'play':
+                    if controller.spotify_play():
+                        print("Started Spotify playback")
+                    else:
+                        print("Failed to start Spotify playback")
+                        
+                elif spotify_action == 'pause':
+                    if controller.spotify_pause():
+                        print("Paused Spotify playback")
+                    else:
+                        print("Failed to pause Spotify playback")
+                        
+                elif spotify_action == 'toggle':
+                    if controller.spotify_play_pause():
+                        print("Toggled Spotify play/pause")
+                    else:
+                        print("Failed to toggle Spotify play/pause")
+                        
+                elif spotify_action == 'next':
+                    if controller.spotify_next():
+                        print("Skipped to next track")
+                    else:
+                        print("Failed to skip to next track")
+                        
+                elif spotify_action in ['prev', 'previous']:
+                    if controller.spotify_previous():
+                        print("Skipped to previous track")
+                    else:
+                        print("Failed to skip to previous track")
+                        
+                elif spotify_action == 'volume':
+                    if len(args) < 2:
+                        print("Error: spotify volume requires a level (0-100)")
+                        continue
+                    try:
+                        volume = int(args[1])
+                        if controller.spotify_set_volume(volume):
+                            print(f"Set Spotify volume to {volume}%")
+                        else:
+                            print("Failed to set Spotify volume")
+                    except ValueError:
+                        print("Error: volume must be a number between 0 and 100")
+                        
+                else:
+                    print(f"Unknown spotify action: {spotify_action}")
+                    print("Available actions: play, pause, toggle, next, prev, volume")
+                    
             elif command == 'quit':
                 controller.stop_auto_switching()  # Clean shutdown
                 controller.stop_librespot_monitoring()  # Clean shutdown
+                controller.stop_spotifyd_monitoring()  # Clean shutdown
                 logger.info("Shutting down Audio Controller")
                 break
                 
@@ -684,6 +1040,7 @@ def main():
             print("\nShutting down...")
             controller.stop_auto_switching()  # Clean shutdown
             controller.stop_librespot_monitoring()  # Clean shutdown
+            controller.stop_spotifyd_monitoring()  # Clean shutdown
             break
         except Exception as e:
             logger.error(f"Error processing command: {e}")
