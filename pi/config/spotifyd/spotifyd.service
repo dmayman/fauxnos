@@ -1,6 +1,6 @@
 # /etc/systemd/system/spotifyd.service
 [Unit]
-Description=Spotifyd (with private D-Bus session)
+Description=Spotifyd (with system D-Bus session)
 After=network.target
 
 [Service]

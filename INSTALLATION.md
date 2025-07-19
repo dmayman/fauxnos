@@ -208,8 +208,12 @@ Install spotifyd and sp
 ### Make sure you’ve also got dbus-send, grep, cut, tr, column installed
 sudo apt install dbus-user-session bsdmainutils
 
+### install dbus
 sudo apt install dbus-x11
 
 ### install playerctl
 sudo apt update
 sudo apt install playerctl
+
+## Install dbus next python lib
+pip3 install dbus-next --break-system-packages
