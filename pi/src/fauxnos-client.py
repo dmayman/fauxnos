@@ -2,13 +2,11 @@
 """
 Audio Source Control and Mixer
 ------------------------------
-This script manages audio source switching between analogsink, snapsink, and libresink,
+This script manages audio source switching between analogsink and snapsink,
 with smooth volume transitions and appropriate notification sounds.
 """
 
-# TODO: add support for squeezelite instead of librespot
 # TODO: automatically set sink-inputs based on their name via pactl move-sink-input <sink-input-name> <sink-name>
-# TODO: automatically set sink-input-volume of librespot input sink to 100%
 
 import os
 import time
@@ -16,8 +14,6 @@ import logging
 import subprocess
 import threading
 import json
-import socket
-import select
 import asyncio
 from dbus_next.aio import MessageBus
 from dbus_next import Message
@@ -98,10 +94,6 @@ class AudioController:
         self.monitoring_thread = None
         self.monitoring_stop_event = threading.Event()
         
-        # Separate librespot event handling thread
-        self.librespot_thread = None
-        self.librespot_stop_event = threading.Event()
-        
         # Spotifyd DBUS monitoring
         self.spotifyd_thread = None
         self.spotifyd_stop_event = threading.Event()
@@ -109,12 +101,6 @@ class AudioController:
         
         # Read current state from config if available
         self._load_state()
-        
-        # Librespot event handling
-        self.librespot_socket = None
-        self.librespot_socket_path = '/home/user/fauxnos-librespot.sock'
-        self.librespot_event_file = '/home/user/fauxnos-librespot-event.json'
-        self._setup_librespot_listener()
         
         # Always mute all sinks on startup to ensure clean state
         self._mute_all_sinks()
@@ -131,9 +117,6 @@ class AudioController:
             # Now switch to the loaded current source to properly set volumes
             self.switch_source(self.current_source)
             
-        # Start librespot monitoring automatically (separate from auto-switching)
-        self.start_librespot_monitoring()
-        
         # Start spotifyd DBUS monitoring
         self.start_spotifyd_monitoring()
         
@@ -156,94 +139,6 @@ class AudioController:
             pass
         except Exception as e:
             logger.error(f"Error saving state: {e}")
-
-    def _setup_librespot_listener(self):
-        """Set up Unix socket to receive librespot events"""
-        try:
-            # Remove existing socket file if it exists
-            if os.path.exists(self.librespot_socket_path):
-                logger.debug(f"Removing existing socket file: {self.librespot_socket_path}")
-                os.unlink(self.librespot_socket_path)
-            
-            # Create Unix socket
-            self.librespot_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            
-            # Set socket options for better reliability
-            self.librespot_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            
-            self.librespot_socket.bind(self.librespot_socket_path)
-            self.librespot_socket.listen(5)  # Increased backlog from 1 to 5
-            self.librespot_socket.setblocking(False)  # Non-blocking
-            
-            # Set permissions on socket file
-            os.chmod(self.librespot_socket_path, 0o666)
-            
-            logger.info(f"🎵 Librespot event listener ready at {self.librespot_socket_path}")
-        except Exception as e:
-            logger.error(f"Failed to setup librespot listener: {e}")
-            self.librespot_socket = None
-
-    def _handle_librespot_event(self, event_data):
-        """Handle incoming librespot events"""
-        event = event_data.get('event')
-        
-        if event == 'playing':
-            logger.info("🎵 Librespot started playing - switching to Spotify")
-            # Find spotify source in available sources
-            spotify_sources = [sid for sid in self.source_ids if 'spotify' in sid.lower() or 'libre' in sid.lower()]
-            
-            if spotify_sources:
-                self.switch_source(spotify_sources[0])
-            else:
-                logger.warning("No Spotify source found in configuration")
-                
-        elif event == 'paused':
-            logger.info("⏸️  Librespot paused")
-            
-        elif event == 'stopped':
-            logger.info("⏹️  Librespot stopped")
-            
-        elif event == 'track_changed':
-            track_name = event_data.get('track_name', 'Unknown')
-            artist = event_data.get('artist', 'Unknown')
-            logger.info(f"🎵 Now playing: {track_name} by {artist}")
-            
-            # Ensure we're on the right source
-            spotify_sources = [sid for sid in self.source_ids if 'spotify' in sid.lower() or 'libre' in sid.lower()]
-            if spotify_sources and self.current_source != spotify_sources[0]:
-                self.switch_source(spotify_sources[0])
-                
-        elif event == 'volume_changed':
-            volume = event_data.get('volume')
-            if volume and self.current_source:
-                # Check if current source is Spotify-related
-                if 'spotify' in self.current_source.lower() or 'libre' in self.current_source.lower():
-                    try:
-                        self.set_volume(int(volume))
-                    except ValueError:
-                        logger.warning(f"Invalid volume value from librespot: {volume}")
-
-    def _check_librespot_events(self):
-        """Check for incoming librespot events (non-blocking)"""
-        if not self.librespot_socket:
-            return
-            
-        try:
-            # Check for socket connections
-            ready, _, _ = select.select([self.librespot_socket], [], [], 0)
-            if ready:
-                conn, _ = self.librespot_socket.accept()
-                data = conn.recv(1024).decode().strip()
-                conn.close()
-                
-                if data:
-                    event_data = json.loads(data)
-                    self._handle_librespot_event(event_data)
-                    
-        except json.JSONDecodeError as e:
-            logger.error(f"Error parsing librespot event JSON: {e}")
-        except Exception as e:
-            logger.debug(f"Socket check error: {e}")
 
     def _play_sound(self, sound_file):
         """Play notification sound in a non-blocking way"""
@@ -418,60 +313,6 @@ class AudioController:
                 
         logger.info("Stopped automatic source monitoring")
 
-    def _librespot_monitoring_loop(self):
-        """Continuous monitoring loop for librespot events"""
-        logger.info("🎵 Started librespot event monitoring")
-        
-        while not self.librespot_stop_event.is_set():
-            try:
-                self._check_librespot_events()
-                # Wait for 0.5 seconds or until stop event is set (faster response)
-                self.librespot_stop_event.wait(0.5)
-            except Exception as e:
-                logger.error(f"Error in librespot monitoring loop: {e}")
-                # Brief sleep on error to prevent rapid error loops
-                time.sleep(1.0)
-                
-        logger.info("🎵 Stopped librespot event monitoring")
-
-    def start_librespot_monitoring(self):
-        """Start librespot event monitoring (independent of auto-switching)"""
-        if self.librespot_thread and self.librespot_thread.is_alive():
-            logger.info("Librespot monitoring is already running")
-            return
-            
-        # Setup librespot socket
-        self._setup_librespot_listener()
-        
-        self.librespot_stop_event.clear()
-        self.librespot_thread = threading.Thread(target=self._librespot_monitoring_loop, daemon=True)
-        self.librespot_thread.start()
-        logger.info("Started librespot event monitoring")
-
-    def stop_librespot_monitoring(self):
-        """Stop librespot event monitoring"""
-        if not self.librespot_thread or not self.librespot_thread.is_alive():
-            logger.info("Librespot monitoring is not running")
-            return
-            
-        self.librespot_stop_event.set()
-        
-        if self.librespot_thread.is_alive():
-            self.librespot_thread.join(timeout=5.0)
-            
-        # Clean up librespot socket
-        if self.librespot_socket:
-            try:
-                self.librespot_socket.close()
-                if os.path.exists(self.librespot_socket_path):
-                    os.unlink(self.librespot_socket_path)
-            except Exception as e:
-                logger.error(f"Error cleaning up librespot socket: {e}")
-            finally:
-                self.librespot_socket = None
-            
-        logger.info("Stopped librespot event monitoring")
-
     async def _find_spotifyd_name(self, bus):
         """Find spotifyd MPRIS bus name"""
         msg = Message(
@@ -524,6 +365,10 @@ class AudioController:
                                 ).start()
                             else:
                                 logger.warning("No Spotify source found in configuration")
+                    elif prop == 'Volume':
+                        volume_float = value.value
+                        volume_percent = int(volume_float * 100)
+                        logger.info(f"🔊 Spotify volume changed to {volume_percent}%")
                     elif prop == 'Metadata':
                         metadata = value.value
                         if 'xesam:title' in metadata and 'xesam:artist' in metadata:
@@ -1027,7 +872,6 @@ def main():
                     
             elif command == 'quit':
                 controller.stop_auto_switching()  # Clean shutdown
-                controller.stop_librespot_monitoring()  # Clean shutdown
                 controller.stop_spotifyd_monitoring()  # Clean shutdown
                 logger.info("Shutting down Audio Controller")
                 break
@@ -1039,7 +883,6 @@ def main():
         except KeyboardInterrupt:
             print("\nShutting down...")
             controller.stop_auto_switching()  # Clean shutdown
-            controller.stop_librespot_monitoring()  # Clean shutdown
             controller.stop_spotifyd_monitoring()  # Clean shutdown
             break
         except Exception as e:

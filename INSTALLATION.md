@@ -175,7 +175,16 @@ amixer set softvol_system 80%
 
 ---
 
+## Netatalk (for file sharing)
+sudo apt-get install netatalk
 
+edit this config file
+sudo nano /etc/netatalk/afp.conf
+`[Homes]
+basedir regex = /Home`
+
+Then on the mac
+afp://fauxnos1.local
 
 Install snapclient
 
