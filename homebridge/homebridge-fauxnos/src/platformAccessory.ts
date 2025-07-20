@@ -8,141 +8,170 @@ import type { FauxnosPlatform } from './platform.js';
  * Each accessory may expose multiple services of different service types.
  */
 export class FauxnosPlatformAccessory {
-  private service: Service;
+  private lightService!: Service;
+  private televisionService!: Service;
+  private inputSourceServices: Service[] = [];
 
   /**
-   * These are just used to create a working example
-   * You should implement your own code to track the state of your accessory
+   * Audio device states
    */
-  private exampleStates = {
-    On: false,
-    Brightness: 100,
+  private audioStates = {
+    on: true, // lightbulb on/off (audio system on/off)
+    volume: 50, // brightness = volume (0-100)
+    currentSource: 0, // TV input source
   };
+
+  private hardcodedSources = [
+    'Spotify',
+    'Local Files', 
+    'Radio',
+    'Bluetooth',
+  ];
 
   constructor(
     private readonly platform: FauxnosPlatform,
     private readonly accessory: PlatformAccessory,
   ) {
+    this.platform.log.info('[FAUXNOS] Setting up accessory:', accessory.displayName);
+    
     // set accessory information
-    this.accessory.getService(this.platform.Service.AccessoryInformation)!
-      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Default-Manufacturer')
-      .setCharacteristic(this.platform.Characteristic.Model, 'Default-Model')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, 'Default-Serial');
-
-    // get the LightBulb service if it exists, otherwise create a new LightBulb service
-    // you can create multiple services for each accessory
-
-    if (accessory.context.device.CustomService) {
-      // This is only required when using Custom Services and Characteristics not support by HomeKit
-      this.service = this.accessory.getService(this.platform.CustomServices[accessory.context.device.CustomService]) ||
-        this.accessory.addService(this.platform.CustomServices[accessory.context.device.CustomService]);
-    } else {
-      this.service = this.accessory.getService(this.platform.Service.Lightbulb) || this.accessory.addService(this.platform.Service.Lightbulb);
+    try {
+      this.accessory.getService(this.platform.Service.AccessoryInformation)!
+        .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Fauxnos')
+        .setCharacteristic(this.platform.Characteristic.Model, 'Audio Controller')
+        .setCharacteristic(this.platform.Characteristic.SerialNumber, accessory.context.device.exampleUniqueId);
+    } catch (error) {
+      this.platform.log.error('[FAUXNOS] Failed to set accessory information:', error);
     }
 
-    // set the service name, this is what is displayed as the default name on the Home app
-    // in this example we are using the name we stored in the `accessory.context` in the `discoverDevices` method.
-    this.service.setCharacteristic(this.platform.Characteristic.Name, accessory.context.device.exampleDisplayName);
+    // Create TV service for source selection only (non-external) - PRIMARY SERVICE
+    try {
+      this.televisionService = this.accessory.getService(this.platform.Service.Television) || 
+        this.accessory.addService(this.platform.Service.Television, `${accessory.context.device.exampleDisplayName} Sources`, 'tv');
+      
+      this.televisionService
+        .setCharacteristic(this.platform.Characteristic.Name, `${accessory.context.device.exampleDisplayName} Sources`)
+        .setCharacteristic(this.platform.Characteristic.ConfiguredName, `${accessory.context.device.exampleDisplayName} Sources`)
+        .setCharacteristic(this.platform.Characteristic.ActiveIdentifier, 1)
+        .setCharacteristic(this.platform.Characteristic.SleepDiscoveryMode, this.platform.Characteristic.SleepDiscoveryMode.ALWAYS_DISCOVERABLE);
+      
+      this.platform.log.info('[FAUXNOS] TV service created successfully for source control');
+    } catch (error) {
+      this.platform.log.error('[FAUXNOS] Failed to create TV service:', error);
+    }
 
-    // each service must implement at-minimum the "required characteristics" for the given service type
-    // see https://developers.homebridge.io/#/service/Lightbulb
+    // Create Lightbulb service for volume control (brightness = volume) - SECONDARY SERVICE
+    try {
+      this.lightService = this.accessory.getService(this.platform.Service.Lightbulb) || 
+        this.accessory.addService(this.platform.Service.Lightbulb, `${accessory.context.device.exampleDisplayName} Volume`, 'volume');
+      
+      this.lightService
+        .setCharacteristic(this.platform.Characteristic.Name, `${accessory.context.device.exampleDisplayName} Volume`)
+        .setCharacteristic(this.platform.Characteristic.On, true)
+        .setCharacteristic(this.platform.Characteristic.Brightness, 50);
+      
+      this.platform.log.info('[FAUXNOS] Lightbulb service created successfully for volume control');
+    } catch (error) {
+      this.platform.log.error('[FAUXNOS] Failed to create Lightbulb service:', error);
+    }
 
-    // register handlers for the On/Off Characteristic
-    this.service.getCharacteristic(this.platform.Characteristic.On)
-      .onSet(this.setOn.bind(this)) // SET - bind to the `setOn` method below
-      .onGet(this.getOn.bind(this)); // GET - bind to the `getOn` method below
+    // Create InputSource services for source selection
+    try {
+      for (let i = 0; i < this.hardcodedSources.length; i++) {
+        const inputService = this.accessory.getService(`Source ${i}`) ||
+          this.accessory.addService(this.platform.Service.InputSource, `Source ${i}`, `source${i}`);
+        
+        inputService
+          .setCharacteristic(this.platform.Characteristic.Name, this.hardcodedSources[i])
+          .setCharacteristic(this.platform.Characteristic.Identifier, i + 1)
+          .setCharacteristic(this.platform.Characteristic.ConfiguredName, this.hardcodedSources[i])
+          .setCharacteristic(this.platform.Characteristic.IsConfigured, this.platform.Characteristic.IsConfigured.CONFIGURED)
+          .setCharacteristic(this.platform.Characteristic.InputSourceType, this.platform.Characteristic.InputSourceType.OTHER);
+        
+        // Link input source to television
+        this.televisionService.addLinkedService(inputService);
+        this.inputSourceServices.push(inputService);
+      }
+      this.platform.log.info('[FAUXNOS] InputSource services created and linked successfully');
+    } catch (error) {
+      this.platform.log.error('[FAUXNOS] Failed to create InputSource services:', error);
+    }
 
-    // register handlers for the Brightness Characteristic
-    this.service.getCharacteristic(this.platform.Characteristic.Brightness)
-      .onSet(this.setBrightness.bind(this)); // SET - bind to the `setBrightness` method below
+    // Register handlers for Lightbulb service (volume control)
+    try {
+      this.lightService.getCharacteristic(this.platform.Characteristic.On)
+        .onSet(this.setOn.bind(this))
+        .onGet(this.getOn.bind(this));
+      
+      this.lightService.getCharacteristic(this.platform.Characteristic.Brightness)
+        .onSet(this.setBrightness.bind(this))
+        .onGet(this.getBrightness.bind(this));
+      
+      this.platform.log.info('[FAUXNOS] Lightbulb handlers registered successfully');
+    } catch (error) {
+      this.platform.log.error('[FAUXNOS] Failed to register Lightbulb service handlers:', error);
+    }
 
-    /**
-     * Creating multiple services of the same type.
-     *
-     * To avoid "Cannot add a Service with the same UUID another Service without also defining a unique 'subtype' property." error,
-     * when creating multiple services of the same type, you need to use the following syntax to specify a name and subtype id:
-     * this.accessory.getService('NAME') || this.accessory.addService(this.platform.Service.Lightbulb, 'NAME', 'USER_DEFINED_SUBTYPE_ID');
-     *
-     * The USER_DEFINED_SUBTYPE must be unique to the platform accessory (if you platform exposes multiple accessories, each accessory
-     * can use the same subtype id.)
-     */
+    // Register handlers for TV service (source control)
+    try {
+      this.televisionService.getCharacteristic(this.platform.Characteristic.ActiveIdentifier)
+        .onSet(this.setActiveSource.bind(this))
+        .onGet(this.getActiveSource.bind(this));
+      
+      this.platform.log.info('[FAUXNOS] TV handlers registered successfully');
+    } catch (error) {
+      this.platform.log.error('[FAUXNOS] Failed to register TV service handlers:', error);
+    }
 
-    // Example: add two "motion sensor" services to the accessory
-    const motionSensorOneService = this.accessory.getService('Motion Sensor One Name')
-      || this.accessory.addService(this.platform.Service.MotionSensor, 'Motion Sensor One Name', 'YourUniqueIdentifier-1');
-
-    const motionSensorTwoService = this.accessory.getService('Motion Sensor Two Name')
-      || this.accessory.addService(this.platform.Service.MotionSensor, 'Motion Sensor Two Name', 'YourUniqueIdentifier-2');
-
-    /**
-     * Updating characteristics values asynchronously.
-     *
-     * Example showing how to update the state of a Characteristic asynchronously instead
-     * of using the `on('get')` handlers.
-     * Here we change update the motion sensor trigger states on and off every 10 seconds
-     * the `updateCharacteristic` method.
-     *
-     */
-    let motionDetected = false;
-    setInterval(() => {
-      // EXAMPLE - inverse the trigger
-      motionDetected = !motionDetected;
-
-      // push the new value to HomeKit
-      motionSensorOneService.updateCharacteristic(this.platform.Characteristic.MotionDetected, motionDetected);
-      motionSensorTwoService.updateCharacteristic(this.platform.Characteristic.MotionDetected, !motionDetected);
-
-      this.platform.log.debug('Triggering motionSensorOneService:', motionDetected);
-      this.platform.log.debug('Triggering motionSensorTwoService:', !motionDetected);
-    }, 10000);
+    this.platform.log.info('[FAUXNOS] Accessory setup complete:', accessory.displayName);
   }
 
   /**
-   * Handle "SET" requests from HomeKit
-   * These are sent when the user changes the state of an accessory, for example, turning on a Light bulb.
+   * Handle lightbulb on/off (audio system power)
    */
   async setOn(value: CharacteristicValue) {
-    // implement your own code to turn your device on/off
-    this.exampleStates.On = value as boolean;
-
-    this.platform.log.debug('Set Characteristic On ->', value);
+    this.audioStates.on = value as boolean;
+    this.platform.log.info(`[${this.accessory.context.device.exampleDisplayName}] Audio system power:`, value ? 'ON' : 'OFF');
   }
 
-  /**
-   * Handle the "GET" requests from HomeKit
-   * These are sent when HomeKit wants to know the current state of the accessory, for example, checking if a Light bulb is on.
-   *
-   * GET requests should return as fast as possible. A long delay here will result in
-   * HomeKit being unresponsive and a bad user experience in general.
-   *
-   * If your device takes time to respond you should update the status of your device
-   * asynchronously instead using the `updateCharacteristic` method instead.
-   * In this case, you may decide not to implement `onGet` handlers, which may speed up
-   * the responsiveness of your device in the Home app.
-
-   * @example
-   * this.service.updateCharacteristic(this.platform.Characteristic.On, true)
-   */
   async getOn(): Promise<CharacteristicValue> {
-    // implement your own code to check if the device is on
-    const isOn = this.exampleStates.On;
-
-    this.platform.log.debug('Get Characteristic On ->', isOn);
-
-    // if you need to return an error to show the device as "Not Responding" in the Home app:
-    // throw new this.platform.api.hap.HapStatusError(this.platform.api.hap.HAPStatus.SERVICE_COMMUNICATION_FAILURE);
-
-    return isOn;
+    return this.audioStates.on;
   }
 
   /**
-   * Handle "SET" requests from HomeKit
-   * These are sent when the user changes the state of an accessory, for example, changing the Brightness
+   * Handle brightness (volume control)
    */
   async setBrightness(value: CharacteristicValue) {
-    // implement your own code to set the brightness
-    this.exampleStates.Brightness = value as number;
+    this.audioStates.volume = value as number;
+    this.platform.log.info(`[${this.accessory.context.device.exampleDisplayName}] Volume (brightness) set to:`, value + '%');
+  }
 
-    this.platform.log.debug('Set Characteristic Brightness -> ', value);
+  async getBrightness(): Promise<CharacteristicValue> {
+    this.platform.log.debug(`[${this.accessory.context.device.exampleDisplayName}] Get Volume (brightness):`, this.audioStates.volume);
+    return this.audioStates.volume;
+  }
+
+  /**
+   * Handle TV active state
+   */
+  async setTVActive(value: CharacteristicValue) {
+    this.platform.log.info(`[${this.accessory.context.device.exampleDisplayName}] TV active:`, value ? 'ACTIVE' : 'INACTIVE');
+  }
+
+  async getTVActive(): Promise<CharacteristicValue> {
+    return true; // Always active for source selection
+  }
+
+  /**
+   * Handle active source selection
+   */
+  async setActiveSource(value: CharacteristicValue) {
+    this.audioStates.currentSource = value as number;
+    const sourceName = this.hardcodedSources[(value as number) - 1] || 'Unknown';
+    this.platform.log.info(`[${this.accessory.context.device.exampleDisplayName}] Active source set to:`, sourceName, `(ID: ${value})`);
+  }
+
+  async getActiveSource(): Promise<CharacteristicValue> {
+    return this.audioStates.currentSource;
   }
 }

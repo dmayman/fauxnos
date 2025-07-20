@@ -30,22 +30,26 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
     public readonly config: PlatformConfig,
     public readonly api: API,
   ) {
+    this.log.info('[FAUXNOS] Platform initializing...');
+
     this.Service = api.hap.Service;
     this.Characteristic = api.hap.Characteristic;
 
     // This is only required when using Custom Services and Characteristics not support by HomeKit
-    this.CustomServices = new EveHomeKitTypes(this.api).Services;
-    this.CustomCharacteristics = new EveHomeKitTypes(this.api).Characteristics;
+    try {
+      this.CustomServices = new EveHomeKitTypes(this.api).Services;
+      this.CustomCharacteristics = new EveHomeKitTypes(this.api).Characteristics;
+    } catch (error) {
+      this.log.error('[FAUXNOS] Custom services initialization failed:', error);
+    }
 
-    this.log.debug('Finished initializing platform:', this.config.name);
+    this.log.info('[FAUXNOS] Platform initialized successfully');
 
     // When this event is fired it means Homebridge has restored all cached accessories from disk.
     // Dynamic Platform plugins should only register new accessories after this event was fired,
     // in order to ensure they weren't added to homebridge already. This event can also be used
     // to start discovery of new accessories.
     this.api.on('didFinishLaunching', () => {
-      log.debug('Executed didFinishLaunching callback');
-      // run the method to discover / register your devices as accessories
       this.discoverDevices();
     });
   }
@@ -55,10 +59,11 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
    * It should be used to set up event handlers for characteristics and update respective values.
    */
   configureAccessory(accessory: PlatformAccessory) {
-    this.log.info('Loading accessory from cache:', accessory.displayName);
-
-    // add the restored accessory to the accessories cache, so we can track if it has already been registered
+    // TESTING MODE: Load cached accessories so we can remove them in cleanup
+    // TODO: Re-enable normal caching after testing
     this.accessories.set(accessory.UUID, accessory);
+
+    this.log.info('[FAUXNOS] TESTING MODE: Loading cached accessory for cleanup:', accessory.displayName);
   }
 
   /**
@@ -67,23 +72,30 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
    * must not be registered again to prevent "duplicate UUID" errors.
    */
   discoverDevices() {
-    // EXAMPLE ONLY
-    // A real plugin you would discover accessories from the local network, cloud services
-    // or a user-defined array in the platform config.
+    this.log.info('[FAUXNOS] Discovering audio devices...');
+
+    // TESTING MODE: Remove ALL cached accessories first
+    const TESTING_MODE = true;
+    if (TESTING_MODE) {
+      this.log.info('[FAUXNOS] TESTING MODE: Removing all cached accessories...');
+      for (const [uuid, accessory] of this.accessories) {
+        this.log.info('[FAUXNOS] Removing cached accessory:', accessory.displayName);
+        this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+      }
+      // Clear the accessories map
+      this.accessories.clear();
+      this.log.info('[FAUXNOS] All cached accessories removed');
+    }
+
+    // Hardcoded fauxnos audio devices for testing
     const exampleDevices = [
       {
-        exampleUniqueId: 'ABCD',
-        exampleDisplayName: 'Bedroom',
+        exampleUniqueId: 'FAUXNOS-005',
+        exampleDisplayName: 'Fauxnos Test 05',
       },
       {
-        exampleUniqueId: 'EFGH',
-        exampleDisplayName: 'Kitchen',
-      },
-      {
-        // This is an example of a device which uses a Custom Service
-        exampleUniqueId: 'IJKL',
-        exampleDisplayName: 'Backyard',
-        CustomService: 'AirPressureSensor',
+        exampleUniqueId: 'FAUXNOS-006',
+        exampleDisplayName: 'Fauxnos Test 06',
       },
     ];
 
@@ -98,9 +110,10 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
       // the cached devices we stored in the `configureAccessory` method above
       const existingAccessory = this.accessories.get(uuid);
 
-      if (existingAccessory) {
-        // the accessory already exists
-        this.log.info('Restoring existing accessory from cache:', existingAccessory.displayName);
+      // In testing mode, all accessories were already removed, so just create new ones
+      if (existingAccessory && !TESTING_MODE) {
+        // the accessory already exists (normal mode)
+        this.log.info('[FAUXNOS] Restoring existing accessory:', existingAccessory.displayName);
 
         // if you need to update the accessory.context then you should run `api.updatePlatformAccessories`. e.g.:
         // existingAccessory.context.device = device;
@@ -108,15 +121,15 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
 
         // create the accessory handler for the restored accessory
         // this is imported from `platformAccessory.ts`
-        new FauxnosPlatformAccessory(this, existingAccessory);
-
-        // it is possible to remove platform accessories at any time using `api.unregisterPlatformAccessories`, e.g.:
-        // remove platform accessories when no longer present
-        // this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [existingAccessory]);
-        // this.log.info('Removing existing accessory from cache:', existingAccessory.displayName);
+        try {
+          new FauxnosPlatformAccessory(this, existingAccessory);
+        } catch (error) {
+          this.log.error('[FAUXNOS] Failed to create accessory handler for', existingAccessory.displayName, ':', error);
+        }
       } else {
+        // Create new accessory (testing mode or no existing accessory)
         // the accessory does not yet exist, so we need to create it
-        this.log.info('Adding new accessory:', device.exampleDisplayName);
+        this.log.info('[FAUXNOS] Adding new accessory:', device.exampleDisplayName);
 
         // create a new accessory
         const accessory = new this.api.platformAccessory(device.exampleDisplayName, uuid);
@@ -127,15 +140,24 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
 
         // create the accessory handler for the newly create accessory
         // this is imported from `platformAccessory.ts`
-        new FauxnosPlatformAccessory(this, accessory);
+        try {
+          new FauxnosPlatformAccessory(this, accessory);
+        } catch (error) {
+          this.log.error('[FAUXNOS] Failed to create accessory handler for', device.exampleDisplayName, ':', error);
+        }
 
-        // link the accessory to your platform
-        this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+        // register as platform accessory
+        try {
+          this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
+          this.log.info('[FAUXNOS] Registered platform accessory:', device.exampleDisplayName);
+        } catch (error) {
+          this.log.error('[FAUXNOS] Failed to register platform accessory:', error);
+        }
+        // push into discoveredCacheUUIDs
+        this.discoveredCacheUUIDs.push(uuid);
       }
-
-      // push into discoveredCacheUUIDs
-      this.discoveredCacheUUIDs.push(uuid);
     }
+    this.log.info('[FAUXNOS] Device discovery complete');
 
     // you can also deal with accessories from the cache which are no longer present by removing them from Homebridge
     // for example, if your plugin logs into a cloud account to retrieve a device list, and a user has previously removed a device
