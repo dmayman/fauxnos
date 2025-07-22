@@ -14,7 +14,7 @@ This configuration sets up a multi-sink audio system with equalization for Fauxn
 ## Configuration
 
 ### Audio Sinks
-- `libresink`: Librespot output
+- `spotifysink`: Librespot output
 - `systemsink`: System sounds
 - `analogsink`: Analog audio input
 - `snapsink`: Snapcast output (default)

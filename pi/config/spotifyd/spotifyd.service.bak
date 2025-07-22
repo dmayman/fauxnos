@@ -1,0 +1,15 @@
+# /etc/systemd/system/spotifyd.service
+[Unit]
+Description=Spotifyd (with system D-Bus session)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=spotifyd --no-daemon
+Restart=on-failure
+# ensure it keeps running if the network flaps
+RestartSec=5
+
+
+[Install]
+WantedBy=multi-user.target

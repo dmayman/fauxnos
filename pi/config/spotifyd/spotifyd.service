@@ -1,15 +1,15 @@
-# /etc/systemd/system/spotifyd.service
 [Unit]
-Description=Spotifyd (with system D-Bus session)
-After=network.target
+Description=A spotify playing daemon
+Documentation=https://github.com/Spotifyd/spotifyd
+Wants=sound.target
+After=sound.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
-Type=simple
 ExecStart=spotifyd --no-daemon
-Restart=on-failure
-# ensure it keeps running if the network flaps
-RestartSec=5
-
+Restart=always
+RestartSec=12
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target

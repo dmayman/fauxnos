@@ -16,8 +16,9 @@
             "id": "spotify",
             "label": "Spotify",
             "type": "internal",
-            "sink": "libresink",
-            "starting_volume": 30,
+            "sink": "spotifysink",
+            "starting_volume": 100,
+            "use_external_volume": true,
             "requires_external_switch": true,
             "external_switch": {
                 "id": "fauxnos",
@@ -33,6 +34,7 @@
             "type": "internal",
             "sink": "snapsink",
             "starting_volume": 30,
+            "use_external_volume": false,
             "requires_external_switch": true,
             "external_switch": {
                 "id": "fauxnos",
@@ -48,6 +50,7 @@
             "type": "internal",
             "sink": "analogsink",
             "starting_volume": 30,
+            "use_external_volume": false,
             "requires_external_switch": true,
             "external_switch": {
                 "id": "fauxnos",

@@ -8,48 +8,20 @@ with smooth volume transitions and appropriate notification sounds.
 
 # TODO: automatically set sink-inputs based on their name via pactl move-sink-input <sink-input-name> <sink-name>
 
-import os
-import time
 import logging
-import subprocess
-import threading
-import json
-import asyncio
-from dbus_next.aio import MessageBus
-from dbus_next import Message
-from dbus_next.constants import BusType
+from modules.audio_config import load_config, setup_logging, play_sound, get_sound_paths
+from modules.audio_pulse import PulseAudioController
+from modules.spotify_monitor import SpotifyMonitor, SpotifyController
+from modules.analog_monitor import AnalogMonitor
 
 # Load configuration
-with open(os.path.join(os.path.dirname(__file__), 'audio_config.json'), 'r') as f:
-    PLAYER_CONFIG = json.load(f)
+PLAYER_CONFIG = load_config()
 
 # Set up logging
-logger = logging.getLogger('AudioController')
-logger.setLevel(logging.INFO)
-
-# Create formatters
-file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-
-# File handler
-log_file = os.path.expanduser(PLAYER_CONFIG["log_file"].format(name=PLAYER_CONFIG["name"]))
-file_handler = logging.FileHandler(log_file)
-file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
-
-# Console handler
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(console_formatter)
-logger.addHandler(console_handler)
-
-# Constants
-FADE_STEP = 5  # Volume change per step (percentage)
-FADE_DELAY = 0.05  # Delay between fade steps (seconds)
+logger = setup_logging(PLAYER_CONFIG)
 
 # Sound file paths
-SWITCH_SOUND = os.path.expanduser(PLAYER_CONFIG["sounds"]["switch"])
-VOLUME_UP_SOUND = os.path.expanduser(PLAYER_CONFIG["sounds"]["volume_up"])
-VOLUME_DOWN_SOUND = os.path.expanduser(PLAYER_CONFIG["sounds"]["volume_down"])
+sound_paths = get_sound_paths(PLAYER_CONFIG)
 
 class AudioController:
     def __init__(self):
@@ -88,22 +60,20 @@ class AudioController:
         # Used during volume fades and audio routing.
         self.sink_volumes = {source_id: 0 for source_id in self.source_ids}
         
-        # Simplified monitoring - only track analog input activity
-        # No need for per-source state tracking since we only monitor analog input hardware
-        self.auto_switching_enabled = False
-        self.monitoring_thread = None
-        self.monitoring_stop_event = threading.Event()
-        
-        # Spotifyd DBUS monitoring
-        self.spotifyd_thread = None
-        self.spotifyd_stop_event = threading.Event()
-        self.spotifyd_loop = None
+        # Initialize audio control modules
+        self.pulse_controller = PulseAudioController()
+        self.spotify_controller = SpotifyController()
+        self.spotify_monitor = SpotifyMonitor(self._handle_spotify_switch)
+        self.analog_monitor = AnalogMonitor(self.switch_source, self._get_current_source)
         
         # Read current state from config if available
         self._load_state()
         
         # Always mute all sinks on startup to ensure clean state
-        self._mute_all_sinks()
+        self.sink_volumes = self.pulse_controller.mute_all_sinks(self.id_to_sink)
+        
+        # Set all sink-inputs volume on startup
+        self.pulse_controller.set_all_sink_inputs_volume(75)
         
         # If no previous state was loaded or source is still None, set default source
         if self.current_source is None:
@@ -117,12 +87,28 @@ class AudioController:
             # Now switch to the loaded current source to properly set volumes
             self.switch_source(self.current_source)
             
-        # Start spotifyd DBUS monitoring
-        self.start_spotifyd_monitoring()
-        
-        # Start auto-switching for analog monitoring
-        self.start_auto_switching()
+        # Start monitoring
+        self.spotify_monitor.start_monitoring()
+        self.analog_monitor.start_monitoring()
 
+    def _get_current_source(self):
+        """Get current source for callbacks"""
+        return self.current_source
+    
+    def _handle_spotify_switch(self, _):
+        """Handle spotify source switching from monitor"""
+        spotify_sources = [sid for sid in self.source_ids if 'spotify' in sid.lower()]
+        if spotify_sources:
+            target_spotify_source = spotify_sources[0]
+            # Only switch if not already on a Spotify source
+            if self.current_source != target_spotify_source:
+                logger.info("🎵 Spotifyd started playing - switching to Spotify")
+                self.switch_source(target_spotify_source)
+            else:
+                logger.debug("🎵 Spotifyd playing but already on Spotify source")
+        else:
+            logger.warning("No Spotify source found in configuration")
+    
     def _load_state(self):
         """Load previous state from config file if available"""
         try:
@@ -140,317 +126,24 @@ class AudioController:
         except Exception as e:
             logger.error(f"Error saving state: {e}")
 
-    def _play_sound(self, sound_file):
-        """Play notification sound in a non-blocking way"""
-        def play_sound_thread():
-            try:
-                subprocess.run(["aplay", "-D", "pulse:systemsink", sound_file], 
-                            stdout=subprocess.DEVNULL, 
-                            stderr=subprocess.DEVNULL)
-            except Exception as e:
-                logger.error(f"Error playing sound {sound_file}: {e}")
-        
-        # Start the sound in a daemon thread so it doesn't block program exit
-        thread = threading.Thread(target=play_sound_thread, daemon=True)
-        thread.start()
-
-    def _set_sink_volume(self, sink, volume):
-        """Set volume for the specified sink"""
-        try:
-            subprocess.run(["pactl", "set-sink-volume", sink, f"{volume}%"], 
-                          stdout=subprocess.DEVNULL,
-                          stderr=subprocess.DEVNULL)
-        except Exception as e:
-            logger.error(f"Error setting {sink} volume to {volume}: {e}")
-
-    def _mute_all_sinks(self):
-        """Mute all configured sinks to 0 volume"""
-        logger.info("Muting all sinks on startup")
-        for source_id in self.source_ids:
-            sink_name = self.id_to_sink[source_id]
-            self._set_sink_volume(sink_name, 0)
-            self.sink_volumes[source_id] = 0
-        logger.info("All sinks muted")
 
 
-    def _fade_volume(self, sink, start_vol, end_vol):
-        #disable fade temporarily
-        #self._set_sink_volume(sink, end_vol)
-        #return end_vol
 
-        """Fade volume from start to end value"""
-        # Ensure we have valid integers for volumes
-        if start_vol is None:
-            logger.warning(f"Starting volume for {sink} was None, using 0")
-            start_vol = 0
-            
-        if end_vol is None:
-            logger.warning(f"Ending volume for {sink} was None, using 0")
-            end_vol = 0
-            
-        # Ensure volumes are integers
-        start_vol = int(start_vol)
-        end_vol = int(end_vol)
-        
-        steps = abs(end_vol - start_vol) // FADE_STEP
-        if steps == 0:
-            return end_vol
-            
-        step_size = FADE_STEP if end_vol > start_vol else -FADE_STEP
-        current_vol = start_vol
-        
-        for _ in range(steps):
-            current_vol += step_size
-            self._set_sink_volume(sink, current_vol)
-            time.sleep(FADE_DELAY)
-            
-        # Ensure we reach the exact target volume
-        self._set_sink_volume(sink, end_vol)
-        
-        logger.info(f"Faded {sink} volume from {start_vol} to {end_vol}")
-        return end_vol
 
-    def _is_analog_input_active(self):
-        """Check if analog input has active audio by sampling the audio stream"""
-        try:
-            # Monitor the actual analog INPUT source, not the sink output
-            # This detects input regardless of which sink is currently active
-            input_source = "alsa_input.platform-soc_sound.stereo-fallback"
-            
-            logger.debug(f"Sampling audio from {input_source} to detect activity")
-            
-            # Use parec to capture a brief, low-quality sample and check for data
-            # --rate 1000: Very low sample rate for quick detection
-            # timeout 2: Maximum 2 seconds to detect audio
-            # fgrep -qm 1 .: Look for any non-null data (audio present)
-            
-            cmd = [
-                "timeout", "2",
-                "sh", "-c", 
-                f"parec --rate=1000 -d '{input_source}' 2>/dev/null | LC_ALL=C fgrep -qm 1 ."
-            ]
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=3  # Python timeout as backup
-            )
-            
-            # fgrep returns 0 if data found (audio playing), 1 if no data (silence)
-            if result.returncode == 0:
-                logger.debug(f"Audio data detected on {input_source}")
-                return True
-            elif result.returncode == 1:
-                logger.debug(f"No audio data detected on {input_source}")
-                return False
-            elif result.returncode == 124:  # timeout command exit code
-                logger.debug(f"Timeout waiting for audio data on {input_source} - assuming silence")
-                return False
-            else:
-                logger.warning(f"Unexpected return code {result.returncode} from audio detection")
-                return False
-                
-        except subprocess.TimeoutExpired:
-            logger.warning(f"Python timeout checking analog input activity - assuming silence")
-            return False
-        except FileNotFoundError:
-            logger.error(f"parec command not found - install pulseaudio-utils")
-            return False
-        except Exception as e:
-            logger.error(f"Error checking analog input activity: {e}")
-            return False
 
-    def _auto_source_control(self):
-        """Simplified automatic source control - only checks analog input"""
-        if not self.auto_switching_enabled:
-            return
-            
-        try:
-            # Check if analog input is active
-            analog_active = self._is_analog_input_active()
-            
-            # Track previous state for edge detection
-            previous_analog_state = getattr(self, '_previous_analog_active', False)
-            self._previous_analog_active = analog_active
-            
-            logger.debug(f"Analog input: {'active' if analog_active else 'inactive'}")
-            
-            # Only switch to analog if:
-            # 1. Analog input just became active (edge detection)
-            # 2. OR analog is active and we're not already on analog
-            if analog_active and (self.current_source != "analog" or not previous_analog_state):
-                if self.current_source != "analog":
-                    logger.info(f"Analog input detected - switching from {self.current_source} to analog")
-                    self.switch_source("analog")
-                else:
-                    logger.debug("Analog input active and already on analog source")
-            
-            # Optional: Switch away from analog when input stops
-            # (Comment out if you want to stay on analog even when input stops)
-            # elif not analog_active and self.current_source == "analog":
-            #     # Switch to default source (first available)
-            #     default_source = self.source_ids[0] if self.source_ids else None
-            #     if default_source and default_source != "analog":
-            #         logger.info(f"Analog input stopped - switching to {default_source}")
-            #         self.switch_source(default_source)
-                
-        except Exception as e:
-            logger.error(f"Error in automatic source control: {e}")
-
-    def _monitoring_loop(self):
-        """Continuous monitoring loop for automatic source control (analog input only)"""
-        logger.info("Started automatic source monitoring")
-        
-        while not self.monitoring_stop_event.is_set():
-            try:
-                self._auto_source_control()
-                # Wait for 2 seconds or until stop event is set
-                self.monitoring_stop_event.wait(2.0)
-            except Exception as e:
-                logger.error(f"Error in monitoring loop: {e}")
-                # Brief sleep on error to prevent rapid error loops
-                time.sleep(1.0)
-                
-        logger.info("Stopped automatic source monitoring")
-
-    async def _find_spotifyd_name(self, bus):
-        """Find spotifyd MPRIS bus name"""
-        msg = Message(
-            destination='org.freedesktop.DBus',
-            path='/org/freedesktop/DBus',
-            interface='org.freedesktop.DBus',
-            member='ListNames'
-        )
-        reply = await bus.call(msg)
-        names = reply.body[0]
-        for name in names:
-            if name.startswith('org.mpris.MediaPlayer2.spotifyd'):
-                return name
-        raise RuntimeError("spotifyd MPRIS bus name not found")
-
-    async def _spotifyd_monitoring_loop(self):
-        """Spotifyd DBUS event monitoring loop"""
-        logger.info("🎵 Started spotifyd DBUS monitoring")
-        
-        try:
-            bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-            
-            mpris_name = await self._find_spotifyd_name(bus)
-            logger.info(f"Found spotifyd on D-Bus as: {mpris_name}")
-
-            introspection = await bus.introspect(
-                mpris_name,
-                '/org/mpris/MediaPlayer2'
-            )
-            proxy = bus.get_proxy_object(mpris_name, '/org/mpris/MediaPlayer2', introspection)
-            props = proxy.get_interface('org.freedesktop.DBus.Properties')
-
-            def on_props_changed(interface, changed, invalidated):
-                logger.debug(f"DBUS Event - Interface: {interface}")
-                for prop, value in changed.items():
-                    if prop == 'PlaybackStatus':
-                        status = value.value
-                        logger.info(f"🎵 Spotifyd PlaybackStatus: {status}")
-                        
-                        # Auto-switch to spotify when spotifyd goes from paused to playing
-                        if status == 'Playing':
-                            spotify_sources = [sid for sid in self.source_ids if 'spotify' in sid.lower()]
-                            if spotify_sources:
-                                logger.info("🎵 Spotifyd started playing - switching to Spotify")
-                                # Use thread-safe call to switch source
-                                threading.Thread(
-                                    target=self.switch_source, 
-                                    args=(spotify_sources[0],), 
-                                    daemon=True
-                                ).start()
-                            else:
-                                logger.warning("No Spotify source found in configuration")
-                    elif prop == 'Volume':
-                        volume_float = value.value
-                        volume_percent = int(volume_float * 100)
-                        logger.info(f"🔊 Spotify volume changed to {volume_percent}%")
-                    elif prop == 'Metadata':
-                        metadata = value.value
-                        if 'xesam:title' in metadata and 'xesam:artist' in metadata:
-                            title = metadata['xesam:title'].value
-                            artists = metadata['xesam:artist'].value
-                            logger.info(f"🎵 Now playing: {title} by {', '.join(artists)}")
-                        
-            props.on_properties_changed(on_props_changed)
-            logger.info("🎵 Listening for spotifyd events...")
-            
-            # Keep the async loop running
-            while not self.spotifyd_stop_event.is_set():
-                await asyncio.sleep(0.5)
-                
-        except Exception as e:
-            logger.error(f"Error in spotifyd monitoring: {e}")
-        finally:
-            logger.info("🎵 Stopped spotifyd DBUS monitoring")
-
-    def _run_spotifyd_loop(self):
-        """Run the spotifyd async loop in a thread"""
-        self.spotifyd_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.spotifyd_loop)
-        try:
-            self.spotifyd_loop.run_until_complete(self._spotifyd_monitoring_loop())
-        except Exception as e:
-            logger.error(f"Error in spotifyd loop: {e}")
-        finally:
-            self.spotifyd_loop.close()
-
-    def start_spotifyd_monitoring(self):
-        """Start spotifyd DBUS monitoring"""
-        if self.spotifyd_thread and self.spotifyd_thread.is_alive():
-            logger.info("Spotifyd monitoring is already running")
-            return
-            
-        self.spotifyd_stop_event.clear()
-        self.spotifyd_thread = threading.Thread(target=self._run_spotifyd_loop, daemon=True)
-        self.spotifyd_thread.start()
-        logger.info("Started spotifyd DBUS monitoring")
-
-    def stop_spotifyd_monitoring(self):
-        """Stop spotifyd DBUS monitoring"""
-        if not self.spotifyd_thread or not self.spotifyd_thread.is_alive():
-            logger.info("Spotifyd monitoring is not running")
-            return
-            
-        self.spotifyd_stop_event.set()
-        
-        if self.spotifyd_loop:
-            self.spotifyd_loop.call_soon_threadsafe(self.spotifyd_loop.stop)
-        
-        if self.spotifyd_thread.is_alive():
-            self.spotifyd_thread.join(timeout=5.0)
-            
-        logger.info("Stopped spotifyd DBUS monitoring")
-
+    # Monitoring control methods
     def start_auto_switching(self):
-        """Start automatic source switching (analog input monitoring only)"""
-        if self.auto_switching_enabled:
-            logger.info("Automatic switching is already enabled")
-            return
-            
-        self.auto_switching_enabled = True
-        self.monitoring_stop_event.clear()
-        self.monitoring_thread = threading.Thread(target=self._monitoring_loop, daemon=True)
-        self.monitoring_thread.start()
-        logger.info("Started automatic source switching")
-
+        return self.analog_monitor.start_monitoring()
+    
     def stop_auto_switching(self):
-        """Stop automatic source switching (analog input monitoring only)"""
-        if not self.auto_switching_enabled:
-            logger.info("Automatic switching is already disabled")
-            return
-            
-        self.auto_switching_enabled = False
-        self.monitoring_stop_event.set()
-        
-        if self.monitoring_thread and self.monitoring_thread.is_alive():
-            self.monitoring_thread.join(timeout=5.0)
-            
-        logger.info("Stopped automatic source switching")
+        return self.analog_monitor.stop_monitoring()
+    
+    def stop_spotifyd_monitoring(self):
+        return self.spotify_monitor.stop_monitoring()
+    
+    @property
+    def auto_switching_enabled(self):
+        return self.analog_monitor.is_enabled()
 
     def switch_source(self, source):
         """Switch audio source with smooth transitions"""
@@ -461,14 +154,14 @@ class AudioController:
             logger.error(f"Invalid source: {new_source}. Available sources: {self.source_ids}")
             return
         
+        # Check if already on this source (prevent bouncing)
+        if new_source == self.current_source:
+            logger.debug(f"Already using source {new_source}, skipping switch")
+            return
+        
         if self.current_source is not None:
-
-            if new_source == self.current_source:
-                logger.info(f"Already using source {new_source}")
-                return  
-                            
             # Play notification sound for source switch
-            self._play_sound(SWITCH_SOUND)
+            play_sound(sound_paths['switch'])
 
         logger.info(f"Switching to {new_source}")
         
@@ -477,16 +170,19 @@ class AudioController:
             if source_id != new_source:
                 # Fade out other sources
                 sink_name = self.id_to_sink[source_id]
-                self.sink_volumes[source_id] = self._fade_volume(
+                self.sink_volumes[source_id] = self.pulse_controller.fade_volume(
                     sink_name, self.sink_volumes[source_id], 0
                 )
         
         # Fade in the selected source to its stored volume level
         target_volume = self.source_volumes[new_source]
         selected_sink = self.id_to_sink[new_source]
-        self.sink_volumes[new_source] = self._fade_volume(
+        self.sink_volumes[new_source] = self.pulse_controller.fade_volume(
             selected_sink, self.sink_volumes[new_source], target_volume
         )
+        
+        # Sync systemsink volume to match active source
+        self.pulse_controller.sync_systemsink_volume(target_volume)
             
         self.current_source = new_source
         self._save_state()
@@ -502,9 +198,13 @@ class AudioController:
                 
             if self.current_source and self.current_source in self.source_ids:
                 sink_name = self.id_to_sink[self.current_source]
-                self._set_sink_volume(sink_name, volume)
+                self.pulse_controller.set_sink_volume(sink_name, volume)
                 self.source_volumes[self.current_source] = volume
                 self.sink_volumes[self.current_source] = volume
+                
+                # Sync systemsink volume to match active source
+                self.pulse_controller.sync_systemsink_volume(volume)
+                
                 source_display = self.sources[self.current_source].get("label", self.current_source)
                 logger.info(f"Set {source_display} volume to {volume}")
             else:
@@ -523,9 +223,13 @@ class AudioController:
                 current_volume = self.source_volumes[self.current_source]
                 new_volume = max(0, min(100, current_volume + increment))
                 sink_name = self.id_to_sink[self.current_source]
-                self._set_sink_volume(sink_name, new_volume)
+                self.pulse_controller.set_sink_volume(sink_name, new_volume)
                 self.source_volumes[self.current_source] = new_volume
                 self.sink_volumes[self.current_source] = new_volume
+                
+                # Sync systemsink volume to match active source
+                self.pulse_controller.sync_systemsink_volume(new_volume)
+                
                 source_display = self.sources[self.current_source].get("label", self.current_source)
                 logger.info(f"Adjusted {source_display} volume to {new_volume}")
             else:
@@ -534,190 +238,32 @@ class AudioController:
                 
             # Play appropriate sound based on direction
             if increment > 0:
-                self._play_sound(VOLUME_UP_SOUND)
+                play_sound(sound_paths['volume_up'])
             else:
-                self._play_sound(VOLUME_DOWN_SOUND)
+                play_sound(sound_paths['volume_down'])
                 
             self._save_state()
         except ValueError:
             logger.error(f"Invalid increment value: {increment}")
 
-    def _get_spotifyd_player_name(self):
-        """Get the spotifyd player name from playerctl"""
-        try:
-            result = subprocess.run(
-                ["playerctl", "-l"], 
-                capture_output=True, 
-                text=True, 
-                timeout=5
-            )
-            if result.returncode == 0:
-                players = result.stdout.strip().split('\n')
-                spotifyd_players = [p for p in players if p.startswith('spotifyd')]
-                if spotifyd_players:
-                    return spotifyd_players[0]
-            return None
-        except Exception as e:
-            logger.error(f"Error getting spotifyd player name: {e}")
-            return None
-
+    # Spotify control methods - delegate to SpotifyController
     def spotify_play_pause(self):
-        """Toggle play/pause for spotifyd using playerctl"""
-        player = self._get_spotifyd_player_name()
-        if not player:
-            logger.error("No spotifyd player found")
-            return False
-            
-        try:
-            subprocess.run(
-                ["playerctl", "-p", player, "play-pause"], 
-                check=True, 
-                capture_output=True, 
-                timeout=5
-            )
-            logger.info("🎵 Toggled Spotify play/pause")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error toggling Spotify play/pause: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Error with playerctl command: {e}")
-            return False
-
+        return self.spotify_controller.play_pause()
+    
     def spotify_play(self):
-        """Start playback for spotifyd using playerctl"""
-        player = self._get_spotifyd_player_name()
-        if not player:
-            logger.error("No spotifyd player found")
-            return False
-            
-        try:
-            subprocess.run(
-                ["playerctl", "-p", player, "play"], 
-                check=True, 
-                capture_output=True, 
-                timeout=5
-            )
-            logger.info("▶️ Started Spotify playback")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error starting Spotify playback: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Error with playerctl command: {e}")
-            return False
-
+        return self.spotify_controller.play()
+    
     def spotify_pause(self):
-        """Pause playback for spotifyd using playerctl"""
-        player = self._get_spotifyd_player_name()
-        if not player:
-            logger.error("No spotifyd player found")
-            return False
-            
-        try:
-            subprocess.run(
-                ["playerctl", "-p", player, "pause"], 
-                check=True, 
-                capture_output=True, 
-                timeout=5
-            )
-            logger.info("⏸️ Paused Spotify playback")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error pausing Spotify playback: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Error with playerctl command: {e}")
-            return False
-
+        return self.spotify_controller.pause()
+    
     def spotify_next(self):
-        """Skip to next track for spotifyd using playerctl"""
-        player = self._get_spotifyd_player_name()
-        if not player:
-            logger.error("No spotifyd player found")
-            return False
-            
-        try:
-            subprocess.run(
-                ["playerctl", "-p", player, "next"], 
-                check=True, 
-                capture_output=True, 
-                timeout=5
-            )
-            logger.info("⏭️ Skipped to next track")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error skipping to next track: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Error with playerctl command: {e}")
-            return False
-
+        return self.spotify_controller.next()
+    
     def spotify_previous(self):
-        """Skip to previous track for spotifyd using playerctl"""
-        player = self._get_spotifyd_player_name()
-        if not player:
-            logger.error("No spotifyd player found")
-            return False
-            
-        try:
-            subprocess.run(
-                ["playerctl", "-p", player, "previous"], 
-                check=True, 
-                capture_output=True, 
-                timeout=5
-            )
-            logger.info("⏮️ Skipped to previous track")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error skipping to previous track: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Error with playerctl command: {e}")
-            return False
-
+        return self.spotify_controller.previous()
+    
     def spotify_set_volume(self, volume):
-        """Set volume for spotifyd using gdbus (bypassing playerctl)"""
-        try:
-            # Get spotifyd PID
-            result = subprocess.run(
-                ["pidof", "spotifyd"], 
-                capture_output=True, 
-                text=True, 
-                timeout=5
-            )
-            if result.returncode != 0:
-                logger.error("No spotifyd process found")
-                return False
-                
-            spotifyd_pid = result.stdout.strip()
-            if not spotifyd_pid:
-                logger.error("Could not get spotifyd PID")
-                return False
-            
-            # Convert 0-100 to 0.0-1.0 for D-Bus
-            volume_float = max(0.0, min(1.0, float(volume) / 100.0))
-            
-            # Use gdbus to set volume directly via D-Bus
-            subprocess.run([
-                "gdbus", "call", "--system",
-                "--dest", f"org.mpris.MediaPlayer2.spotifyd.instance{spotifyd_pid}",
-                "--object-path", "/org/mpris/MediaPlayer2",
-                "--method", "org.freedesktop.DBus.Properties.Set",
-                "org.mpris.MediaPlayer2.Player",
-                "Volume",
-                f"<double {volume_float}>"
-            ], check=True, capture_output=True, timeout=5)
-            
-            logger.info(f"🔊 Set Spotify volume to {volume}%")
-            return True
-            
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Error setting Spotify volume via gdbus: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Error with gdbus command: {e}")
-            return False
+        return self.spotify_controller.set_volume(volume)
 
 def parse_command(command_str):
     """Parse a command string into command and arguments"""
@@ -871,8 +417,8 @@ def main():
                     print("Available actions: play, pause, toggle, next, prev, volume")
                     
             elif command == 'quit':
-                controller.stop_auto_switching()  # Clean shutdown
-                controller.stop_spotifyd_monitoring()  # Clean shutdown
+                controller.stop_auto_switching()
+                controller.stop_spotifyd_monitoring()
                 logger.info("Shutting down Audio Controller")
                 break
                 
@@ -882,8 +428,8 @@ def main():
                 
         except KeyboardInterrupt:
             print("\nShutting down...")
-            controller.stop_auto_switching()  # Clean shutdown
-            controller.stop_spotifyd_monitoring()  # Clean shutdown
+            controller.stop_auto_switching()
+            controller.stop_spotifyd_monitoring()
             break
         except Exception as e:
             logger.error(f"Error processing command: {e}")
