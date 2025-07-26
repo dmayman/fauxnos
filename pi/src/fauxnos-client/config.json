@@ -1,15 +1,11 @@
 {
-    "name": "living_room",
-    "display_name": "Living Room",
-    "lms_server": {
-        "ip": "192.168.5.147",
-        "port": 9000
-    },
+    "name": "kitchen",
+    "display_name": "Kitchen",
     "mac": "2c:cf:67:af:61:6a",
     "sounds": {
-        "switch": "~/sounds/source_switch.wav",
-        "volume_up": "~/sounds/volume_up.wav",
-        "volume_down": "~/sounds/volume_down.wav"
+        "switch": "~/src/sounds/source_switch.wav",
+        "volume_up": "~/src/sounds/volume_up.wav",
+        "volume_down": "~/src/sounds/volume_down.wav"
     },
     "sources": [
         { 
@@ -17,8 +13,8 @@
             "label": "Spotify",
             "type": "internal",
             "sink": "spotifysink",
-            "starting_volume": 100,
-            "use_external_volume": true,
+            "starting_volume": 50,
+            "volume_controller": "spotify",
             "requires_external_switch": true,
             "external_switch": {
                 "id": "fauxnos",
@@ -34,7 +30,7 @@
             "type": "internal",
             "sink": "snapsink",
             "starting_volume": 30,
-            "use_external_volume": false,
+            "volume_controller": "snapcast",
             "requires_external_switch": true,
             "external_switch": {
                 "id": "fauxnos",
@@ -50,7 +46,7 @@
             "type": "internal",
             "sink": "analogsink",
             "starting_volume": 30,
-            "use_external_volume": false,
+            "volume_controller": "self",
             "requires_external_switch": true,
             "external_switch": {
                 "id": "fauxnos",
@@ -88,5 +84,9 @@
             }
         }
     ],
-    "log_file": "~/logs/audio_controller.log"
+    "log_file": "~/logs/audio_controller.log",
+    "mqtt": {
+        "broker_host": "localhost",
+        "broker_port": 1883
+    }
 }

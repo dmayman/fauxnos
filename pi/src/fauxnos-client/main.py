@@ -6,13 +6,14 @@ This script manages audio source switching between analogsink and snapsink,
 with smooth volume transitions and appropriate notification sounds.
 """
 
-# TODO: automatically set sink-inputs based on their name via pactl move-sink-input <sink-input-name> <sink-name>
 
 import logging
 from modules.audio_config import load_config, setup_logging, play_sound, get_sound_paths
 from modules.audio_pulse import PulseAudioController
 from modules.spotify_monitor import SpotifyMonitor, SpotifyController
+from modules.snapcast_controller import SnapcastController
 from modules.analog_monitor import AnalogMonitor
+from modules.mqtt_client import MQTTClient
 
 # Load configuration
 PLAYER_CONFIG = load_config()
@@ -63,8 +64,22 @@ class AudioController:
         # Initialize audio control modules
         self.pulse_controller = PulseAudioController()
         self.spotify_controller = SpotifyController()
-        self.spotify_monitor = SpotifyMonitor(self._handle_spotify_switch)
+        self.snapcast_controller = SnapcastController()
+        self.spotify_monitor = SpotifyMonitor(self._handle_spotify_switch, self._handle_spotify_volume)
         self.analog_monitor = AnalogMonitor(self.switch_source, self._get_current_source)
+        
+        # Initialize MQTT client with callbacks
+        mqtt_config = PLAYER_CONFIG.get("mqtt", {})
+        broker_host = mqtt_config.get("broker_host", "localhost")
+        broker_port = mqtt_config.get("broker_port", 1883)
+        
+        self.mqtt_client = MQTTClient(
+            device_config=PLAYER_CONFIG,
+            volume_callback=self._handle_mqtt_volume,
+            mode_callback=self._handle_mqtt_mode,
+            broker_host=broker_host,
+            broker_port=broker_port
+        )
         
         # Read current state from config if available
         self._load_state()
@@ -74,6 +89,9 @@ class AudioController:
         
         # Set all sink-inputs volume on startup
         self.pulse_controller.set_all_sink_inputs_volume(75)
+        
+        # Ensure snapclient is routed to snapsink regardless of startup order
+        self.pulse_controller.move_snapclient_to_snapsink()
         
         # If no previous state was loaded or source is still None, set default source
         if self.current_source is None:
@@ -90,10 +108,29 @@ class AudioController:
         # Start monitoring
         self.spotify_monitor.start_monitoring()
         self.analog_monitor.start_monitoring()
+        
+        # Start PulseAudio event monitoring to handle snapclient routing
+        monitoring_started = self.pulse_controller.start_event_monitoring(
+            snapclient_callback=self._handle_snapclient_event
+        )
+        if monitoring_started:
+            logger.info("PulseAudio event monitoring started successfully")
+        else:
+            logger.warning("PulseAudio event monitoring failed to start")
+        
+        # Start MQTT client
+        self.mqtt_client.start()
 
     def _get_current_source(self):
         """Get current source for callbacks"""
         return self.current_source
+    
+    def _handle_snapclient_event(self):
+        """Handle PulseAudio event that might involve snapclient"""
+        # Only log if we actually find snapclient
+        found_snapclient = self.pulse_controller.move_snapclient_to_snapsink()
+        if found_snapclient:
+            logger.debug("Processed snapclient routing from pulse event")
     
     def _handle_spotify_switch(self, _):
         """Handle spotify source switching from monitor"""
@@ -108,6 +145,30 @@ class AudioController:
                 logger.debug("🎵 Spotifyd playing but already on Spotify source")
         else:
             logger.warning("No Spotify source found in configuration")
+    
+    def _handle_spotify_volume(self, volume_percent):
+        """Handle Spotify volume changes from DBUS monitor"""
+        # Only broadcast if we're on Spotify source and using Spotify volume controller
+        if (self.current_source and 'spotify' in self.current_source.lower()):
+            source_config = self.sources[self.current_source]
+            volume_controller = source_config.get("volume_controller", "self")
+            
+            if volume_controller == "spotify":
+                logger.info(f"🔊 Broadcasting Spotify volume change: {volume_percent}%")
+                # Update our stored volume
+                self.source_volumes[self.current_source] = volume_percent
+                # Broadcast via MQTT
+                self.mqtt_client.update_volume(volume_percent)
+    
+    def _handle_mqtt_volume(self, volume: int):
+        """Handle MQTT volume command"""
+        logger.info(f"📡 MQTT volume command received: {volume}%")
+        self.set_volume(volume)
+        
+    def _handle_mqtt_mode(self, mode: str):
+        """Handle MQTT mode change command"""
+        logger.info(f"📡 MQTT mode command received: {mode}")
+        self.switch_source(mode)
     
     def _load_state(self):
         """Load previous state from config file if available"""
@@ -141,9 +202,91 @@ class AudioController:
     def stop_spotifyd_monitoring(self):
         return self.spotify_monitor.stop_monitoring()
     
+    def stop_pulse_event_monitoring(self):
+        """Stop PulseAudio event monitoring"""
+        return self.pulse_controller.stop_event_monitoring()
+    
+    def stop_mqtt_client(self):
+        """Stop MQTT client"""
+        return self.mqtt_client.stop()
+    
     @property
     def auto_switching_enabled(self):
         return self.analog_monitor.is_enabled()
+    
+    def _set_source_volume(self, source_id: str, volume: int, fade: bool = False):
+        """
+        Centralized volume control method that handles all volume controller logic.
+        This is the single point where volume controller routing decisions are made.
+        
+        Args:
+            source_id: The source ID to set volume for
+            volume: Target volume (0-100)
+            fade: Whether to fade to the volume or set it directly
+        """
+        if source_id not in self.source_ids:
+            logger.error(f"Invalid source for volume control: {source_id}")
+            return
+            
+        source_config = self.sources[source_id]
+        volume_controller = source_config.get("volume_controller", "self")
+        source_display = source_config.get("label", source_id)
+        sink_name = self.id_to_sink[source_id]
+        
+        # Determine which volume controller to use
+        if volume_controller == "self":
+            # Use PulseAudio sink volume control
+            if fade:
+                actual_volume = self.pulse_controller.fade_volume(
+                    sink_name, self.sink_volumes[source_id], volume
+                )
+            else:
+                self.pulse_controller.set_sink_volume(sink_name, volume)
+                actual_volume = volume
+            self.sink_volumes[source_id] = actual_volume
+            logger.info(f"Set {source_display} PulseAudio volume to {volume}%")
+            
+        elif volume_controller == "spotify":
+            # Use Spotify volume control, keep PulseAudio at 100%
+            if fade:
+                actual_pulse_volume = self.pulse_controller.fade_volume(
+                    sink_name, self.sink_volumes[source_id], 100
+                )
+            else:
+                self.pulse_controller.set_sink_volume(sink_name, 100)
+                actual_pulse_volume = 100
+            self.sink_volumes[source_id] = actual_pulse_volume
+            self.spotify_controller.set_volume(volume)
+            logger.info(f"Set {source_display} Spotify volume to {volume}% (PulseAudio at 100%)")
+            
+        elif volume_controller == "snapcast":
+            # Use Snapcast volume control, keep PulseAudio at 100%
+            if fade:
+                actual_pulse_volume = self.pulse_controller.fade_volume(
+                    sink_name, self.sink_volumes[source_id], 100
+                )
+            else:
+                self.pulse_controller.set_sink_volume(sink_name, 100)
+                actual_pulse_volume = 100
+            self.sink_volumes[source_id] = actual_pulse_volume
+            self.snapcast_controller.set_volume(volume)
+            logger.info(f"Set {source_display} Snapcast volume to {volume}% (PulseAudio at 100%)")
+            
+        else:
+            # External volume controller - keep PulseAudio at 100%
+            if fade:
+                actual_pulse_volume = self.pulse_controller.fade_volume(
+                    sink_name, self.sink_volumes[source_id], 100
+                )
+            else:
+                self.pulse_controller.set_sink_volume(sink_name, 100)
+                actual_pulse_volume = 100
+            self.sink_volumes[source_id] = actual_pulse_volume
+            logger.info(f"Set {source_display} external volume to {volume}% (PulseAudio at 100%)")
+            logger.warning(f"External volume controller '{volume_controller}' not implemented")
+        
+        # Always update stored volume
+        self.source_volumes[source_id] = volume
 
     def switch_source(self, source):
         """Switch audio source with smooth transitions"""
@@ -159,27 +302,29 @@ class AudioController:
             logger.debug(f"Already using source {new_source}, skipping switch")
             return
         
+        # Pause Spotify when switching away from Spotify source
+        if (self.current_source and 'spotify' in self.current_source.lower() and 
+            'spotify' not in new_source.lower()):
+            logger.info("🎵 Pausing Spotify before switching away")
+            self.spotify_controller.pause()
+        
         if self.current_source is not None:
             # Play notification sound for source switch
             play_sound(sound_paths['switch'])
 
         logger.info(f"Switching to {new_source}")
         
-        # Fade out all other sinks first, then fade in the selected sink
+        # Fade out all other sinks first (always use PulseAudio for fade out)
         for source_id in self.source_ids:
             if source_id != new_source:
-                # Fade out other sources
                 sink_name = self.id_to_sink[source_id]
                 self.sink_volumes[source_id] = self.pulse_controller.fade_volume(
                     sink_name, self.sink_volumes[source_id], 0
                 )
         
-        # Fade in the selected source to its stored volume level
+        # Fade in the selected source using centralized volume control
         target_volume = self.source_volumes[new_source]
-        selected_sink = self.id_to_sink[new_source]
-        self.sink_volumes[new_source] = self.pulse_controller.fade_volume(
-            selected_sink, self.sink_volumes[new_source], target_volume
-        )
+        self._set_source_volume(new_source, target_volume, fade=True)
         
         # Sync systemsink volume to match active source
         self.pulse_controller.sync_systemsink_volume(target_volume)
@@ -187,9 +332,13 @@ class AudioController:
         self.current_source = new_source
         self._save_state()
         logger.info(f"Source switched to {self.current_source}")
+        
+        # Update MQTT status
+        self.mqtt_client.update_mode(new_source)
+        self.mqtt_client.update_volume(target_volume)
 
     def set_volume(self, volume):
-        """Set volume for active source"""
+        """Set volume for active source using configured volume controller"""
         try:
             volume = int(volume)
             if volume < 0 or volume > 100:
@@ -197,16 +346,14 @@ class AudioController:
                 return
                 
             if self.current_source and self.current_source in self.source_ids:
-                sink_name = self.id_to_sink[self.current_source]
-                self.pulse_controller.set_sink_volume(sink_name, volume)
-                self.source_volumes[self.current_source] = volume
-                self.sink_volumes[self.current_source] = volume
+                # Use centralized volume control
+                self._set_source_volume(self.current_source, volume, fade=False)
                 
                 # Sync systemsink volume to match active source
                 self.pulse_controller.sync_systemsink_volume(volume)
                 
-                source_display = self.sources[self.current_source].get("label", self.current_source)
-                logger.info(f"Set {source_display} volume to {volume}")
+                # Update MQTT status
+                self.mqtt_client.update_volume(volume)
             else:
                 logger.error("No active source to set volume for")
                 
@@ -215,23 +362,22 @@ class AudioController:
             logger.error(f"Invalid volume value: {volume}")
 
     def adjust_volume(self, increment):
-        """Adjust volume up or down for active source"""
+        """Adjust volume up or down for active source using configured volume controller"""
         try:
             increment = int(increment)
             
             if self.current_source and self.current_source in self.source_ids:
                 current_volume = self.source_volumes[self.current_source]
                 new_volume = max(0, min(100, current_volume + increment))
-                sink_name = self.id_to_sink[self.current_source]
-                self.pulse_controller.set_sink_volume(sink_name, new_volume)
-                self.source_volumes[self.current_source] = new_volume
-                self.sink_volumes[self.current_source] = new_volume
+                
+                # Use centralized volume control
+                self._set_source_volume(self.current_source, new_volume, fade=False)
                 
                 # Sync systemsink volume to match active source
                 self.pulse_controller.sync_systemsink_volume(new_volume)
                 
-                source_display = self.sources[self.current_source].get("label", self.current_source)
-                logger.info(f"Adjusted {source_display} volume to {new_volume}")
+                # Update MQTT status
+                self.mqtt_client.update_volume(new_volume)
             else:
                 logger.error("No active source to adjust volume for")
                 return
@@ -265,6 +411,16 @@ class AudioController:
     def spotify_set_volume(self, volume):
         return self.spotify_controller.set_volume(volume)
 
+    # Snapcast control methods - delegate to SnapcastController
+    def snapcast_set_volume(self, volume):
+        return self.snapcast_controller.set_volume(volume)
+    
+    def snapcast_get_volume(self):
+        return self.snapcast_controller.get_volume()
+    
+    def snapcast_test_connection(self):
+        return self.snapcast_controller.test_connection()
+
 def parse_command(command_str):
     """Parse a command string into command and arguments"""
     parts = command_str.strip().split()
@@ -295,6 +451,7 @@ def main():
                 print("  volume [0-100]         - Set volume level")
                 print("  adjust [+/-N]          - Adjust volume by N")
                 print("  auto [on|off]          - Enable/disable automatic switching")
+                print("  snapclient             - Move snapclient to snapsink")
                 print("  status                 - Show current state")
                 print("  quit                   - Exit program")
                 print("  help                   - Show this help")
@@ -305,6 +462,9 @@ def main():
                 print("  spotify next           - Skip to next track")
                 print("  spotify prev           - Skip to previous track")
                 print("  spotify volume [0-100] - Set Spotify volume")
+                print("\nSnapcast controls:")
+                print("  snapcast volume [0-100] - Set Snapcast volume")
+                print("  snapcast status         - Show Snapcast connection status")
                 
             elif command == 'source':
                 if not args or args[0] not in controller.source_ids:
@@ -343,6 +503,12 @@ def main():
                 else:
                     controller.stop_auto_switching()
                     print("Automatic source switching disabled")
+                    
+            elif command == 'snapclient':
+                if controller.pulse_controller.move_snapclient_to_snapsink():
+                    print("Checked snapclient routing")
+                else:
+                    print("No snapclient found")
                     
             elif command == 'status':
                 print(f"\nCurrent state:")
@@ -416,9 +582,46 @@ def main():
                     print(f"Unknown spotify action: {spotify_action}")
                     print("Available actions: play, pause, toggle, next, prev, volume")
                     
+            elif command == 'snapcast':
+                if not args:
+                    print("Error: snapcast command requires an action")
+                    print("Available actions: volume, status")
+                    continue
+                    
+                snapcast_action = args[0].lower()
+                
+                if snapcast_action == 'volume':
+                    if len(args) < 2:
+                        print("Error: snapcast volume requires a level (0-100)")
+                        continue
+                    try:
+                        volume = int(args[1])
+                        if controller.snapcast_set_volume(volume):
+                            print(f"Set Snapcast volume to {volume}%")
+                        else:
+                            print("Failed to set Snapcast volume")
+                    except ValueError:
+                        print("Error: volume must be a number between 0 and 100")
+                        
+                elif snapcast_action == 'status':
+                    if controller.snapcast_test_connection():
+                        current_volume = controller.snapcast_get_volume()
+                        if current_volume is not None:
+                            print(f"Snapcast connected - Current volume: {current_volume}%")
+                        else:
+                            print("Snapcast connected - Could not get current volume")
+                    else:
+                        print("Snapcast connection failed")
+                        
+                else:
+                    print(f"Unknown snapcast action: {snapcast_action}")
+                    print("Available actions: volume, status")
+                    
             elif command == 'quit':
                 controller.stop_auto_switching()
                 controller.stop_spotifyd_monitoring()
+                controller.stop_pulse_event_monitoring()
+                controller.stop_mqtt_client()
                 logger.info("Shutting down Audio Controller")
                 break
                 
@@ -430,6 +633,8 @@ def main():
             print("\nShutting down...")
             controller.stop_auto_switching()
             controller.stop_spotifyd_monitoring()
+            controller.stop_pulse_event_monitoring()
+            controller.stop_mqtt_client()
             break
         except Exception as e:
             logger.error(f"Error processing command: {e}")

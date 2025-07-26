@@ -8,6 +8,7 @@ Handles configuration loading, logging setup, and common utility functions.
 import os
 import json
 import logging
+import logging.handlers
 import threading
 
 # Constants
@@ -31,9 +32,17 @@ def setup_logging(config):
     file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     console_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 
-    # File handler
+    # Rotating file handler - ensure log directory exists
     log_file = os.path.expanduser(config["log_file"].format(name=config["name"]))
-    file_handler = logging.FileHandler(log_file)
+    log_dir = os.path.dirname(log_file)
+    os.makedirs(log_dir, exist_ok=True)
+    
+    # Use RotatingFileHandler to limit file size (1MB max, keep 5 backup files)
+    file_handler = logging.handlers.RotatingFileHandler(
+        log_file, 
+        maxBytes=1*1024*1024,   # 1MB
+        backupCount=5
+    )
     file_handler.setFormatter(file_formatter)
     logger.addHandler(file_handler)
 

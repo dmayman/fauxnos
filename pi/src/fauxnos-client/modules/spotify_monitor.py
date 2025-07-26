@@ -16,8 +16,9 @@ from dbus_next.constants import BusType
 logger = logging.getLogger('AudioController')
 
 class SpotifyMonitor:
-    def __init__(self, source_switch_callback):
+    def __init__(self, source_switch_callback, volume_change_callback=None):
         self.source_switch_callback = source_switch_callback
+        self.volume_change_callback = volume_change_callback
         self.spotifyd_thread = None
         self.spotifyd_stop_event = threading.Event()
         self.spotifyd_loop = None
@@ -43,9 +44,13 @@ class SpotifyMonitor:
         """Spotifyd DBUS event monitoring loop"""
         logger.info(f"🎵 Started spotifyd DBUS monitoring")
         
+        bus = None
+        
         while not self.spotifyd_stop_event.is_set():
             try:
-                bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+                # Create bus connection only once per retry cycle
+                if bus is None:
+                    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
                 
                 # Try to find spotifyd
                 try:
@@ -80,6 +85,9 @@ class SpotifyMonitor:
                             volume_float = value.value
                             volume_percent = int(volume_float * 100)
                             logger.info(f"🔊 Spotify volume changed to {volume_percent}%")
+                            # Call volume change callback if provided
+                            if self.volume_change_callback:
+                                self.volume_change_callback(volume_percent)
                         elif prop == 'Metadata':
                             metadata = value.value
                             if 'xesam:title' in metadata and 'xesam:artist' in metadata:
@@ -119,7 +127,24 @@ class SpotifyMonitor:
             except Exception as e:
                 logger.error(f"Error in spotifyd monitoring: {e}")
                 logger.info("🎵 Will retry spotifyd connection in 10 seconds...")
+                
+                # Close the bus connection before retrying to prevent leaks
+                if bus:
+                    try:
+                        bus.disconnect()
+                    except Exception:
+                        pass
+                    bus = None
+                
                 await asyncio.sleep(10)
+                
+        # Clean up connection on exit
+        if bus:
+            try:
+                bus.disconnect()
+                logger.debug("🎵 Closed DBUS connection")
+            except Exception as e:
+                logger.debug(f"Error closing DBUS connection: {e}")
                 
         logger.info("🎵 Stopped spotifyd DBUS monitoring")
 
@@ -153,6 +178,15 @@ class SpotifyMonitor:
             return
             
         self.spotifyd_stop_event.set()
+        
+        # Clean up handler references
+        if self.current_props and self.current_handler:
+            try:
+                self.current_props.off_properties_changed(self.current_handler)
+            except Exception:
+                pass
+            self.current_props = None
+            self.current_handler = None
         
         if self.spotifyd_loop:
             self.spotifyd_loop.call_soon_threadsafe(self.spotifyd_loop.stop)

@@ -2,6 +2,9 @@ device_name: "FauxnosGo"
 initial_volume: 50
 external_volume: true
 device_type: speaker
+audio_backend: pipe
+audio_output_pipe: /var/run/snapcast/spotify
+bitrate: 320
 server:
   enabled: true
   address: localhost # Which address to bind to

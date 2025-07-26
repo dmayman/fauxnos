@@ -7,14 +7,14 @@ This configuration sets up a multi-sink audio system with equalization for Fauxn
 1. Copy `default.pa` to `~/.config/pulse/`
 2. Restart PulseAudio:
    ```bash
-   pulseaudio -k
-   pulseaudio --start
+   systemctl --user daemon-reload
+   systemctl --user restart pulseaudio
    ```
 
 ## Configuration
 
 ### Audio Sinks
-- `spotifysink`: Librespot output
+- `spotifysink`: Spotifyd output
 - `systemsink`: System sounds
 - `analogsink`: Analog audio input
 - `snapsink`: Snapcast output (default)

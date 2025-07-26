@@ -1,0 +1,1 @@
+move asound.conf to /etc/asound.conf

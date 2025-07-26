@@ -12,12 +12,18 @@ A comprehensive guide for setting up a DIY multiroom audio system using Raspberr
 
 ## System Overview
 
-The Fauxnos system includes:
-- **Librespot**: Modified for external volume control (Spotify Connect)
-- **Snapcast**: For multiroom audio synchronization
-- **ALSA**: Advanced Linux Sound Architecture for audio routing
+The Fauxnos system on each client includes:
+- **Spotifyd**: For Spotify Connect with DBUS integration for bidirectional event handling
+- **Pulse Audio**: For audio routing
+- **Shairport-sync (COMING SOON!)**: For AirPlay support
 - **Software volume controls**: Independent control for each audio source
+
+The Fauxnos system on the server includes:
+- **Snapcast**: For multiroom audio synchronization
+  - **Librespot_dm**: Modified librespot for external volume control
+  - **Shairport-sync**: Airplay receiver
 - **MQTT**: For remote control integration
+- **Homebridge plugin**: For HomeKit integration
 
 ## Phase 1: Base System Setup
 
@@ -64,32 +70,21 @@ sudo apt install -y build-essential git libasound2 libasound2-dev libssl-dev lib
    speaker-test -t wav -c 2
    ```
 
-### 4. Install Rust Development Environment
 
-```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source $HOME/.cargo/env
-rustup update stable
-```
+## Phase 2: Configure Pulse Audio Pipeline
 
-## Phase 2: Configure ALSA Audio Pipeline
+### 1. Create Pulse Audio Configuration
 
-### 1. Create ALSA Configuration
-
-1. Create `/etc/asound.conf` (the complete file is available in the project documentation):
-   - 4 softvol devices (librespot, snapcast, analog, system)
-   - dmix for audio mixing
-   - Phantom volume control
-   - System-wide EQ
+1. Follow instructions in `config/pulseaudio` for complete pulseaudio configuration
 
 2. Verify configuration:
    ```bash
-   aplay -L
+   pulseaudio --check
    ```
 
 ### 2. Test Audio Pipeline
 
-Test the audio configuration before proceeding with application installations.
+pactl list short | grep -i sink
 
 ## Phase 3: Librespot Installation
 
@@ -102,20 +97,19 @@ Test the audio configuration before proceeding with application installations.
    git checkout dev  # if needed
    ```
 
-2. Build the project:
+2. Install librespot
    ```bash
-   rm Cargo.lock
-   cargo update
-   cargo build --release --features with-pipe
+   sudo cp target/release/librespot /usr/local/bin/librespot
+   sudo chmod +x /usr/local/bin/librespot
+
    ```
 
 ### 2. Test Librespot
 
 1. Run librespot:
    ```bash
-   ./target/release/librespot --name "PiSpot"
+   librespot --name "PiTest"
    ```
-   Note: `--backend rodio` is now the default; `--backend alsa` no longer works.
 
 2. Test with Spotify:
    - Open Spotify app
@@ -123,59 +117,12 @@ Test the audio configuration before proceeding with application installations.
    - Select "PiSpot"
    - Verify audio plays and Spotify volume slider doesn't affect hardware volume
 
-## Phase 4: Audio Stack Components (TODO)
+## Phase 4: Audio Stack Components
 
-### 1. Snapcast Client
-- Installation and configuration pending
-- Will provide multiroom audio synchronization
-
-### 2. Analog Input
-- Configuration for physical audio input
-- Integration with ALSA pipeline
-
-### 3. System Sounds
-- Configuration for beeps and notifications
-- Independent volume control
-
-### 4. MQTT Control Service
-install with sudo apt install python3-paho-mqtt
-- Remote control interface
-- Volume management
-- Source switching
-
-## Current Issues/Notes
-
-1. ALSA configuration with dmix and EQ needs refinement
-2. Trade-off: Removed dmix to enable system-wide EQ (only one audio source at a time)
-3. Software volume control used due to HiFiBerry DAC Lite hardware limitations
-
-## Testing Tools
-
-### Audio Test Script
-```python
-# Python script for continuous audio testing
-# (To be added based on project requirements)
-```
-
-### Volume Control Commands
-```bash
-# Control individual source volumes
-amixer set softvol_librespot 80%
-amixer set softvol_snapcast 80%
-amixer set softvol_analog 80%
-amixer set softvol_system 80%
-```
-
-## Troubleshooting
-
-1. **Audio not playing**: Check `aplay -l` and verify HiFiBerry DAC is detected
-2. **Permission issues**: Ensure proper ownership of configuration files
-3. **No audio mixing**: Current configuration doesn't support simultaneous playback
-4. **EQ not working**: Verify audio routing through equalizer in asound.conf
 
 ---
 
-## Netatalk (for file sharing)
+## [optional]Netatalk (for file sharing)
 sudo apt-get install netatalk
 
 edit this config file
@@ -186,19 +133,27 @@ basedir regex = /Home`
 Then on the mac
 afp://fauxnos1.local
 
-Install snapclient
+------
+
+# Install pulseaudio
+sudo apt-get update
+sudo apt-get install pulseaudio
+
+
+
+# Install snapclient
 
 wget https://github.com/badaix/snapcast/releases/download/v0.31.0/snapclient_0.31.0-1_armhf_bookworm.deb
 
-# Install the package
+### Install the package
 sudo dpkg -i snapclient_0.31.0-1_armhf_bookworm.deb
 
-# If there are still dependency issues, fix them with
+### If there are still dependency issues, fix them with
 sudo apt-get -f install
 
 
 
-Install snapserver
+# Install snapserver (server only)
 
 wget https://github.com/badaix/snapcast/releases/download/v0.31.0/snapserver_0.31.0-1_armhf_bookworm.deb
 
@@ -211,9 +166,12 @@ sudo apt-get -f install
 
 --------
 
-Install spotifyd and sp
+# Install spotifyd
+Download spotifyd-linux-armv7-full.tar.gz from here https://github.com/Spotifyd/spotifyd/releases
+Unzip it and move the spotifyd binary to /usr/local/bin
+sudo chmod +x /usr/local/bin/spotifyd
+TODO: create a spotifyd.service file to run as a daemon
 
-### move sp to /usr/local/bin
 ### Make sure you’ve also got dbus-send, grep, cut, tr, column installed
 sudo apt install dbus-user-session bsdmainutils
 
@@ -229,3 +187,33 @@ pip3 install dbus-next --break-system-packages
 
 ## Install gdbus
 sudo apt install libglib2.0-bin
+
+### install paho mqtt
+pip3 install paho-mqtt --break-system-packages
+
+### install pulsectl
+pip install pulsectl --break-system-packages
+
+---
+# Server installation
+
+### install mosquitto
+
+# Install mosquitto MQTT broker
+sudo apt update
+sudo apt install mosquitto mosquitto-clients
+
+# Start the mosquitto service
+sudo systemctl start mosquitto
+
+# Enable it to start on boot
+sudo systemctl enable mosquitto
+
+# Check if it's running
+sudo systemctl status mosquitto
+
+LATEST THING:
+- Snapcast is reading from a pipe in /var/run/snapcast/spotify
+- Using go-librespot instead to stream to the pipe (~/.config/go-librespot/)
+- Need to run go-librespot as it's own service and snapserver will listen to the pipe
+- Need to confirm that when go-librespot isn't playing or running it works fine
