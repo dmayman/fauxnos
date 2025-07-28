@@ -13,10 +13,11 @@ from datetime import datetime
 from typing import Dict, Any
 
 import paho.mqtt.client as mqtt
+from modules.snapcast_controller import SnapcastController
 
 
 class FauxnosServer:
-    def __init__(self, broker_host="localhost", broker_port=1883):
+    def __init__(self, broker_host="localhost", broker_port=1883, snapcast_host="localhost", snapcast_port=1705):
         self.broker_host = broker_host
         self.broker_port = broker_port
         self.client = mqtt.Client()
@@ -24,6 +25,9 @@ class FauxnosServer:
         
         # Store client states
         self.clients: Dict[str, Dict[str, Any]] = {}
+        
+        # Snapcast controller
+        self.snapcast = SnapcastController(snapcast_host, snapcast_port)
         
         # Set up MQTT callbacks
         self.client.on_connect = self._on_connect
@@ -314,11 +318,31 @@ def main():
                     print("  get <deviceId> status          - Request client status")
                     print("  get <deviceId> volume          - Request client volume")
                     print("  get <deviceId> activity        - Request client activity")
+                    print("  volume <0-100>                 - Set Snapcast spotify group master volume")
+                    print("  volume <client> <0-100>        - Set volume for specific client")
+                    print("  volume                         - Get current spotify group master volume")
+                    print("  clients                        - List all Snapcast clients")
+                    print("  snapcast groups                - List Snapcast groups and clients")
                     print("  quit                           - Exit the server")
                     print()
                     
                 elif command == 'list':
                     server.list_clients()
+                    
+                elif command == 'clients':
+                    clients = server.snapcast.list_clients()
+                    if not clients:
+                        print("No Snapcast clients found")
+                    else:
+                        print("\nSnapcast Clients:")
+                        for client in clients:
+                            name = client['name']
+                            group = client['group']
+                            volume = client['volume']
+                            connected = "✓" if client['connected'] else "✗"
+                            muted = " (muted)" if client['muted'] else ""
+                            print(f"  {name} - Group: {group} | Volume: {volume}%{muted} | Connected: {connected}")
+                        print()
                     
                 elif command == 'set':
                     if len(args) < 3:
@@ -356,6 +380,85 @@ def main():
                         server.get_client_activity(device_id)
                     else:
                         print(f"Unknown info type: {info_type}. Use 'status', 'volume', or 'activity'")
+                        
+                elif command == 'volume':
+                    # No arguments - get current master volume
+                    if len(args) == 0:
+                        master_volume = server.snapcast.get_group_master_volume("spotify")
+                        if master_volume is not None:
+                            print(f"Spotify group master volume: {master_volume:.1f}%")
+                        else:
+                            print("Could not get spotify group master volume (group not found or no clients)")
+                        continue
+                        
+                    # Check if it's a client-specific volume command
+                    if len(args) == 2:
+                        client_name = args[0]
+                        try:
+                            volume = int(args[1])
+                            
+                            # Find client by name
+                            client_id = server.snapcast.find_client_by_name(client_name)
+                            if not client_id:
+                                print(f"Client '{client_name}' not found. Use 'clients' to see available clients.")
+                                continue
+                                
+                            if server.snapcast.set_client_volume(client_id, volume):
+                                print(f"Set volume to {volume}% for client '{client_name}'")
+                            else:
+                                print(f"Failed to set volume for client '{client_name}'")
+                        except ValueError:
+                            print(f"Invalid volume: {args[1]}. Must be an integer 0-100")
+                    
+                    # Single argument - group volume command
+                    elif len(args) == 1:
+                        try:
+                            volume = int(args[0])
+                            
+                            # Get current master volume for comparison
+                            current_master = server.snapcast.get_group_master_volume("spotify")
+                            if current_master is not None:
+                                print(f"Current master volume: {current_master:.1f}%")
+                            
+                            # Use proportional scaling (snapweb-style)
+                            if server.snapcast.set_group_volume_direct("spotify", volume):
+                                print(f"✓ Set spotify group master volume to {volume}%")
+                            else:
+                                print(f"✗ Failed to set Snapcast master volume")
+                        except ValueError:
+                            print(f"Invalid volume: {args[0]}. Must be an integer 0-100")
+                    else:
+                        print("Usage: volume | volume <0-100> | volume <client> <0-100>")
+                        
+                elif command == 'snapcast':
+                    if len(args) < 1:
+                        print("Usage: snapcast groups")
+                        continue
+                        
+                    if args[0] == 'groups':
+                        groups = server.snapcast.list_groups()
+                        if not groups:
+                            print("No Snapcast groups found")
+                        else:
+                            print("\nSnapcast Groups:")
+                            for group in groups:
+                                stream_id = group['stream_id']
+                                muted = " (MUTED)" if group['muted'] else ""
+                                
+                                # Calculate and show master volume
+                                master_volume = server.snapcast.get_group_master_volume(stream_id)
+                                master_vol_str = f" | Master: {master_volume:.1f}%" if master_volume is not None else ""
+                                
+                                print(f"  Group: {stream_id}{muted}{master_vol_str}")
+                                
+                                for client in group['clients']:
+                                    name = client['name']
+                                    volume = client['volume']
+                                    client_muted = " (muted)" if client['muted'] else ""
+                                    print(f"    - {name}: {volume}%{client_muted}")
+                                print()
+                    else:
+                        print(f"Unknown snapcast command: {args[0]}. Use 'groups'")
                         
                 elif command == 'quit':
                     break
