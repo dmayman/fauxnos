@@ -1,0 +1,15 @@
+[Unit]
+Description=Snapcast client
+Documentation=https://github.com/badaix/snapcast
+Wants=sound.target
+After=sound.target
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/snapclient
+Restart=always
+RestartSec=12
+
+[Install]
+WantedBy=default.target

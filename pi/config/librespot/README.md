@@ -26,12 +26,6 @@ This configuration sets up Librespot as a Spotify Connect endpoint for Fauxnos, 
 
 ## Configuration
 
-### Service Settings
-- **Name**: Fauxnos1 (visible in Spotify app)
-- **Audio Quality**: 320kbps
-- **Output**: Pipe to `/tmp/librespot_pipe`
-- **Auto-restart**: On failure
-
 ### Audio Routing
 - Audio is piped to PulseAudio's `libresink`
 - Volume control is managed by the Fauxnos audio controller

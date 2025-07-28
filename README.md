@@ -14,3 +14,27 @@
 | `get/`              | `get/clients/<deviceId>/activity`    | `"playing"` / `"silent"`                                                                                | Request device to report whether audio is playing                                  |
 
 Install DBus
+
+# Services
+
+## Client Components
+- fauxnos-client (user)
+    - main client software
+- spotifyd (user)
+    - main stream for individual spotify 
+- snapclient (user)
+    - streams multiroom audio from snapserver
+- pulseaudio (user)
+    - audio engine
+- dbus (system)
+    - playback and volume control for spotifyd
+
+## Server Components
+- fauxnos-server (user)
+    - main server software
+- mosquitto (system)
+    - mqtt broker
+- snapserver (system)
+    - multiroom audio server
+- go-librespot (system)
+    - streams spotify to snapserver

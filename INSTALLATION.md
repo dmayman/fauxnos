@@ -194,6 +194,9 @@ pip3 install paho-mqtt --break-system-packages
 ### install pulsectl
 pip install pulsectl --break-system-packages
 
+### enable user linger so user services start on their own
+sudo loginctl enable-linger $USER
+
 ---
 # Server installation
 
@@ -212,8 +215,6 @@ sudo systemctl enable mosquitto
 # Check if it's running
 sudo systemctl status mosquitto
 
-LATEST THING:
-- Snapcast is reading from a pipe in /var/run/snapcast/spotify
-- Using go-librespot instead to stream to the pipe (~/.config/go-librespot/)
-- Need to run go-librespot as it's own service and snapserver will listen to the pipe
-- Need to confirm that when go-librespot isn't playing or running it works fine
+
+
+

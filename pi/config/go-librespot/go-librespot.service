@@ -1,0 +1,13 @@
+[Unit]
+Description=Go-Librespot Spotify Connect daemon
+After=network.target sound.target
+
+[Service]
+Type=simple
+ExecStartPre=/bin/bash %h/.config/go-librespot/setup-fifo.sh
+ExecStart=/usr/local/bin/go-librespot
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

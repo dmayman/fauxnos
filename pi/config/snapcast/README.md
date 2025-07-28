@@ -29,3 +29,11 @@ This configuration sets up a multi-room audio server for Fauxnos using Snapcast.
 ## Usage
 
 Connect Snapcast clients to the server using the hostname or IP address. The server will be discoverable via mDNS as "Multiroom".
+
+
+# Snapclient
+add snapclient.service to ~/.config/systemd/user/snapclient.service
+
+run: 
+systemctl enable ~/.config/systemd/user/snapclient.service --user
+systemctl start snapclient --user
