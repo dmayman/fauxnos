@@ -7,7 +7,11 @@ with smooth volume transitions and appropriate notification sounds.
 """
 
 
+import argparse
 import logging
+import signal
+import sys
+import time
 from modules.audio_config import load_config, setup_logging, play_sound, get_sound_paths
 from modules.audio_pulse import PulseAudioController
 from modules.spotify_monitor import SpotifyMonitor, SpotifyController
@@ -433,212 +437,242 @@ def parse_command(command_str):
     return command, args
 
 def main():
-    controller = AudioController()
-    logger.info("Audio Controller started. Type 'help' for available commands.")
+    parser = argparse.ArgumentParser(description='Fauxnos Audio Client')
+    parser.add_argument('--daemon', action='store_true', 
+                       help='Run in daemon mode (no interactive CLI)')
     
-    while True:
+    args = parser.parse_args()
+    
+    controller = AudioController()
+    
+    # Signal handler for graceful shutdown
+    def signal_handler(sig, frame):
+        logger.info("Received shutdown signal")
+        controller.stop_auto_switching()
+        controller.stop_spotifyd_monitoring()
+        controller.stop_pulse_event_monitoring()
+        controller.stop_mqtt_client()
+        logger.info("Audio Controller stopped")
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    if args.daemon:
+        # Daemon mode - just keep running until signal
+        logger.info("Running in daemon mode. Use Ctrl+C or SIGTERM to stop.")
         try:
-            command_str = input("> ").strip()
-            if not command_str:
-                continue
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
+    else:
+        # Interactive CLI mode
+        logger.info("Audio Controller started. Type 'help' for available commands.")
+        
+        while True:
+            try:
+                command_str = input("> ").strip()
+                if not command_str:
+                    continue
                 
-            command, args = parse_command(command_str)
+                command, args = parse_command(command_str)
             
-            if command == 'help':
-                print("\nAvailable commands:")
-                source_list = "|".join(controller.source_ids)
-                print(f"  source [{source_list}] - Switch audio source")
-                print("  volume [0-100]         - Set volume level")
-                print("  adjust [+/-N]          - Adjust volume by N")
-                print("  auto [on|off]          - Enable/disable automatic switching")
-                print("  snapclient             - Move snapclient to snapsink")
-                print("  status                 - Show current state")
-                print("  quit                   - Exit program")
-                print("  help                   - Show this help")
-                print("\nSpotify controls:")
-                print("  spotify play           - Start Spotify playback")
-                print("  spotify pause          - Pause Spotify playback")
-                print("  spotify toggle         - Toggle play/pause")
-                print("  spotify next           - Skip to next track")
-                print("  spotify prev           - Skip to previous track")
-                print("  spotify volume [0-100] - Set Spotify volume")
-                print("\nSnapcast controls:")
-                print("  snapcast volume [0-100] - Set Snapcast volume")
-                print("  snapcast status         - Show Snapcast connection status")
+                if command == 'help':
+                    print("\nAvailable commands:")
+                    source_list = "|".join(controller.source_ids)
+                    print(f"  source [{source_list}] - Switch audio source")
+                    print("  volume [0-100]         - Set volume level")
+                    print("  adjust [+/-N]          - Adjust volume by N")
+                    print("  auto [on|off]          - Enable/disable automatic switching")
+                    print("  snapclient             - Move snapclient to snapsink")
+                    print("  status                 - Show current state")
+                    print("  quit                   - Exit program")
+                    print("  help                   - Show this help")
+                    print("\nSpotify controls:")
+                    print("  spotify play           - Start Spotify playback")
+                    print("  spotify pause          - Pause Spotify playback")
+                    print("  spotify toggle         - Toggle play/pause")
+                    print("  spotify next           - Skip to next track")
+                    print("  spotify prev           - Skip to previous track")
+                    print("  spotify volume [0-100] - Set Spotify volume")
+                    print("\nSnapcast controls:")
+                    print("  snapcast volume [0-100] - Set Snapcast volume")
+                    print("  snapcast status         - Show Snapcast connection status")
                 
-            elif command == 'source':
-                if not args or args[0] not in controller.source_ids:
-                    source_list = "', '".join(controller.source_ids)
-                    print(f"Error: source must be one of: '{source_list}'")
-                    continue
-                controller.switch_source(args[0])
+                elif command == 'source':
+                    if not args or args[0] not in controller.source_ids:
+                        source_list = "', '".join(controller.source_ids)
+                        print(f"Error: source must be one of: '{source_list}'")
+                        continue
+                    controller.switch_source(args[0])
                 
-            elif command == 'volume':
-                if not args:
-                    print("Error: volume level required")
-                    continue
-                try:
-                    level = int(args[0])
-                    controller.set_volume(level)
-                except ValueError:
-                    print("Error: volume must be a number between 0 and 100")
+                elif command == 'volume':
+                    if not args:
+                        print("Error: volume level required")
+                        continue
+                    try:
+                        level = int(args[0])
+                        controller.set_volume(level)
+                    except ValueError:
+                        print("Error: volume must be a number between 0 and 100")
                     
-            elif command == 'adjust':
-                if not args:
-                    print("Error: volume adjustment required")
-                    continue
-                try:
-                    increment = int(args[0])
-                    controller.adjust_volume(increment)
-                except ValueError:
-                    print("Error: adjustment must be a number")
+                elif command == 'adjust':
+                    if not args:
+                        print("Error: volume adjustment required")
+                        continue
+                    try:
+                        increment = int(args[0])
+                        controller.adjust_volume(increment)
+                    except ValueError:
+                        print("Error: adjustment must be a number")
                     
-            elif command == 'auto':
-                if not args or args[0] not in ['on', 'off']:
-                    print("Error: auto must be 'on' or 'off'")
-                    continue
-                if args[0] == 'on':
-                    controller.start_auto_switching()
-                    print("Automatic source switching enabled")
-                else:
+                elif command == 'auto':
+                    if not args or args[0] not in ['on', 'off']:
+                        print("Error: auto must be 'on' or 'off'")
+                        continue
+                    if args[0] == 'on':
+                        controller.start_auto_switching()
+                        print("Automatic source switching enabled")
+                    else:
+                        controller.stop_auto_switching()
+                        print("Automatic source switching disabled")
+                    
+                elif command == 'snapclient':
+                    if controller.pulse_controller.move_snapclient_to_snapsink():
+                        print("Checked snapclient routing")
+                    else:
+                        print("No snapclient found")
+                    
+                elif command == 'status':
+                    print(f"\nCurrent state:")
+                    if controller.current_source is None:
+                        print(f"  Source: Not set")
+                    else:
+                        source_display = controller.sources[controller.current_source].get("label", controller.current_source)
+                        print(f"  Source: {source_display} ({controller.current_source})")
+                        
+                    for source_id in controller.source_ids:
+                        source_display = controller.sources[source_id].get("label", source_id)
+                        volume = controller.source_volumes[source_id]
+                        sink_volume = controller.sink_volumes[source_id]
+                        sink_name = controller.id_to_sink[source_id]
+                        print(f"  {source_display} volume: {volume}% (sink {sink_name}: {sink_volume}%)")
+                        
+                    print(f"  Auto-switching: {'enabled' if controller.auto_switching_enabled else 'disabled'}")
+                
+                elif command == 'spotify':
+                    if not args:
+                        print("Error: spotify command requires an action")
+                        print("Available actions: play, pause, toggle, next, prev, volume")
+                        continue
+                        
+                    spotify_action = args[0].lower()
+                    
+                    if spotify_action == 'play':
+                        if controller.spotify_play():
+                            print("Started Spotify playback")
+                        else:
+                            print("Failed to start Spotify playback")
+                            
+                    elif spotify_action == 'pause':
+                        if controller.spotify_pause():
+                            print("Paused Spotify playback")
+                        else:
+                            print("Failed to pause Spotify playback")
+                            
+                    elif spotify_action == 'toggle':
+                        if controller.spotify_play_pause():
+                            print("Toggled Spotify play/pause")
+                        else:
+                            print("Failed to toggle Spotify play/pause")
+                            
+                    elif spotify_action == 'next':
+                        if controller.spotify_next():
+                            print("Skipped to next track")
+                        else:
+                            print("Failed to skip to next track")
+                            
+                    elif spotify_action in ['prev', 'previous']:
+                        if controller.spotify_previous():
+                            print("Skipped to previous track")
+                        else:
+                            print("Failed to skip to previous track")
+                            
+                    elif spotify_action == 'volume':
+                        if len(args) < 2:
+                            print("Error: spotify volume requires a level (0-100)")
+                            continue
+                        try:
+                            volume = int(args[1])
+                            if controller.spotify_set_volume(volume):
+                                print(f"Set Spotify volume to {volume}%")
+                            else:
+                                print("Failed to set Spotify volume")
+                        except ValueError:
+                            print("Error: volume must be a number between 0 and 100")
+                            
+                    else:
+                        print(f"Unknown spotify action: {spotify_action}")
+                        print("Available actions: play, pause, toggle, next, prev, volume")
+                    
+                elif command == 'snapcast':
+                    if not args:
+                        print("Error: snapcast command requires an action")
+                        print("Available actions: volume, status")
+                        continue
+                        
+                    snapcast_action = args[0].lower()
+                    
+                    if snapcast_action == 'volume':
+                        if len(args) < 2:
+                            print("Error: snapcast volume requires a level (0-100)")
+                            continue
+                        try:
+                            volume = int(args[1])
+                            if controller.snapcast_set_volume(volume):
+                                print(f"Set Snapcast volume to {volume}%")
+                            else:
+                                print("Failed to set Snapcast volume")
+                        except ValueError:
+                            print("Error: volume must be a number between 0 and 100")
+                            
+                    elif snapcast_action == 'status':
+                        if controller.snapcast_test_connection():
+                            current_volume = controller.snapcast_get_volume()
+                            if current_volume is not None:
+                                print(f"Snapcast connected - Current volume: {current_volume}%")
+                            else:
+                                print("Snapcast connected - Could not get current volume")
+                        else:
+                            print("Snapcast connection failed")
+                            
+                    else:
+                        print(f"Unknown snapcast action: {snapcast_action}")
+                        print("Available actions: volume, status")
+                    
+                elif command == 'quit':
                     controller.stop_auto_switching()
-                    print("Automatic source switching disabled")
-                    
-            elif command == 'snapclient':
-                if controller.pulse_controller.move_snapclient_to_snapsink():
-                    print("Checked snapclient routing")
-                else:
-                    print("No snapclient found")
-                    
-            elif command == 'status':
-                print(f"\nCurrent state:")
-                if controller.current_source is None:
-                    print(f"  Source: Not set")
-                else:
-                    source_display = controller.sources[controller.current_source].get("label", controller.current_source)
-                    print(f"  Source: {source_display} ({controller.current_source})")
-                    
-                for source_id in controller.source_ids:
-                    source_display = controller.sources[source_id].get("label", source_id)
-                    volume = controller.source_volumes[source_id]
-                    sink_volume = controller.sink_volumes[source_id]
-                    sink_name = controller.id_to_sink[source_id]
-                    print(f"  {source_display} volume: {volume}% (sink {sink_name}: {sink_volume}%)")
-                    
-                print(f"  Auto-switching: {'enabled' if controller.auto_switching_enabled else 'disabled'}")
+                    controller.stop_spotifyd_monitoring()
+                    controller.stop_pulse_event_monitoring()
+                    controller.stop_mqtt_client()
+                    logger.info("Shutting down Audio Controller")
+                    break
                 
-            elif command == 'spotify':
-                if not args:
-                    print("Error: spotify command requires an action")
-                    print("Available actions: play, pause, toggle, next, prev, volume")
-                    continue
-                    
-                spotify_action = args[0].lower()
-                
-                if spotify_action == 'play':
-                    if controller.spotify_play():
-                        print("Started Spotify playback")
-                    else:
-                        print("Failed to start Spotify playback")
-                        
-                elif spotify_action == 'pause':
-                    if controller.spotify_pause():
-                        print("Paused Spotify playback")
-                    else:
-                        print("Failed to pause Spotify playback")
-                        
-                elif spotify_action == 'toggle':
-                    if controller.spotify_play_pause():
-                        print("Toggled Spotify play/pause")
-                    else:
-                        print("Failed to toggle Spotify play/pause")
-                        
-                elif spotify_action == 'next':
-                    if controller.spotify_next():
-                        print("Skipped to next track")
-                    else:
-                        print("Failed to skip to next track")
-                        
-                elif spotify_action in ['prev', 'previous']:
-                    if controller.spotify_previous():
-                        print("Skipped to previous track")
-                    else:
-                        print("Failed to skip to previous track")
-                        
-                elif spotify_action == 'volume':
-                    if len(args) < 2:
-                        print("Error: spotify volume requires a level (0-100)")
-                        continue
-                    try:
-                        volume = int(args[1])
-                        if controller.spotify_set_volume(volume):
-                            print(f"Set Spotify volume to {volume}%")
-                        else:
-                            print("Failed to set Spotify volume")
-                    except ValueError:
-                        print("Error: volume must be a number between 0 and 100")
-                        
                 else:
-                    print(f"Unknown spotify action: {spotify_action}")
-                    print("Available actions: play, pause, toggle, next, prev, volume")
-                    
-            elif command == 'snapcast':
-                if not args:
-                    print("Error: snapcast command requires an action")
-                    print("Available actions: volume, status")
-                    continue
-                    
-                snapcast_action = args[0].lower()
+                    print(f"Unknown command: {command}")
+                    print("Type 'help' for available commands")
                 
-                if snapcast_action == 'volume':
-                    if len(args) < 2:
-                        print("Error: snapcast volume requires a level (0-100)")
-                        continue
-                    try:
-                        volume = int(args[1])
-                        if controller.snapcast_set_volume(volume):
-                            print(f"Set Snapcast volume to {volume}%")
-                        else:
-                            print("Failed to set Snapcast volume")
-                    except ValueError:
-                        print("Error: volume must be a number between 0 and 100")
-                        
-                elif snapcast_action == 'status':
-                    if controller.snapcast_test_connection():
-                        current_volume = controller.snapcast_get_volume()
-                        if current_volume is not None:
-                            print(f"Snapcast connected - Current volume: {current_volume}%")
-                        else:
-                            print("Snapcast connected - Could not get current volume")
-                    else:
-                        print("Snapcast connection failed")
-                        
-                else:
-                    print(f"Unknown snapcast action: {snapcast_action}")
-                    print("Available actions: volume, status")
-                    
-            elif command == 'quit':
+            except KeyboardInterrupt:
+                print("\nShutting down...")
                 controller.stop_auto_switching()
                 controller.stop_spotifyd_monitoring()
                 controller.stop_pulse_event_monitoring()
                 controller.stop_mqtt_client()
-                logger.info("Shutting down Audio Controller")
                 break
-                
-            else:
-                print(f"Unknown command: {command}")
-                print("Type 'help' for available commands")
-                
-        except KeyboardInterrupt:
-            print("\nShutting down...")
-            controller.stop_auto_switching()
-            controller.stop_spotifyd_monitoring()
-            controller.stop_pulse_event_monitoring()
-            controller.stop_mqtt_client()
-            break
-        except Exception as e:
-            logger.error(f"Error processing command: {e}")
-            print(f"Error: {e}")
+            except Exception as e:
+                logger.error(f"Error processing command: {e}")
+                print(f"Error: {e}")
 
 if __name__ == "__main__":
     main()

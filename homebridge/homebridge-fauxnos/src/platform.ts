@@ -1,4 +1,5 @@
 import type { API, Characteristic, DynamicPlatformPlugin, Logging, PlatformAccessory, PlatformConfig, Service } from 'homebridge';
+import * as mqtt from 'mqtt';
 
 import { FauxnosPlatformAccessory } from './platformAccessory.js';
 import { PLATFORM_NAME, PLUGIN_NAME } from './settings.js';
@@ -18,6 +19,12 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
   // this is used to track restored cached accessories
   public readonly accessories: Map<string, PlatformAccessory> = new Map();
   public readonly discoveredCacheUUIDs: string[] = [];
+
+  // MQTT client for device discovery
+  private mqttClient: mqtt.MqttClient | null = null;
+  private discoveredDevices: Map<string, any> = new Map();
+  private deviceDiscoveryTimeout: NodeJS.Timeout | null = null;
+  private readonly TESTING_MODE = true; // Remove cached accessories on startup
 
   // This is only required when using Custom Services and Characteristics not support by HomeKit
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -67,16 +74,14 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
   }
 
   /**
-   * This is an example method showing how to register discovered accessories.
-   * Accessories must only be registered once, previously created accessories
-   * must not be registered again to prevent "duplicate UUID" errors.
+   * Discover Fauxnos devices on the local network via MQTT.
+   * Listens for "hello" messages from devices and registers them as HomeKit accessories.
    */
   discoverDevices() {
-    this.log.info('[FAUXNOS] Discovering audio devices...');
+    this.log.info('[FAUXNOS] Starting MQTT device discovery...');
 
     // TESTING MODE: Remove ALL cached accessories first
-    const TESTING_MODE = true;
-    if (TESTING_MODE) {
+    if (this.TESTING_MODE) {
       this.log.info('[FAUXNOS] TESTING MODE: Removing all cached accessories...');
       for (const [uuid, accessory] of this.accessories) {
         this.log.info('[FAUXNOS] Removing cached accessory:', accessory.displayName);
@@ -87,37 +92,134 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
       this.log.info('[FAUXNOS] All cached accessories removed');
     }
 
-    // Hardcoded fauxnos audio devices for testing
-    const exampleDevices = [
-      {
-        exampleUniqueId: 'FAUXNOS-005',
-        exampleDisplayName: 'Fauxnos Test 05',
-      },
-      {
-        exampleUniqueId: 'FAUXNOS-006',
-        exampleDisplayName: 'Fauxnos Test 06',
-      },
-    ];
+    // Connect to MQTT broker for device discovery
+    this.connectToMQTT();
 
-    // loop over the discovered devices and register each one if it has not already been registered
-    for (const device of exampleDevices) {
-      // generate a unique id for the accessory this should be generated from
-      // something globally unique, but constant, for example, the device serial
-      // number or MAC address
-      const uuid = this.api.hap.uuid.generate(device.exampleUniqueId);
+    // Set discovery timeout to register devices after collecting responses
+    this.deviceDiscoveryTimeout = setTimeout(() => {
+      this.registerDiscoveredDevices();
+    }, 5000); // Wait 5 seconds for device responses
+  }
+
+  /**
+   * Connect to MQTT broker and listen for device announcements
+   */
+  private connectToMQTT() {
+    const brokerUrl = this.config.mqttBroker || 'mqtt://localhost:1883';
+    this.log.info('[FAUXNOS] Connecting to MQTT broker:', brokerUrl);
+
+    try {
+      this.mqttClient = mqtt.connect(brokerUrl);
+
+      this.mqttClient.on('connect', () => {
+        this.log.info('[FAUXNOS] Connected to MQTT broker');
+        
+        // Subscribe to device hello messages
+        this.mqttClient!.subscribe('status/clients/+/hello', (err) => {
+          if (err) {
+            this.log.error('[FAUXNOS] Failed to subscribe to device hello messages:', err);
+          } else {
+            this.log.info('[FAUXNOS] Subscribed to device hello messages');
+            
+            // Request all devices to announce themselves
+            this.requestDeviceDiscovery();
+          }
+        });
+      });
+
+      this.mqttClient.on('message', (topic, message) => {
+        this.handleMqttMessage(topic, message);
+      });
+
+      this.mqttClient.on('error', (error) => {
+        this.log.error('[FAUXNOS] MQTT connection error:', error);
+      });
+
+      this.mqttClient.on('close', () => {
+        this.log.info('[FAUXNOS] MQTT connection closed');
+      });
+
+    } catch (error) {
+      this.log.error('[FAUXNOS] Failed to connect to MQTT broker:', error);
+      // Fall back to empty device list if MQTT fails
+      this.registerDiscoveredDevices();
+    }
+  }
+
+  /**
+   * Request all Fauxnos devices to announce themselves using existing protocol
+   */
+  private requestDeviceDiscovery() {
+    if (!this.mqttClient) return;
+    
+    this.log.info('[FAUXNOS] Broadcasting discovery request...');
+    
+    // Use a broadcast topic that all devices can listen to
+    // Publish to a general status request topic
+    this.mqttClient.publish('get/clients/all/status', JSON.stringify({
+      requester: 'homebridge-fauxnos',
+      timestamp: Date.now()
+    }));
+    
+    this.log.info('[FAUXNOS] Sent broadcast discovery request to all devices');
+  }
+
+  /**
+   * Handle incoming MQTT messages from Fauxnos devices
+   */
+  private handleMqttMessage(topic: string, message: Buffer) {
+    try {
+      // Parse topic to extract device ID
+      const topicParts = topic.split('/');
+      if (topicParts.length >= 4 && topicParts[0] === 'status' && topicParts[1] === 'clients' && topicParts[3] === 'hello') {
+        const deviceId = topicParts[2];
+        const helloData = JSON.parse(message.toString());
+        
+        this.log.info(`[FAUXNOS] Discovered device: ${helloData.name} (ID: ${deviceId})`);
+        this.log.info(`[FAUXNOS] Device sources: ${helloData.sources?.join(', ') || 'none'}`);
+        
+        // Store discovered device
+        this.discoveredDevices.set(deviceId, {
+          id: deviceId,
+          name: helloData.name || deviceId,
+          displayName: helloData.name || `Fauxnos ${deviceId}`,
+          sources: helloData.sources || []
+        });
+      }
+    } catch (error) {
+      this.log.error('[FAUXNOS] Error parsing MQTT message:', error);
+    }
+  }
+
+  /**
+   * Register all discovered devices as HomeKit accessories
+   */
+  private registerDiscoveredDevices() {
+    this.log.info(`[FAUXNOS] Registering ${this.discoveredDevices.size} discovered devices...`);
+
+    // Disconnect from MQTT after discovery
+    if (this.mqttClient) {
+      this.mqttClient.end();
+      this.mqttClient = null;
+    }
+
+    // Register each discovered device as an accessory
+    for (const [deviceId, device] of this.discoveredDevices) {
+      // generate a unique id for the accessory using the device ID
+      const uuid = this.api.hap.uuid.generate(device.id);
 
       // see if an accessory with the same uuid has already been registered and restored from
       // the cached devices we stored in the `configureAccessory` method above
       const existingAccessory = this.accessories.get(uuid);
 
       // In testing mode, all accessories were already removed, so just create new ones
-      if (existingAccessory && !TESTING_MODE) {
+      if (existingAccessory && !this.TESTING_MODE) {
         // the accessory already exists (normal mode)
         this.log.info('[FAUXNOS] Restoring existing accessory:', existingAccessory.displayName);
 
-        // if you need to update the accessory.context then you should run `api.updatePlatformAccessories`. e.g.:
-        // existingAccessory.context.device = device;
-        // this.api.updatePlatformAccessories([existingAccessory]);
+        // Update the accessory context with fresh device data including sources
+        existingAccessory.context.device = device;
+        this.api.updatePlatformAccessories([existingAccessory]);
 
         // create the accessory handler for the restored accessory
         // this is imported from `platformAccessory.ts`
@@ -129,10 +231,10 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
       } else {
         // Create new accessory (testing mode or no existing accessory)
         // the accessory does not yet exist, so we need to create it
-        this.log.info('[FAUXNOS] Adding new accessory:', device.exampleDisplayName);
+        this.log.info('[FAUXNOS] Adding new accessory:', device.displayName);
 
         // create a new accessory
-        const accessory = new this.api.platformAccessory(device.exampleDisplayName, uuid);
+        const accessory = new this.api.platformAccessory(device.displayName, uuid);
 
         // store a copy of the device object in the `accessory.context`
         // the `context` property can be used to store any data about the accessory you may need
@@ -143,13 +245,13 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
         try {
           new FauxnosPlatformAccessory(this, accessory);
         } catch (error) {
-          this.log.error('[FAUXNOS] Failed to create accessory handler for', device.exampleDisplayName, ':', error);
+          this.log.error('[FAUXNOS] Failed to create accessory handler for', device.displayName, ':', error);
         }
 
         // register as platform accessory
         try {
           this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
-          this.log.info('[FAUXNOS] Registered platform accessory:', device.exampleDisplayName);
+          this.log.info('[FAUXNOS] Registered platform accessory:', device.displayName);
         } catch (error) {
           this.log.error('[FAUXNOS] Failed to register platform accessory:', error);
         }

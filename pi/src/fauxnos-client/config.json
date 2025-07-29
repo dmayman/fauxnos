@@ -86,7 +86,7 @@
     ],
     "log_file": "~/logs/audio_controller.log",
     "mqtt": {
-        "broker_host": "localhost",
+        "broker_host": "fauxnos1.local",
         "broker_port": 1883
     }
 }

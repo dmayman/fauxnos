@@ -104,7 +104,8 @@ class MQTTClient:
             f"set/clients/{self.device_id}/mode",
             f"get/clients/{self.device_id}/volume", 
             f"get/clients/{self.device_id}/status",
-            f"get/clients/{self.device_id}/activity"
+            f"get/clients/{self.device_id}/activity",
+            "get/clients/all/status"  # Listen for broadcast discovery requests
         ]
         
         for topic in topics:
@@ -117,6 +118,12 @@ class MQTTClient:
         payload = msg.payload.decode('utf-8')
         
         logger.info(f"📨 Received command: {topic} -> {payload}")
+        
+        # Handle broadcast discovery requests
+        if topic == "get/clients/all/status":
+            logger.info("📡 Received broadcast discovery request, sending hello message")
+            self._send_hello()
+            return
         
         # Parse topic to extract command type
         topic_parts = topic.split('/')
@@ -161,6 +168,8 @@ class MQTTClient:
                 if action == "volume":
                     self.publish_volume()
                 elif action == "status":
+                    # Send hello message for device discovery, then status
+                    self._send_hello()
                     self.publish_mode()
                 elif action == "activity":
                     self.publish_activity()

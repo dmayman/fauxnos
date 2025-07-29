@@ -216,5 +216,15 @@ sudo systemctl enable mosquitto
 sudo systemctl status mosquitto
 
 
+# Fauxnos Services 
+systemctl enable ~/services/fauxnosClient.service --user --now
+systemctl enable ~/services/fauxnosServer.service --user --now
 
 
+### FYI for Homebridge had to install nss-mdns to get mDNS working
+
+sudo apt-get install libnss-mdns
+
+NEXT STEPS:
+- Homebridge plugin has proper mDNS support now
+- It's loading up properly with logs, but is not discovering any devices. No MQTT logs on fauxnos-server, so it's probably not connecting properly. 

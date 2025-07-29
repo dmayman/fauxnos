@@ -21,12 +21,7 @@ export class FauxnosPlatformAccessory {
     currentSource: 0, // TV input source
   };
 
-  private hardcodedSources = [
-    'Spotify',
-    'Local Files', 
-    'Radio',
-    'Bluetooth',
-  ];
+  private deviceSources: string[] = [];
 
   constructor(
     private readonly platform: FauxnosPlatform,
@@ -34,12 +29,16 @@ export class FauxnosPlatformAccessory {
   ) {
     this.platform.log.info('[FAUXNOS] Setting up accessory:', accessory.displayName);
     
+    // Initialize device sources from MQTT discovery data
+    this.deviceSources = accessory.context.device.sources || [];
+    this.platform.log.info(`[FAUXNOS] Device sources: ${this.deviceSources.join(', ') || 'none'}`);
+    
     // set accessory information
     try {
       this.accessory.getService(this.platform.Service.AccessoryInformation)!
         .setCharacteristic(this.platform.Characteristic.Manufacturer, 'Fauxnos')
         .setCharacteristic(this.platform.Characteristic.Model, 'Audio Controller')
-        .setCharacteristic(this.platform.Characteristic.SerialNumber, accessory.context.device.exampleUniqueId);
+        .setCharacteristic(this.platform.Characteristic.SerialNumber, accessory.context.device.id);
     } catch (error) {
       this.platform.log.error('[FAUXNOS] Failed to set accessory information:', error);
     }
@@ -47,11 +46,11 @@ export class FauxnosPlatformAccessory {
     // Create TV service for source selection only (non-external) - PRIMARY SERVICE
     try {
       this.televisionService = this.accessory.getService(this.platform.Service.Television) || 
-        this.accessory.addService(this.platform.Service.Television, `${accessory.context.device.exampleDisplayName} Sources`, 'tv');
+        this.accessory.addService(this.platform.Service.Television, `${accessory.context.device.displayName} Sources`, 'tv');
       
       this.televisionService
-        .setCharacteristic(this.platform.Characteristic.Name, `${accessory.context.device.exampleDisplayName} Sources`)
-        .setCharacteristic(this.platform.Characteristic.ConfiguredName, `${accessory.context.device.exampleDisplayName} Sources`)
+        .setCharacteristic(this.platform.Characteristic.Name, `${accessory.context.device.displayName} Sources`)
+        .setCharacteristic(this.platform.Characteristic.ConfiguredName, `${accessory.context.device.displayName} Sources`)
         .setCharacteristic(this.platform.Characteristic.ActiveIdentifier, 1)
         .setCharacteristic(this.platform.Characteristic.SleepDiscoveryMode, this.platform.Characteristic.SleepDiscoveryMode.ALWAYS_DISCOVERABLE);
       
@@ -63,10 +62,10 @@ export class FauxnosPlatformAccessory {
     // Create Lightbulb service for volume control (brightness = volume) - SECONDARY SERVICE
     try {
       this.lightService = this.accessory.getService(this.platform.Service.Lightbulb) || 
-        this.accessory.addService(this.platform.Service.Lightbulb, `${accessory.context.device.exampleDisplayName} Volume`, 'volume');
+        this.accessory.addService(this.platform.Service.Lightbulb, `${accessory.context.device.displayName} Volume`, 'volume');
       
       this.lightService
-        .setCharacteristic(this.platform.Characteristic.Name, `${accessory.context.device.exampleDisplayName} Volume`)
+        .setCharacteristic(this.platform.Characteristic.Name, `${accessory.context.device.displayName} Volume`)
         .setCharacteristic(this.platform.Characteristic.On, true)
         .setCharacteristic(this.platform.Characteristic.Brightness, 50);
       
@@ -75,16 +74,19 @@ export class FauxnosPlatformAccessory {
       this.platform.log.error('[FAUXNOS] Failed to create Lightbulb service:', error);
     }
 
-    // Create InputSource services for source selection
+    // Create InputSource services for source selection using device sources
     try {
-      for (let i = 0; i < this.hardcodedSources.length; i++) {
+      for (let i = 0; i < this.deviceSources.length; i++) {
         const inputService = this.accessory.getService(`Source ${i}`) ||
           this.accessory.addService(this.platform.Service.InputSource, `Source ${i}`, `source${i}`);
         
+        // Capitalize source name for display
+        const sourceName = this.deviceSources[i].charAt(0).toUpperCase() + this.deviceSources[i].slice(1);
+        
         inputService
-          .setCharacteristic(this.platform.Characteristic.Name, this.hardcodedSources[i])
+          .setCharacteristic(this.platform.Characteristic.Name, sourceName)
           .setCharacteristic(this.platform.Characteristic.Identifier, i + 1)
-          .setCharacteristic(this.platform.Characteristic.ConfiguredName, this.hardcodedSources[i])
+          .setCharacteristic(this.platform.Characteristic.ConfiguredName, sourceName)
           .setCharacteristic(this.platform.Characteristic.IsConfigured, this.platform.Characteristic.IsConfigured.CONFIGURED)
           .setCharacteristic(this.platform.Characteristic.InputSourceType, this.platform.Characteristic.InputSourceType.OTHER);
         
@@ -92,7 +94,7 @@ export class FauxnosPlatformAccessory {
         this.televisionService.addLinkedService(inputService);
         this.inputSourceServices.push(inputService);
       }
-      this.platform.log.info('[FAUXNOS] InputSource services created and linked successfully');
+      this.platform.log.info(`[FAUXNOS] Created ${this.deviceSources.length} InputSource services and linked successfully`);
     } catch (error) {
       this.platform.log.error('[FAUXNOS] Failed to create InputSource services:', error);
     }
@@ -131,7 +133,7 @@ export class FauxnosPlatformAccessory {
    */
   async setOn(value: CharacteristicValue) {
     this.audioStates.on = value as boolean;
-    this.platform.log.info(`[${this.accessory.context.device.exampleDisplayName}] Audio system power:`, value ? 'ON' : 'OFF');
+    this.platform.log.info(`[${this.accessory.context.device.displayName}] Audio system power:`, value ? 'ON' : 'OFF');
   }
 
   async getOn(): Promise<CharacteristicValue> {
@@ -143,11 +145,11 @@ export class FauxnosPlatformAccessory {
    */
   async setBrightness(value: CharacteristicValue) {
     this.audioStates.volume = value as number;
-    this.platform.log.info(`[${this.accessory.context.device.exampleDisplayName}] Volume (brightness) set to:`, value + '%');
+    this.platform.log.info(`[${this.accessory.context.device.displayName}] Volume (brightness) set to:`, value + '%');
   }
 
   async getBrightness(): Promise<CharacteristicValue> {
-    this.platform.log.debug(`[${this.accessory.context.device.exampleDisplayName}] Get Volume (brightness):`, this.audioStates.volume);
+    this.platform.log.debug(`[${this.accessory.context.device.displayName}] Get Volume (brightness):`, this.audioStates.volume);
     return this.audioStates.volume;
   }
 
@@ -155,7 +157,7 @@ export class FauxnosPlatformAccessory {
    * Handle TV active state
    */
   async setTVActive(value: CharacteristicValue) {
-    this.platform.log.info(`[${this.accessory.context.device.exampleDisplayName}] TV active:`, value ? 'ACTIVE' : 'INACTIVE');
+    this.platform.log.info(`[${this.accessory.context.device.displayName}] TV active:`, value ? 'ACTIVE' : 'INACTIVE');
   }
 
   async getTVActive(): Promise<CharacteristicValue> {
@@ -167,8 +169,8 @@ export class FauxnosPlatformAccessory {
    */
   async setActiveSource(value: CharacteristicValue) {
     this.audioStates.currentSource = value as number;
-    const sourceName = this.hardcodedSources[(value as number) - 1] || 'Unknown';
-    this.platform.log.info(`[${this.accessory.context.device.exampleDisplayName}] Active source set to:`, sourceName, `(ID: ${value})`);
+    const sourceName = this.deviceSources[(value as number) - 1] || 'Unknown';
+    this.platform.log.info(`[${this.accessory.context.device.displayName}] Active source set to:`, sourceName, `(ID: ${value})`);
   }
 
   async getActiveSource(): Promise<CharacteristicValue> {
