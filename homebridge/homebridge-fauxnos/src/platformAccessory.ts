@@ -144,8 +144,12 @@ export class FauxnosPlatformAccessory {
    * Handle brightness (volume control)
    */
   async setBrightness(value: CharacteristicValue) {
-    this.audioStates.volume = value as number;
-    this.platform.log.info(`[${this.accessory.context.device.displayName}] Volume (brightness) set to:`, value + '%');
+    const volume = value as number;
+    this.audioStates.volume = volume;
+    this.platform.log.info(`[${this.accessory.context.device.displayName}] Volume (brightness) set to:`, volume + '%');
+    
+    // Send MQTT command to device
+    this.platform.sendMqttCommand(this.accessory.context.device.id, 'volume', volume);
   }
 
   async getBrightness(): Promise<CharacteristicValue> {
@@ -168,12 +172,54 @@ export class FauxnosPlatformAccessory {
    * Handle active source selection
    */
   async setActiveSource(value: CharacteristicValue) {
+    const sourceIndex = (value as number) - 1; // Convert from 1-based to 0-based
     this.audioStates.currentSource = value as number;
-    const sourceName = this.deviceSources[(value as number) - 1] || 'Unknown';
+    const sourceName = this.deviceSources[sourceIndex] || 'Unknown';
     this.platform.log.info(`[${this.accessory.context.device.displayName}] Active source set to:`, sourceName, `(ID: ${value})`);
+    
+    // Send MQTT command to device - use the actual source name, not the display index
+    if (sourceName !== 'Unknown') {
+      this.platform.sendMqttCommand(this.accessory.context.device.id, 'mode', sourceName);
+    }
   }
 
   async getActiveSource(): Promise<CharacteristicValue> {
     return this.audioStates.currentSource;
+  }
+
+  /**
+   * Update accessory state from MQTT status messages (bidirectional sync)
+   */
+  updateFromMqtt(statusType: string, value: string) {
+    try {
+      switch (statusType) {
+        case 'volume':
+          const volume = parseInt(value);
+          if (!isNaN(volume) && volume !== this.audioStates.volume) {
+            this.audioStates.volume = volume;
+            this.lightService.updateCharacteristic(this.platform.Characteristic.Brightness, volume);
+            this.platform.log.info(`[${this.accessory.context.device.displayName}] Volume updated from MQTT: ${volume}%`);
+          }
+          break;
+          
+        case 'mode':
+          // Find the source index for the mode
+          const sourceIndex = this.deviceSources.indexOf(value);
+          if (sourceIndex !== -1) {
+            const sourceId = sourceIndex + 1; // Convert to 1-based
+            if (sourceId !== this.audioStates.currentSource) {
+              this.audioStates.currentSource = sourceId;
+              this.televisionService.updateCharacteristic(this.platform.Characteristic.ActiveIdentifier, sourceId);
+              this.platform.log.info(`[${this.accessory.context.device.displayName}] Source updated from MQTT: ${value} (ID: ${sourceId})`);
+            }
+          }
+          break;
+          
+        default:
+          this.platform.log.debug(`[${this.accessory.context.device.displayName}] Unhandled MQTT status: ${statusType} -> ${value}`);
+      }
+    } catch (error) {
+      this.platform.log.error(`[${this.accessory.context.device.displayName}] Error updating from MQTT:`, error);
+    }
   }
 }

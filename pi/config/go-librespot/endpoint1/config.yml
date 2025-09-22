@@ -1,0 +1,12 @@
+device_name: "FauxnosGo_Stream1"
+initial_volume: 50
+external_volume: true
+device_type: speaker
+audio_backend: pipe
+audio_output_pipe: /tmp/spotifystream1
+bitrate: 320
+zeroconf_port: 49210
+server:
+  enabled: true
+  address: localhost # Which address to bind to
+  port: 3678 # The server port

@@ -12,6 +12,7 @@
 | `get/`              | `get/clients/<deviceId>/volume`      | (empty or `{}`)                                                                                         | Request device to publish its current volume to `status/clients/<deviceId>/volume` |
 | `get/`              | `get/clients/<deviceId>/status`      | (empty or `{}`)                                                                                         | Request device to publish its current mode                                         |
 | `get/`              | `get/clients/<deviceId>/activity`    | `"playing"` / `"silent"`                                                                                | Request device to report whether audio is playing                                  |
+| `get/`              | `get/clients/all/status`              | `{}` or `{"requester": "homebridge", "timestamp": 1234567890}`                                         | Broadcast discovery - all devices respond with hello message                       |
 
 Install DBus
 

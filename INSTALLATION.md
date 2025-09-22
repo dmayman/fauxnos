@@ -139,7 +139,13 @@ afp://fauxnos1.local
 sudo apt-get update
 sudo apt-get install pulseaudio
 
+------
 
+# Install go-librespot
+
+
+
+-------
 
 # Install snapclient
 

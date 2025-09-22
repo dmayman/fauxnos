@@ -1,18 +1,28 @@
 #!/bin/bash
-# Setup FIFO pipe for go-librespot
+# Setup FIFO pipes for Spotify streams
+set -euo pipefail
 
-FIFO_PATH="/tmp/spotifystream"
+# List of FIFO paths (add more here as needed)
+FIFOS=(
+  "/tmp/spotifystream"
+  "/tmp/spotifystream1"
+  "/tmp/spotifystream2"
+)
 
-# Remove existing FIFO if it exists
-if [ -p "$FIFO_PATH" ]; then
-    rm -f "$FIFO_PATH"
-    echo "Removed existing FIFO at $FIFO_PATH"
-fi
+for fifo in "${FIFOS[@]}"; do
+  # Remove existing FIFO/file if it exists
+  if [ -p "$fifo" ] || [ -e "$fifo" ]; then
+    rm -f "$fifo"
+    echo "Removed existing FIFO at $fifo"
+  fi
 
-# Create new FIFO
-mkfifo "$FIFO_PATH"
-echo "Created FIFO at $FIFO_PATH"
+  # Create new FIFO
+  mkfifo "$fifo"
+  echo "Created FIFO at $fifo"
 
-# Set permissions to 666 (readable/writable by all)
-chmod 666 "$FIFO_PATH"
-echo "Set FIFO permissions to 666"
+  # Set permissions to 666 (readable/writable by all)
+  chmod 666 "$fifo"
+  echo "Set FIFO permissions to 666 at $fifo"
+done
+
+echo "Ready: ${FIFOS[*]}"

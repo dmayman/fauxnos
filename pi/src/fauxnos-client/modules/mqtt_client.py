@@ -109,8 +109,8 @@ class MQTTClient:
         ]
         
         for topic in topics:
-            self.client.subscribe(topic)
-            logger.debug(f"📡 Subscribed to: {topic}")
+            result = self.client.subscribe(topic)
+            logger.info(f"📡 Subscribed to: {topic} (result: {result})")
             
     def _on_message(self, client, userdata, msg):
         """Handle incoming MQTT control messages"""
@@ -122,7 +122,11 @@ class MQTTClient:
         # Handle broadcast discovery requests
         if topic == "get/clients/all/status":
             logger.info("📡 Received broadcast discovery request, sending hello message")
-            self._send_hello()
+            try:
+                self._send_hello()
+                logger.info("📡 Successfully sent hello message in response to broadcast")
+            except Exception as e:
+                logger.error(f"📡 Failed to send hello message: {e}")
             return
         
         # Parse topic to extract command type

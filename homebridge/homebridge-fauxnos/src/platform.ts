@@ -20,8 +20,9 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
   public readonly accessories: Map<string, PlatformAccessory> = new Map();
   public readonly discoveredCacheUUIDs: string[] = [];
 
-  // MQTT client for device discovery
+  // MQTT clients for device discovery and control
   private mqttClient: mqtt.MqttClient | null = null;
+  private controlMqttClient: mqtt.MqttClient | null = null;
   private discoveredDevices: Map<string, any> = new Map();
   private deviceDiscoveryTimeout: NodeJS.Timeout | null = null;
   private readonly TESTING_MODE = true; // Remove cached accessories on startup
@@ -58,6 +59,7 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
     // to start discovery of new accessories.
     this.api.on('didFinishLaunching', () => {
       this.discoverDevices();
+      this.startControlMqttClient();
     });
   }
 
@@ -203,6 +205,12 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
       this.mqttClient = null;
     }
 
+    // Clear discovery timeout to prevent circular reference
+    if (this.deviceDiscoveryTimeout) {
+      clearTimeout(this.deviceDiscoveryTimeout);
+      this.deviceDiscoveryTimeout = null;
+    }
+
     // Register each discovered device as an accessory
     for (const [deviceId, device] of this.discoveredDevices) {
       // generate a unique id for the accessory using the device ID
@@ -224,7 +232,8 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
         // create the accessory handler for the restored accessory
         // this is imported from `platformAccessory.ts`
         try {
-          new FauxnosPlatformAccessory(this, existingAccessory);
+          const accessoryHandler = new FauxnosPlatformAccessory(this, existingAccessory);
+          existingAccessory.context.fauxnosAccessory = accessoryHandler;
         } catch (error) {
           this.log.error('[FAUXNOS] Failed to create accessory handler for', existingAccessory.displayName, ':', error);
         }
@@ -243,7 +252,8 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
         // create the accessory handler for the newly create accessory
         // this is imported from `platformAccessory.ts`
         try {
-          new FauxnosPlatformAccessory(this, accessory);
+          const accessoryHandler = new FauxnosPlatformAccessory(this, accessory);
+          accessory.context.fauxnosAccessory = accessoryHandler;
         } catch (error) {
           this.log.error('[FAUXNOS] Failed to create accessory handler for', device.displayName, ':', error);
         }
@@ -270,5 +280,90 @@ export class FauxnosPlatform implements DynamicPlatformPlugin {
         this.api.unregisterPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
     }
+  }
+
+  /**
+   * Start persistent MQTT client for device control
+   */
+  private startControlMqttClient() {
+    const brokerUrl = this.config.mqttBroker || 'mqtt://localhost:1883';
+    this.log.info('[FAUXNOS] Starting control MQTT client:', brokerUrl);
+
+    try {
+      this.controlMqttClient = mqtt.connect(brokerUrl);
+
+      this.controlMqttClient.on('connect', () => {
+        this.log.info('[FAUXNOS] Control MQTT client connected');
+        
+        // Subscribe to all device status updates for bidirectional sync
+        this.controlMqttClient!.subscribe('status/clients/+/volume', (err) => {
+          if (err) {
+            this.log.error('[FAUXNOS] Failed to subscribe to volume updates:', err);
+          }
+        });
+        
+        this.controlMqttClient!.subscribe('status/clients/+/mode', (err) => {
+          if (err) {
+            this.log.error('[FAUXNOS] Failed to subscribe to mode updates:', err);
+          }
+        });
+      });
+
+      this.controlMqttClient.on('message', (topic, message) => {
+        this.handleControlMqttMessage(topic, message);
+      });
+
+      this.controlMqttClient.on('error', (error) => {
+        this.log.error('[FAUXNOS] Control MQTT client error:', error);
+      });
+
+      this.controlMqttClient.on('close', () => {
+        this.log.info('[FAUXNOS] Control MQTT client closed');
+      });
+
+    } catch (error) {
+      this.log.error('[FAUXNOS] Failed to start control MQTT client:', error);
+    }
+  }
+
+  /**
+   * Handle bidirectional status updates from devices
+   */
+  private handleControlMqttMessage(topic: string, message: Buffer) {
+    try {
+      const topicParts = topic.split('/');
+      if (topicParts.length >= 4 && topicParts[0] === 'status' && topicParts[1] === 'clients') {
+        const deviceId = topicParts[2];
+        const statusType = topicParts[3];
+        const value = message.toString();
+
+        // Find the accessory for this device
+        const deviceUuid = this.api.hap.uuid.generate(deviceId);
+        const accessory = this.accessories.get(deviceUuid);
+        
+        if (accessory && accessory.context.fauxnosAccessory) {
+          // Update the accessory with the new status
+          accessory.context.fauxnosAccessory.updateFromMqtt(statusType, value);
+        }
+      }
+    } catch (error) {
+      this.log.error('[FAUXNOS] Error handling control MQTT message:', error);
+    }
+  }
+
+  /**
+   * Send MQTT command to device
+   */
+  public sendMqttCommand(deviceId: string, command: string, value: string | number) {
+    if (!this.controlMqttClient) {
+      this.log.error('[FAUXNOS] Control MQTT client not connected');
+      return;
+    }
+
+    const topic = `set/clients/${deviceId}/${command}`;
+    const payload = value.toString();
+    
+    this.controlMqttClient.publish(topic, payload);
+    this.log.info(`[FAUXNOS] Sent MQTT command: ${topic} -> ${payload}`);
   }
 }

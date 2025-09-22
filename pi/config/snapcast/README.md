@@ -15,6 +15,7 @@ This configuration sets up a multi-room audio server for Fauxnos using Snapcast.
 ### Audio Sources
 - **AirPlay**: Available as "Multiroom" with Shairport Sync
 - **Spotify**: Uses `librespot_dm` with `--ignore-volume` flag, which sends maximum volume from Spotify regardless of the app's volume setting. This enables single-stage attenuation (volume control only through the Snapcast client), preventing potential confusing UX from multiple volume stages.
+## NOT TRUE ANYMORE, USING GO-LIBRESPOT
 
 ### Web Interface
 - Accessible at `http://<server-ip>:1780`
