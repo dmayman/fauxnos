@@ -116,6 +116,21 @@ class DeploymentManager:
                 with open(fifo_service_file, 'w') as f:
                     f.write(fifo_service_content)
 
+                # Generate snapserver service
+                snapserver_service_content = self.config_manager.generate_snapserver_service()
+                snapserver_service_file = os.path.join(systemd_dir, "snapserver.service")
+                with open(snapserver_service_file, 'w') as f:
+                    f.write(snapserver_service_content)
+
+            # Generate snapserver config
+            snapserver_config_dir = os.path.join(staging_dir, "snapcast")
+            os.makedirs(snapserver_config_dir, exist_ok=True)
+
+            snapserver_config_content = self.config_manager.generate_snapserver_config()
+            snapserver_config_file = os.path.join(snapserver_config_dir, "snapserver.conf")
+            with open(snapserver_config_file, 'w') as f:
+                f.write(snapserver_config_content)
+
             # Generate FIFO setup script
             fifo_script = self.config_manager.generate_fifo_setup_script()
             fifo_script_file = os.path.join(scripts_dir, "setup-fifo.sh")
@@ -230,6 +245,18 @@ class DeploymentManager:
                 os.chmod(target_file, 0o755)
                 self.logger.info(f"Deployed script: {filename}")
 
+            # Deploy snapserver config
+            snapcast_staging = os.path.join(staging_dir, "snapcast")
+            if os.path.exists(snapcast_staging):
+                snapcast_target = os.path.expanduser("~/.config/snapcast")
+                os.makedirs(snapcast_target, exist_ok=True)
+
+                for filename in os.listdir(snapcast_staging):
+                    config_file = os.path.join(snapcast_staging, filename)
+                    target_file = os.path.join(snapcast_target, filename)
+                    shutil.copy2(config_file, target_file)
+                    self.logger.info(f"Deployed snapcast config: {filename}")
+
             # Reload user systemd daemon
             subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
             self.logger.info("User systemd daemon reloaded")
@@ -249,8 +276,8 @@ class DeploymentManager:
         try:
             clients = self.config_manager.list_clients()
 
-            # Stop all services first
-            services_to_stop = ["fauxnos-fifo-setup.service"]
+            # Stop all user services first
+            services_to_stop = ["snapserver.service", "fauxnos-fifo-setup.service"]
             for client in clients:
                 services_to_stop.append(f"go-librespot-{client.id}.service")
 
@@ -262,6 +289,14 @@ class DeploymentManager:
                 except Exception as e:
                     self.logger.warning(f"Failed to stop {service_name}: {e}")
 
+            # Disable system snapserver (if running)
+            try:
+                subprocess.run(["sudo", "systemctl", "stop", "snapserver"], check=False, capture_output=True)
+                subprocess.run(["sudo", "systemctl", "disable", "snapserver"], check=False, capture_output=True)
+                self.logger.info("Stopped and disabled system snapserver")
+            except Exception as e:
+                self.logger.warning(f"Could not disable system snapserver: {e}")
+
             # Enable and start FIFO setup service first
             if clients:  # Only if we have clients
                 try:
@@ -270,6 +305,15 @@ class DeploymentManager:
                     self.logger.info("Started and enabled fauxnos-fifo-setup.service")
                 except Exception as e:
                     self.logger.error(f"Failed to start fauxnos-fifo-setup.service: {e}")
+                    return False
+
+                # Start and enable user snapserver
+                try:
+                    subprocess.run(["systemctl", "--user", "enable", "snapserver.service"], check=True)
+                    subprocess.run(["systemctl", "--user", "start", "snapserver.service"], check=True)
+                    self.logger.info("Started and enabled user snapserver.service")
+                except Exception as e:
+                    self.logger.error(f"Failed to start user snapserver.service: {e}")
                     return False
 
             # Start and enable all go-librespot services (they'll wait for FIFO service)
@@ -283,14 +327,6 @@ class DeploymentManager:
                     self.logger.error(f"Failed to start {service_name}: {e}")
                     return False
 
-            # Note: snapserver is likely a system service, keep it as-is
-            try:
-                subprocess.run(["sudo", "systemctl", "restart", "snapserver"], check=True)
-                self.logger.info("Restarted snapserver (system service)")
-            except Exception as e:
-                self.logger.warning(f"Failed to restart snapserver: {e}")
-                self.logger.info("You may need to manually restart snapserver and add the new sources to snapserver.conf")
-
             return True
 
         except Exception as e:
@@ -302,8 +338,8 @@ class DeploymentManager:
         status = {}
         clients = self.config_manager.list_clients()
 
-        # Check user services (go-librespot and FIFO setup)
-        user_services = ["fauxnos-fifo-setup.service"]
+        # Check user services (go-librespot, FIFO setup, and snapserver)
+        user_services = ["snapserver.service", "fauxnos-fifo-setup.service"]
         for client in clients:
             user_services.append(f"go-librespot-{client.id}.service")
 
@@ -344,8 +380,8 @@ class DeploymentManager:
                     "type": "user"
                 }
 
-        # Check system services
-        for service in ["snapserver", "fauxnos-server", "mosquitto"]:
+        # Check system services (excluding snapserver since it's now user service)
+        for service in ["fauxnos-server", "mosquitto"]:
             try:
                 result = subprocess.run(
                     ["systemctl", "is-active", service],
