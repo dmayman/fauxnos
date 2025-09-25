@@ -1,0 +1,36 @@
+{
+  "server": {
+    "snapcast": {
+      "host": "localhost",
+      "port": 1705
+    },
+    "mqtt": {
+      "broker_host": "localhost",
+      "broker_port": 1883
+    },
+    "paths": {
+      "fifo_base": "/tmp/snapfifo",
+      "go_librespot_config_base": "~/.config/go-librespot"
+    }
+  },
+  "clients": [
+    {
+      "id": "fauxnos001",
+      "name": "Kitchen",
+      "mac": "aa:bb:cc:dd:ee:01",
+      "go_librespot": {
+        "zeroconf_port": 49001,
+        "server_port": 3601
+      }
+    },
+    {
+      "id": "fauxnos002",
+      "name": "Living Room",
+      "mac": "aa:bb:cc:dd:ee:02",
+      "go_librespot": {
+        "zeroconf_port": 49002,
+        "server_port": 3602
+      }
+    }
+  ]
+}

@@ -1,0 +1,104 @@
+# Fauxnos Client
+
+Complete end-to-end deployment system for Fauxnos multiroom audio clients.
+
+## 🚀 One-Command Installation
+
+For a **fresh Raspberry Pi OS** installation, run this single command:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/dmayman/fauxnos/main/pi/src/fauxnos-client/install.sh | bash
+```
+
+This will:
+- ✅ Install all system dependencies
+- ✅ Configure audio and network settings
+- ✅ Download the complete client system
+- ✅ Auto-discover and register with fauxnos-server
+- ✅ Deploy and start all services
+- ✅ Reboot into fully operational state
+
+## 📋 Manual Installation Steps
+
+If you prefer step-by-step installation:
+
+### 1. System Preparation
+```bash
+# Download and run Pi setup
+curl -sSL https://raw.githubusercontent.com/dmayman/fauxnos/main/pi/src/fauxnos-client/pi-setup.sh | sudo bash
+
+# Or with options
+sudo bash pi-setup.sh --skip-updates --verbose
+```
+
+### 2. Client Installation
+```bash
+# After system reboot, install client
+cd ~/src
+curl -sSL https://raw.githubusercontent.com/dmayman/fauxnos/main/pi/src/fauxnos-client/install.sh | bash
+```
+
+### 3. Manual Registration (if needed)
+```bash
+cd ~/src/fauxnos-client
+python3 setup-client.py --setup
+```
+
+## 🧪 Development & Testing
+
+### Testing on Development Machine
+
+```bash
+# Test the setup process without making changes
+python3 setup-client.py --setup --dry-run
+
+# Test with mock server responses
+python3 setup-client.py --setup --test --verbose
+```
+
+### Testing Pi Setup Scripts
+
+```bash
+# Test system setup without changes
+sudo bash pi-setup.sh --dry-run --verbose
+
+# Quick test setup (skip updates and reboot)
+sudo bash pi-setup.sh --skip-updates --skip-reboot
+```
+
+## Architecture
+
+This client system implements the **ping-based configuration model** where:
+
+- Clients discover server via mDNS (`fauxnos-server.local`)
+- Registration uses MAC address as unique identifier
+- Server assigns client_id (fauxnos001, fauxnos002, etc.)
+- Full configuration downloaded from `/api/config/{client_id}`
+- Local deployment applies hostname, services, PulseAudio config
+
+## Files
+
+- `setup-client.py` - Registration and initial setup
+- `fauxnos-client.py` - Main client daemon (placeholder)
+- `config.json` - Downloaded client configuration
+- Generated systemd services:
+  - `snapclient-{client_id}.service`
+  - `fauxnos-client-{client_id}.service`
+
+## Test Modes
+
+### `--dry-run`
+Shows what would be done without making any changes. Safe to run anywhere.
+
+### `--test`
+Uses mock data and skips system-modifying commands (sudo, systemctl, etc). Safe for development.
+
+### Production Mode
+Makes actual system changes. Only run on target Raspberry Pi.
+
+## Next Steps
+
+1. Implement server API endpoints (`/api/clients/register`, `/api/config/{client_id}`)
+2. Complete `fauxnos-client.py` with volume monitoring and MQTT
+3. Create base `pi-setup.sh` script for dependency installation
+4. Test end-to-end flow from fresh Pi OS to working client

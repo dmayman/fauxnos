@@ -1,0 +1,11 @@
+# Fauxnos Client Python Dependencies
+# Install with: pip3 install -r requirements.txt --break-system-packages
+
+# Core HTTP client for server communication
+requests>=2.25.1
+
+# Optional: MQTT client for advanced messaging (future feature)
+# paho-mqtt>=1.5.1
+
+# Optional: Audio processing (if needed for volume monitoring)
+# pyaudio>=0.2.11
