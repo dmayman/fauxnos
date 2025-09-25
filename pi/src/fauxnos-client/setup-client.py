@@ -130,18 +130,51 @@ class FauxnosClientSetup:
             return test_mac
 
         try:
-            # Get the MAC of the first non-loopback interface
+            import os
+
+            # Get all network interfaces except loopback
+            found_macs = []
+            for interface in sorted(os.listdir('/sys/class/net/')):
+                if interface == 'lo':  # Skip loopback
+                    continue
+
+                address_file = f'/sys/class/net/{interface}/address'
+                if os.path.exists(address_file):
+                    try:
+                        with open(address_file, 'r') as f:
+                            mac = f.read().strip().lower()
+                            found_macs.append(f"{interface}: {mac}")
+
+                            # Basic MAC validation - just check it's not all zeros and has proper format
+                            if (mac and
+                                mac != "00:00:00:00:00:00" and
+                                len(mac) == 17 and
+                                ':' in mac):
+                                self.log(f"Using MAC address from {interface}: {mac}")
+                                return mac
+                    except Exception as e:
+                        if self.verbose:
+                            self.log(f"Could not read MAC from {interface}: {e}")
+                        continue
+
+            # If we get here, log what we found for debugging
+            self.log(f"Found MACs: {', '.join(found_macs)}")
+
+            # If no MAC found, try the original method as fallback
             result = subprocess.run(
                 ["cat", "/sys/class/net/*/address"],
-                capture_output=True, text=True, check=True, shell=True
+                capture_output=True, text=True, check=False, shell=True
             )
 
-            # Filter out loopback and get first valid MAC
-            for line in result.stdout.strip().split('\n'):
-                mac = line.strip()
-                if mac and mac != "00:00:00:00:00:00" and not mac.startswith("00:00:00"):
-                    self.log(f"Using MAC address: {mac}")
-                    return mac
+            if result.returncode == 0:
+                for line in result.stdout.strip().split('\n'):
+                    mac = line.strip().lower()
+                    if (mac and
+                        mac != "00:00:00:00:00:00" and
+                        len(mac) == 17 and
+                        ':' in mac):
+                        self.log(f"Using MAC address: {mac}")
+                        return mac
 
             raise Exception("No valid MAC address found")
 
