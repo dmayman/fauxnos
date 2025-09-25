@@ -218,7 +218,7 @@ class FauxnosClientSetup:
 
         try:
             url = f"http://{server_ip}:{self.server_port}/api/clients/register"
-            response = requests.post(url, json=registration_data, timeout=10)
+            response = requests.post(url, json=registration_data, timeout=60)  # Increased timeout for interactive prompts
             response.raise_for_status()
 
             result = response.json()
@@ -270,7 +270,7 @@ class FauxnosClientSetup:
 
         try:
             url = f"http://{server_ip}:{self.server_port}/api/config/{client_id}"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, timeout=30)
             response.raise_for_status()
 
             config = response.json()

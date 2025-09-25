@@ -74,7 +74,7 @@ class ConfigManager:
             self.logger.error(f"Failed to save server config: {e}")
             raise
 
-    def add_client(self, name: str, mac: str) -> str:
+    def add_client(self, name: str, mac: str) -> ClientConfig:
         """Add a new client to the configuration"""
         # Generate client ID
         existing_ids = [client['id'] for client in self.server_config['clients']]
@@ -103,7 +103,14 @@ class ConfigManager:
         self.server_config['clients'].append(client_config)
         self.logger.info(f"Added client {client_id} ({name}) with MAC {mac}")
 
-        return client_id
+        # Return ClientConfig object instead of just the ID
+        return ClientConfig(
+            id=client_id,
+            name=name,
+            mac=mac,
+            zeroconf_port=zeroconf_port,
+            server_port=server_port
+        )
 
     def remove_client(self, client_id: str) -> bool:
         """Remove a client from the configuration"""
@@ -538,9 +545,9 @@ def main():
     config_manager = ConfigManager()
 
     if args.command == 'add-client':
-        client_id = config_manager.add_client(args.name, args.mac)
+        new_client = config_manager.add_client(args.name, args.mac)
         config_manager.save_server_config()
-        print(f"Added client: {client_id}")
+        print(f"Added client: {new_client.id}")
 
     elif args.command == 'remove-client':
         if config_manager.remove_client(args.client_id):

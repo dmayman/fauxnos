@@ -104,9 +104,9 @@ class FauxnosAPIServer:
             next_id = self.config_manager.get_next_client_id()
 
             if self.test_mode:
-                # In test mode, use mock data
+                # In test mode, use mock data - no user input needed
                 client_name = f"Test Client {next_id[-3:]}"
-                self.log(f"TEST MODE: Would register {next_id} as '{client_name}'", "WARNING")
+                self.log(f"TEST MODE: Auto-assigning name '{client_name}' to {next_id}", "WARNING")
             else:
                 # In production, prompt for name
                 print(f"\n🔧 New client registration: {next_id}")
@@ -128,8 +128,8 @@ class FauxnosAPIServer:
                 if not self.test_mode:
                     # Deploy server-side infrastructure
                     self.log("Deploying server infrastructure...")
-                    from deploy import ServerDeployer
-                    deployer = ServerDeployer(test_mode=False)
+                    from deploy import DeploymentManager
+                    deployer = DeploymentManager(self.config_manager)
 
                     if deployer.deploy_server_configs():
                         self.log("Server infrastructure deployed successfully", "SUCCESS")
