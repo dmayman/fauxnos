@@ -2,9 +2,28 @@
 
 Complete end-to-end deployment system for Fauxnos multiroom audio clients.
 
+## 💾 Pi OS Setup
+
+### 1. Flash Raspberry Pi OS Lite (32-bit)
+
+1. **Download Raspberry Pi Imager**: https://www.raspberrypi.com/software/
+2. **Insert SD card** into your computer
+3. **Open Pi Imager** and configure:
+   - **OS**: Choose "Raspberry Pi OS Lite (32-bit)"
+   - **Storage**: Select your SD card
+   - **Settings** (gear icon):
+     - ✅ Enable SSH (use password authentication)
+     - ✅ Set username/password (default: `pi` / `raspberry`)
+     - ✅ Configure WiFi (SSID and password)
+     - ✅ Set locale settings (timezone, keyboard layout)
+4. **Write** the image to SD card
+5. **Insert SD card** into Pi and boot
+6. **Find Pi IP address** (check router admin or use network scanner)
+7. **SSH into Pi**: `ssh pi@192.168.x.x`
+
 ## 🚀 One-Command Installation
 
-For a **fresh Raspberry Pi OS** installation, run this single command:
+After SSH'ing into your **fresh Pi OS Lite** installation, run this single command:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/dmayman/fauxnos/main/pi/src/fauxnos-client/install.sh | bash
