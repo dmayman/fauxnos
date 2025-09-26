@@ -164,6 +164,7 @@ install_network_tools() {
         "dnsutils"
         "curl"
         "wget"
+        "openssh-server"
     )
 
     for package in "${network_packages[@]}"; do
@@ -172,6 +173,9 @@ install_network_tools() {
 
     execute "systemctl enable avahi-daemon" "Enabling Avahi daemon"
     execute "systemctl start avahi-daemon" "Starting Avahi daemon"
+
+    execute "systemctl enable ssh" "Enabling SSH server"
+    execute "systemctl start ssh" "Starting SSH server"
 }
 
 install_development_tools() {
@@ -201,12 +205,35 @@ configure_audio_permissions() {
 configure_pi_audio() {
     log "Configuring Pi audio settings..."
 
-    # Enable audio in config.txt if not already enabled
-    local config_txt="/boot/config.txt"
+    # Configure HiFiBerry DAC+ in config.txt
+    local config_txt="/boot/firmware/config.txt"
+    local legacy_config_txt="/boot/config.txt"
+
+    # Check which config file exists (newer Pi OS uses /boot/firmware/)
     if [ -f "$config_txt" ]; then
-        if ! grep -q "^dtparam=audio=on" "$config_txt"; then
-            execute "echo 'dtparam=audio=on' >> $config_txt" "Enabling audio in config.txt"
+        # Use /boot/firmware/config.txt (newer Pi OS)
+        config_txt="/boot/firmware/config.txt"
+    elif [ -f "$legacy_config_txt" ]; then
+        # Fallback to /boot/config.txt (older Pi OS)
+        config_txt="$legacy_config_txt"
+    fi
+
+    if [ -f "$config_txt" ]; then
+        # Disable onboard audio to avoid conflicts
+        if ! grep -q "^dtparam=audio=off" "$config_txt"; then
+            execute "echo 'dtparam=audio=off' >> $config_txt" "Disabling onboard audio"
         fi
+
+        # Enable HiFiBerry DAC+ overlay
+        if ! grep -q "^dtoverlay=hifiberry-dac" "$config_txt"; then
+            execute "echo 'dtoverlay=hifiberry-dac' >> $config_txt" "Enabling HiFiBerry DAC overlay"
+        fi
+
+        log_success "HiFiBerry DAC+ configured in $config_txt"
+        log_warning "A reboot will be required for audio changes to take effect"
+    else
+        log_error "Could not find config.txt file"
+        return 1
     fi
 
     # Set audio output to auto (will be managed by PulseAudio)

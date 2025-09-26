@@ -37,10 +37,10 @@ class FauxnosAPIServer:
     def log(self, message: str, level: str = "INFO"):
         if self.verbose or level in ["ERROR", "WARNING"]:
             colors = {
-                "INFO": "\033[0;34m",
-                "SUCCESS": "\033[0;32m",
-                "WARNING": "\033[1;33m",
-                "ERROR": "\033[0;31m",
+                "INFO": "\033[1;36m",    # Bright Cyan (more visible than blue)
+                "SUCCESS": "\033[0;32m", # Green
+                "WARNING": "\033[1;33m", # Yellow
+                "ERROR": "\033[0;31m",   # Red
             }
             reset = "\033[0m"
             prefix = "🔧" if level == "INFO" else "✓" if level == "SUCCESS" else "⚠" if level == "WARNING" else "✗"

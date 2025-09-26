@@ -1,0 +1,14 @@
+[Unit]
+Description=Fauxnos Client for {CLIENT_ID}
+After=snapclient-{CLIENT_ID}.service pulseaudio.service
+Wants=snapclient-{CLIENT_ID}.service
+
+[Service]
+Type=simple
+WorkingDirectory={CLIENT_DIR}
+ExecStart=/usr/bin/python3 {CLIENT_DIR}/fauxnos-client.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

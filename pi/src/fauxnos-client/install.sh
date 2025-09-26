@@ -112,6 +112,7 @@ install_system_dependencies() {
         alsa-utils \
         avahi-daemon \
         avahi-utils \
+        openssh-server \
         curl \
         jq \
         git \
@@ -134,11 +135,45 @@ configure_system() {
     log "Enabling system services..."
     sudo systemctl enable avahi-daemon
     sudo systemctl start avahi-daemon
+    sudo systemctl enable ssh
+    sudo systemctl start ssh
 
     # Add user to audio groups
     log "Configuring audio permissions..."
     sudo usermod -a -G audio "$USER"
     sudo usermod -a -G pulse-access "$USER"
+
+    # Configure HiFiBerry DAC+ audio
+    log "Configuring HiFiBerry DAC+ audio..."
+    local config_txt="/boot/firmware/config.txt"
+    local legacy_config_txt="/boot/config.txt"
+
+    # Check which config file exists (newer Pi OS uses /boot/firmware/)
+    if [ -f "$config_txt" ]; then
+        # Use /boot/firmware/config.txt (newer Pi OS)
+        config_txt="/boot/firmware/config.txt"
+    elif [ -f "$legacy_config_txt" ]; then
+        # Fallback to /boot/config.txt (older Pi OS)
+        config_txt="$legacy_config_txt"
+    fi
+
+    if [ -f "$config_txt" ]; then
+        # Disable onboard audio to avoid conflicts
+        if ! grep -q "^dtparam=audio=off" "$config_txt"; then
+            echo "dtparam=audio=off" | sudo tee -a "$config_txt" > /dev/null
+            log "Disabled onboard audio"
+        fi
+
+        # Enable HiFiBerry DAC+ overlay
+        if ! grep -q "^dtoverlay=hifiberry-dac" "$config_txt"; then
+            echo "dtoverlay=hifiberry-dac" | sudo tee -a "$config_txt" > /dev/null
+            log "Enabled HiFiBerry DAC overlay"
+        fi
+
+        log_success "HiFiBerry DAC+ configured in $config_txt"
+    else
+        log_error "Could not find config.txt file"
+    fi
 
     # Set temporary hostname
     local mac_suffix
@@ -182,12 +217,31 @@ download_client_code() {
         "requirements.txt"
     )
 
+    # Download config files
+    local config_files=(
+        "configs/pulseaudio/default.pa"
+        "configs/systemd/snapclient.service"
+        "configs/systemd/fauxnos-client.service"
+    )
+
     for file in "${files[@]}"; do
         local url="${REPO_URL}/pi/src/fauxnos-client/$file"
         if curl -fsSL "$url" -o "$file"; then
             log "Downloaded: $file"
         else
             log_warning "Failed to download: $file (may not exist yet)"
+        fi
+    done
+
+    # Download config files with directory creation
+    for file in "${config_files[@]}"; do
+        local url="${REPO_URL}/pi/src/fauxnos-client/$file"
+        local dir=$(dirname "$file")
+        mkdir -p "$dir"
+        if curl -fsSL "$url" -o "$file"; then
+            log "Downloaded config: $file"
+        else
+            log_warning "Failed to download config: $file"
         fi
     done
 

@@ -44,7 +44,7 @@ class FauxnosClientSetup:
 
     def log(self, message: str, level: str = "INFO"):
         colors = {
-            "INFO": "\033[0;34m",    # Blue
+            "INFO": "\033[1;36m",    # Bright Cyan (more visible than blue)
             "SUCCESS": "\033[0;32m", # Green
             "WARNING": "\033[1;33m", # Yellow
             "ERROR": "\033[0;31m",   # Red
@@ -306,100 +306,73 @@ class FauxnosClientSetup:
         return self.execute(hosts_update, "Updating /etc/hosts")
 
     def deploy_services(self, config: Dict[str, Any]) -> bool:
-        """Deploy systemd services for this client"""
-        self.log("Deploying client services...")
+        """Deploy systemd user services for this client"""
+        self.log("Deploying client user services...")
 
         client_id = config.get('client_id')
+        user = os.getenv('USER', 'pi')
 
-        # Create snapclient service
-        snapclient_service = f"""[Unit]
-Description=Snapclient for {client_id}
-After=network.target sound.target
-Wants=network.target
+        if self.dry_run or self.test_mode:
+            self.log(f"Would create user services for {client_id}")
+            return True
 
-[Service]
-Type=simple
-User={os.getenv('USER', 'pi')}
-ExecStart=/usr/bin/snapclient --host fauxnos-server.local --port 1704
-Restart=always
-RestartSec=5
+        try:
+            # Ensure user systemd directory exists
+            user_systemd_dir = Path.home() / ".config" / "systemd" / "user"
+            user_systemd_dir.mkdir(parents=True, exist_ok=True)
 
-[Install]
-WantedBy=default.target
-"""
+            # Load and customize service templates
+            service_templates = [
+                ("snapclient.service", f"snapclient-{client_id}.service"),
+                ("fauxnos-client.service", f"fauxnos-client-{client_id}.service")
+            ]
 
-        # Create fauxnos-client service
-        fauxnos_service = f"""[Unit]
-Description=Fauxnos Client for {client_id}
-After=snapclient.service pulseaudio.service
-Wants=snapclient.service
+            for template_name, service_name in service_templates:
+                # Read template file
+                template_path = self.client_dir / "configs" / "systemd" / template_name
+                if not template_path.exists():
+                    self.log(f"Service template not found: {template_path}", "ERROR")
+                    return False
 
-[Service]
-Type=simple
-User={os.getenv('USER', 'pi')}
-WorkingDirectory={self.client_dir}
-ExecStart=/usr/bin/python3 {self.client_dir}/fauxnos-client.py
-Restart=always
-RestartSec=10
-Environment=PULSE_RUNTIME_PATH=/run/user/1000/pulse
+                with open(template_path, 'r') as f:
+                    service_content = f.read()
 
-[Install]
-WantedBy=default.target
-"""
+                # Replace template variables
+                service_content = service_content.replace('{CLIENT_ID}', client_id)
+                service_content = service_content.replace('{USER}', user)
+                service_content = service_content.replace('{CLIENT_DIR}', str(self.client_dir))
 
-        # Write service files
-        services = [
-            (f"/etc/systemd/system/snapclient-{client_id}.service", snapclient_service),
-            (f"/etc/systemd/system/fauxnos-client-{client_id}.service", fauxnos_service)
-        ]
+                # Write to user systemd directory (no sudo needed!)
+                service_path = user_systemd_dir / service_name
+                with open(service_path, 'w') as f:
+                    f.write(service_content)
 
-        for service_path, service_content in services:
-            if self.dry_run or self.test_mode:
-                self.log(f"Would create service: {service_path}")
-                continue
+                self.log(f"Created user service: {service_path}", "SUCCESS")
 
-            try:
-                self.execute(f"sudo tee {service_path}", f"Creating {service_path}")
-                # Note: In real implementation, would pipe service_content to tee
-            except Exception as e:
-                self.log(f"Failed to create {service_path}: {e}", "ERROR")
+            # Reload user daemon
+            if not self.execute("systemctl --user daemon-reload", "Reloading user systemd daemon"):
                 return False
 
-        # Enable and start services
-        for service_name in [f"snapclient-{client_id}", f"fauxnos-client-{client_id}"]:
-            if not self.execute(f"sudo systemctl enable {service_name}", f"Enabling {service_name}"):
-                return False
-            if not self.execute(f"sudo systemctl start {service_name}", f"Starting {service_name}"):
-                return False
+            # Enable and start user services
+            for _, service_name in service_templates:
+                service_name_without_extension = service_name.replace('.service', '')
+                if not self.execute(f"systemctl --user enable {service_name}", f"Enabling user service {service_name_without_extension}"):
+                    return False
+                if not self.execute(f"systemctl --user start {service_name}", f"Starting user service {service_name_without_extension}"):
+                    return False
 
-        return True
+            return True
+
+        except Exception as e:
+            self.log(f"Failed to deploy user services: {e}", "ERROR")
+            return False
 
     def setup_pulseaudio(self, config: Dict[str, Any]) -> bool:
         """Configure PulseAudio for this client"""
         self.log("Setting up PulseAudio configuration...")
 
-        # Simplified PA config with just the essential sinks
-        pa_config = """
-# Fauxnos PulseAudio Configuration
-# Load essential modules for multiroom audio
-
-# Load snapcast sink
-load-module module-pipe-sink file=/tmp/snapfifo/snapcast_sink sink_name=snapsink format=s16le rate=44100 channels=2
-
-# Load analog input loopback (for aux input)
-load-module module-pipe-sink file=/tmp/snapfifo/analog_sink sink_name=analogsink format=s16le rate=44100 channels=2
-
-# Load system sink for notifications
-load-module module-pipe-sink file=/tmp/snapfifo/system_sink sink_name=systemsink format=s16le rate=44100 channels=2
-
-# Set default sink
-set-default-sink snapsink
-"""
-
-        pa_config_path = Path.home() / ".config" / "pulse" / "default.pa"
-
         if self.dry_run:
-            self.log(f"DRY RUN: Would write PulseAudio config to {pa_config_path}")
+            self.log("DRY RUN: Would copy PulseAudio config")
             return True
 
         if self.test_mode:
@@ -407,15 +380,26 @@ set-default-sink snapsink
             return True
 
         try:
-            pa_config_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(pa_config_path, 'w') as f:
-                f.write(pa_config)
+            # Copy the PulseAudio config from downloaded files
+            source_path = self.client_dir / "configs" / "pulseaudio" / "default.pa"
+            target_path = Path.home() / ".config" / "pulse" / "default.pa"
 
-            self.log(f"PulseAudio config written to {pa_config_path}", "SUCCESS")
+            if not source_path.exists():
+                self.log(f"PulseAudio config not found at {source_path}", "ERROR")
+                return False
+
+            # Create target directory
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Copy config file
+            import shutil
+            shutil.copy2(source_path, target_path)
+
+            self.log(f"PulseAudio config copied to {target_path}", "SUCCESS")
             return True
 
         except Exception as e:
-            self.log(f"Failed to write PulseAudio config: {e}", "ERROR")
+            self.log(f"Failed to setup PulseAudio config: {e}", "ERROR")
             return False
 
     def run_setup(self) -> bool:

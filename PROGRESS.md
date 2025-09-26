@@ -35,35 +35,62 @@ NEXT UP:
 - All services run as user services with proper dependencies
 - Successfully tested: all go-librespot instances active and discoverable in Spotify
 
-MASTER TODO - Getting This Operational:
+MASTER TODO - System Operational Status:
 
 SERVER SIDE (COMPLETE):
 ✅ ConfigManager with add/remove/rename client functionality
-✅ Atomic deployment system with validation and rollback
+✅ Atomic deployment system with template-based configuration
 ✅ User service architecture (no sudo needed for service management)
 ✅ Auto-generated snapserver.conf with all client sources
 ✅ FIFO management and go-librespot service coordination
 ✅ Port assignment and conflict resolution
+✅ REST API server for client registration and config distribution
+✅ Complete server infrastructure tested and operational
 
-CLIENT SIDE (TODO):
-🔲 Client-side ConfigManager for snapclient + fauxnos-client services
-🔲 Simplified PulseAudio config (snapsink, analogsink, systemsink only)
-🔲 Client auto-registration via MQTT (hello messages to server)
-🔲 Volume monitoring integration (vollisten.py -> fauxnos-client)
-🔲 Client onboarding script (pi-setup.sh + client discovery)
+CLIENT SIDE (COMPLETE):
+✅ One-command bootstrap installer with HiFiBerry DAC+ configuration
+✅ Client registration system with MAC address and mDNS discovery
+✅ Template-based configuration system with external files
+✅ User systemd services deployment (snapclient, fauxnos-client)
+✅ Proven PulseAudio configuration (snapsink, analogsink, systemsink)
+✅ Complete client onboarding workflow from fresh Pi to operational
 
-INTEGRATION & FEATURES (TODO):
-🔲 Client-to-server registration flow (MAC address -> assigned client ID)
-🔲 Group management via snapcast API (multiroom functionality)
+INTEGRATION & FEATURES (IN PROGRESS):
+✅ Client-to-server registration flow (MAC address -> assigned client ID)
+🔲 Group management via snapcast JSON-RPC API (multiroom functionality)
 🔲 Volume synchronization (go-librespot volume -> snapclient volume)
 🔲 Group volume control using existing proportional scaling algorithm
 🔲 MQTT protocol implementation for device coordination
+🔲 Source controller for internal/external source management
+🔲 Auto-home-assignment (new clients join correct groups and sources)
+🔲 Server-side group/source binding maintenance
 🔲 Analog input switching and auto-detection (client-side)
 
+NEXT PRIORITIES:
+🔲 Source controller implementation (handle internal vs external sources)
+🔲 Speaker grouping management via snapcast JSON-RPC API
+🔲 Volume monitoring and synchronization (go-librespot -> snapclient)
+🔲 Auto-home-assignment system for new clients
+🔲 Group volume control with proportional scaling
+
 APPS & INTERFACES (FUTURE):
-🔲 REST API for client management and group control
+🔲 Enhanced REST API for group control and source management
 🔲 HomeKit/Homebridge plugin integration
 🔲 Mobile app for client management and multiroom control
 🔲 Web interface for system administration
+🔲 MQTT protocol for real-time device coordination
 
-CURRENT STATE: Server infrastructure complete and tested. Ready to move to client-side implementation.
+9/25/2025
+- Completed full client onboarding pipeline from fresh Pi OS to operational Fauxnos client
+- Built one-command bootstrap installer: `curl -sSL install.sh | bash`
+- Implemented complete client registration system via MAC address and mDNS discovery
+- Created template-based configuration management with external files for maintainability
+- Migrated to user services architecture for easier permission management
+- Deployed and tested HiFiBerry DAC+ configuration with proper PulseAudio setup
+- Successfully tested complete audio pipeline: ALSA → HiFiBerry → PulseAudio → Snapcast
+- Established architectural distinction between "speaker grouping" (snapcast groups) and "source selection" (audio content)
+- Created REST API server with client registration, config distribution, and management endpoints
+- Implemented systematic debugging approach for audio stack troubleshooting
+- Built robust client setup script with dry-run and test modes for development
+
+CURRENT STATE: Complete end-to-end deployment system operational. Server and client infrastructure complete. Audio pipeline proven working. Ready for source controller and multiroom management features.
