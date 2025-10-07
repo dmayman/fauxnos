@@ -105,16 +105,30 @@ class ConfigManager:
 
     # Template methods no longer needed - client owns its config
 
-    def add_client(self, name: str, mac: str) -> ClientConfig:
-        """Add a new client to the configuration"""
-        # Generate client ID
-        existing_ids = [client['id'] for client in self.server_config['clients']]
-        next_num = 1
-        while f"fauxnos{next_num:03d}" in existing_ids:
-            next_num += 1
-        client_id = f"fauxnos{next_num:03d}"
+    def add_client(self, name: str, mac: str, client_id: Optional[str] = None) -> ClientConfig:
+        """Add a new client to the configuration
 
-        # Generate ports
+        Args:
+            name: Client display name
+            mac: Client MAC address
+            client_id: Optional specific client ID to use (e.g., 'fauxnos000' for server device)
+        """
+        existing_ids = [client['id'] for client in self.server_config['clients']]
+
+        # Generate client ID if not provided
+        if client_id is None:
+            next_num = 1
+            while f"fauxnos{next_num:03d}" in existing_ids:
+                next_num += 1
+            client_id = f"fauxnos{next_num:03d}"
+        else:
+            # Validate provided client_id is not already in use
+            if client_id in existing_ids:
+                raise ValueError(f"Client ID {client_id} already exists")
+            # Extract number from client_id for port calculation
+            next_num = int(client_id.replace('fauxnos', ''))
+
+        # Generate ports based on client number
         base_zeroconf = 49000
         base_server = 3600
         zeroconf_port = base_zeroconf + next_num
@@ -229,7 +243,8 @@ class ConfigManager:
         """Generate the next available client ID"""
         existing_ids = [client['id'] for client in self.server_config['clients']]
 
-        # Find next available ID
+        # Reserve fauxnos000 for the server device
+        # Start client IDs from fauxnos001
         for i in range(1, 1000):
             client_id = f"fauxnos{i:03d}"
             if client_id not in existing_ids:

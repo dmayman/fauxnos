@@ -100,8 +100,44 @@ class FauxnosAPIServer:
                     "zeroconf_port": existing_client.zeroconf_port
                 })
 
-            # Generate new client ID
-            next_id = self.config_manager.get_next_client_id()
+            # Check if this is the server device and assign fauxnos000
+            # Server device is detected by checking if request comes from localhost or server's own MAC
+            import socket
+            import subprocess
+
+            is_server_device = False
+            try:
+                # Check if request comes from localhost
+                self.log(f"Request remote_addr: {request.remote_addr}")
+                if request.remote_addr in ['127.0.0.1', '::1']:
+                    is_server_device = True
+                    self.log("Detected server device via localhost", "INFO")
+                else:
+                    # Check if MAC address matches server's primary interface
+                    result = subprocess.run(['ip', 'addr', 'show'], capture_output=True, text=True)
+                    if mac_address.lower() in result.stdout.lower():
+                        is_server_device = True
+                        self.log("Detected server device via MAC match", "INFO")
+            except Exception as e:
+                self.log(f"Error in server device detection: {e}", "WARNING")
+
+            # Generate client ID
+            self.log(f"is_server_device: {is_server_device}")
+            if is_server_device:
+                # Check if fauxnos000 is already taken
+                existing_server = self.config_manager.get_client_config("fauxnos000")
+                self.log(f"fauxnos000 existing_server: {existing_server}")
+                if existing_server:
+                    # Server device already registered, assign next available ID
+                    next_id = self.config_manager.get_next_client_id()
+                    self.log(f"fauxnos000 taken, assigned: {next_id}")
+                else:
+                    # Reserve fauxnos000 for server device
+                    next_id = "fauxnos000"
+                    self.log(f"Reserved fauxnos000 for server device")
+            else:
+                next_id = self.config_manager.get_next_client_id()
+                self.log(f"Regular client assigned: {next_id}")
 
             if self.test_mode:
                 # In test mode, use mock data - no user input needed
@@ -123,7 +159,8 @@ class FauxnosAPIServer:
             try:
                 new_client = self.config_manager.add_client(
                     name=display_name,
-                    mac=mac_address
+                    mac=mac_address,
+                    client_id=next_id  # Pass the determined client_id (fauxnos000 for server, auto-assigned otherwise)
                 )
 
                 if not self.test_mode:

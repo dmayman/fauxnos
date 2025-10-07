@@ -376,11 +376,15 @@ class FauxnosClientSetup:
 
         # Check if we're on the server machine
         current_hostname = subprocess.run(["hostname"], capture_output=True, text=True).stdout.strip()
-        if current_hostname == "fauxnos-server" and not getattr(self, 'force_hostname', False):
-            self.log("Detected server machine - skipping hostname change to preserve 'fauxnos-server'", "WARNING")
-            self.log("This client will use the server hostname but operate as a client", "INFO")
-            self.log("Use --force-hostname to override this behavior if needed", "INFO")
-            return True
+        if current_hostname in ["fauxnos-server", "fauxnos000"] and not getattr(self, 'force_hostname', False):
+            # If client_id is fauxnos000, allow hostname change to maintain consistency
+            if client_id == "fauxnos000":
+                self.log("Server machine assigned fauxnos000 - updating hostname for consistency")
+            else:
+                self.log(f"Detected server machine ({current_hostname}) but assigned different client ID ({client_id})", "WARNING")
+                self.log("This may cause hostname/client ID mismatch", "WARNING")
+                self.log("Use --force-hostname to override this behavior if needed", "INFO")
+                return True
 
         self.log(f"Setting hostname to {client_id}...")
 
