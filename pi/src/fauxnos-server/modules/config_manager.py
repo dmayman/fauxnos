@@ -11,6 +11,12 @@ import os
 import logging
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
+from pathlib import Path
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 
 @dataclass
@@ -31,6 +37,8 @@ class ConfigManager:
         self.test_mode = test_mode
         self.logger = logging.getLogger('ConfigManager')
         self.server_config = self._load_server_config()
+
+        # No longer need client template - client owns its config
 
     def _load_server_config(self) -> Dict[str, Any]:
         """Load server configuration from JSON file"""
@@ -74,6 +82,8 @@ class ConfigManager:
             self.logger.error(f"Failed to save server config: {e}")
             raise
 
+    # Template methods no longer needed - client owns its config
+
     def add_client(self, name: str, mac: str) -> ClientConfig:
         """Add a new client to the configuration"""
         # Generate client ID
@@ -89,6 +99,10 @@ class ConfigManager:
         zeroconf_port = base_zeroconf + next_num
         server_port = base_server + next_num
 
+        # Client owns its config - server just tracks basic info
+        # Generate home source name (group will be auto-detected)
+        home_source = f"source_{client_id}_spotify"
+
         # Add client to configuration
         client_config = {
             "id": client_id,
@@ -99,6 +113,9 @@ class ConfigManager:
                 "server_port": server_port
             }
         }
+
+        # Add home source tracking (home_group will be auto-detected on first connect)
+        client_config["home_source"] = home_source
 
         self.server_config['clients'].append(client_config)
         self.logger.info(f"Added client {client_id} ({name}) with MAC {mac}")
@@ -242,9 +259,8 @@ class ConfigManager:
 
         for client in self.server_config['clients']:
             client_id = client['id']
-            name = client['name']
             fifo_path = f"{fifo_base}/spotify_{client_id}"
-            source_name = f"{name} Spotify"
+            source_name = f"source_{client_id}_spotify"
 
             source_line = f"source = pipe://{fifo_path}?name={source_name}&mode=read"
             sources.append(source_line)

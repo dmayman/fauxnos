@@ -1,0 +1,16 @@
+# Fauxnos Server Dependencies
+# ============================
+# Install with: pip3 install -r requirements.txt
+
+# Core web framework for API server
+flask>=2.0.0
+
+# YAML configuration template support
+pyyaml>=6.0
+
+# Optional: Enhanced JSON support (for future use)
+# jsonschema>=4.0.0
+
+# Development dependencies (install separately if needed)
+# pytest>=7.0.0
+# pytest-cov>=4.0.0

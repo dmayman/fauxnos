@@ -234,3 +234,12 @@ sudo apt-get install libnss-mdns
 NEXT STEPS:
 - Homebridge plugin has proper mDNS support now
 - It's loading up properly with logs, but is not discovering any devices. No MQTT logs on fauxnos-server, so it's probably not connecting properly. 
+
+
+can you refactor so that when the client install runs, it asks on the client side what to
+  name the device, stores that temporarily, and then tells the server what it knows? that way
+  the server doesnt need to wait at all 
+
+
+  echo "dtparam=audio=off" | sudo tee -a /boot/firmware/config.txt
+  echo "dtoverlay=hifiberry-dac" | sudo tee -a /boot/firmware/config.txtw

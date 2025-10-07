@@ -21,11 +21,16 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-# Conditional import for requests (not available in all environments)
+# Conditional imports for requests and yaml (not available in all environments)
 try:
     import requests
 except ImportError:
     requests = None
+
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 class FauxnosClientSetup:
     def __init__(self, dry_run: bool = False, test_mode: bool = False, verbose: bool = False):
@@ -37,10 +42,12 @@ class FauxnosClientSetup:
         self.server_hostname = "fauxnos-server.local" if not test_mode else "localhost"
         self.server_port = 8080
         self.client_dir = Path.home() / "src" / "fauxnos-client"
-        self.config_file = self.client_dir / "config.json"
+        # Store config in user's home directory, not in the source tree
+        self.config_file = Path.home() / ".config" / "fauxnos" / "config.yaml"
 
-        # Ensure client directory exists
+        # Ensure directories exist
         self.client_dir.mkdir(parents=True, exist_ok=True)
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, message: str, level: str = "INFO"):
         colors = {
@@ -105,6 +112,8 @@ class FauxnosClientSetup:
                 self.log(f"Found server at: {ip}", "SUCCESS")
                 return ip
 
+        except FileNotFoundError:
+            self.log("avahi-resolve not found, trying direct connection...", "WARNING")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             self.log("mDNS discovery failed, trying direct connection...", "WARNING")
 
@@ -116,6 +125,17 @@ class FauxnosClientSetup:
             sock.close()
             self.log(f"Server reachable at: {self.server_hostname}", "SUCCESS")
             return self.server_hostname
+        except:
+            pass
+
+        # Final fallback: try localhost (for server-client on same machine)
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect(("localhost", self.server_port))
+            sock.close()
+            self.log("Found server on localhost (same machine)", "SUCCESS")
+            return "localhost"
         except:
             pass
 
@@ -182,13 +202,14 @@ class FauxnosClientSetup:
             self.log(f"Failed to get MAC address: {e}", "ERROR")
             raise
 
-    def register_with_server(self, server_ip: str, mac_address: str) -> Optional[Dict[str, Any]]:
+    def register_with_server(self, server_ip: str, mac_address: str, display_name: str) -> Optional[Dict[str, Any]]:
         """Register this client with the server"""
         self.log("Registering with server...")
 
         registration_data = {
             "mac_address": mac_address,
             "hostname": socket.gethostname(),
+            "display_name": display_name,
             "request_type": "register"
         }
 
@@ -229,63 +250,100 @@ class FauxnosClientSetup:
             self.log(f"Registration failed: {e}", "ERROR")
             return None
 
-    def download_client_config(self, server_ip: str, client_id: str) -> Optional[Dict[str, Any]]:
-        """Download full client configuration from server"""
-        self.log(f"Downloading configuration for {client_id}...")
+    def initialize_config_from_template(self) -> bool:
+        """Copy template config to proper location if it doesn't exist"""
+        if self.config_file.exists():
+            self.log("Config file already exists, skipping template copy")
+            return True
 
-        if self.dry_run:
-            self.log(f"DRY RUN: Would download config for {client_id}")
-            return {"client_id": client_id, "test": True}
-
-        if self.test_mode:
-            # Return mock config
-            mock_config = {
-                "client_id": client_id,
-                "name": "test",
-                "display_name": "Test Client",
-                "mac": "aa:bb:cc:dd:ee:99",
-                "server_config_url": f"http://{server_ip}:8080/api/config/{client_id}",
-                "go_librespot_monitor_url": f"http://{server_ip}:3699/player/volume",
-                "sources": [
-                    {
-                        "id": "snapcast",
-                        "label": "Multiroom",
-                        "type": "internal",
-                        "sink": "snapsink",
-                        "starting_volume": 50,
-                        "volume_controller": "snapcast"
-                    }
-                ],
-                "mqtt": {
-                    "broker_host": server_ip,
-                    "broker_port": 1883
-                }
-            }
-            self.log(f"TEST MODE: Using mock config", "WARNING")
-            return mock_config
-
-        if requests is None:
-            self.log("requests module not available - using mock config", "WARNING")
-            return mock_config
+        # Find template config
+        template_path = self.client_dir / "config.yaml"
+        if not template_path.exists():
+            self.log(f"Template config not found: {template_path}", "ERROR")
+            self.log("Make sure you've downloaded the complete fauxnos-client directory")
+            return False
 
         try:
-            url = f"http://{server_ip}:{self.server_port}/api/config/{client_id}"
-            response = requests.get(url, timeout=30)
-            response.raise_for_status()
+            # Copy template to proper location
+            if self.dry_run:
+                self.log(f"DRY RUN: Would copy {template_path} to {self.config_file}")
+                return True
 
-            config = response.json()
-            self.log("Configuration downloaded successfully", "SUCCESS")
-            return config
+            self.log(f"Copying template config from {template_path}")
+            with open(template_path, 'r') as src:
+                template_content = src.read()
 
-        except requests.RequestException as e:
-            self.log(f"Config download failed: {e}", "ERROR")
+            with open(self.config_file, 'w') as dst:
+                dst.write(template_content)
+
+            self.log(f"Template config copied to {self.config_file}", "SUCCESS")
+            return True
+
+        except Exception as e:
+            self.log(f"Failed to copy template config: {e}", "ERROR")
+            return False
+
+    def load_local_config(self) -> Optional[Dict[str, Any]]:
+        """Load the local YAML configuration file"""
+        if yaml is None:
+            self.log("PyYAML not available - cannot load config", "ERROR")
             return None
 
+        if not self.config_file.exists():
+            self.log(f"Config file not found: {self.config_file}", "ERROR")
+            return None
+
+        try:
+            with open(self.config_file, 'r') as f:
+                config = yaml.safe_load(f)
+            self.log("Local config loaded successfully")
+            return config
+        except yaml.YAMLError as e:
+            self.log(f"Failed to load YAML config: {e}", "ERROR")
+            return None
+        except Exception as e:
+            self.log(f"Failed to load config: {e}", "ERROR")
+            return None
+
+    def update_local_config(self, client_id: str, display_name: str, mac_address: str,
+                           server_info: Dict[str, Any]) -> bool:
+        """Update the local YAML config with registration info"""
+        self.log("Updating local configuration...")
+
+        # Load current config
+        config = self.load_local_config()
+        if not config:
+            return False
+
+        if self.dry_run:
+            self.log(f"DRY RUN: Would update config with {client_id}, {display_name}")
+            return True
+
+        try:
+            # Fill in the registration info
+            config['client_id'] = client_id
+            config['display_name'] = display_name
+            config['mac'] = mac_address
+
+            # Update server connection info from registration response
+            if 'server_port' in server_info:
+                config['go_librespot_monitor_url'] = f"http://{self.server_hostname}:{server_info['server_port']}/player/volume"
+
+            return self.save_config(config)
+
+        except Exception as e:
+            self.log(f"Failed to update config: {e}", "ERROR")
+            return False
+
     def save_config(self, config: Dict[str, Any]) -> bool:
-        """Save configuration to local file"""
+        """Save configuration to local YAML file"""
+        if yaml is None:
+            self.log("PyYAML not available - cannot save config", "ERROR")
+            return False
+
         try:
             with open(self.config_file, 'w') as f:
-                json.dump(config, f, indent=2)
+                yaml.dump(config, f, default_flow_style=False, indent=2)
 
             self.log(f"Configuration saved to {self.config_file}", "SUCCESS")
             return True
@@ -296,6 +354,15 @@ class FauxnosClientSetup:
 
     def apply_hostname(self, client_id: str) -> bool:
         """Change hostname from temporary to permanent"""
+
+        # Check if we're on the server machine
+        current_hostname = subprocess.run(["hostname"], capture_output=True, text=True).stdout.strip()
+        if current_hostname == "fauxnos-server" and not getattr(self, 'force_hostname', False):
+            self.log("Detected server machine - skipping hostname change to preserve 'fauxnos-server'", "WARNING")
+            self.log("This client will use the server hostname but operate as a client", "INFO")
+            self.log("Use --force-hostname to override this behavior if needed", "INFO")
+            return True
+
         self.log(f"Setting hostname to {client_id}...")
 
         if not self.execute(f"sudo hostnamectl set-hostname {client_id}", f"Setting hostname to {client_id}"):
@@ -348,6 +415,10 @@ class FauxnosClientSetup:
                     f.write(service_content)
 
                 self.log(f"Created user service: {service_path}", "SUCCESS")
+
+            # Enable user lingering for automatic startup on boot
+            if not self.execute("sudo loginctl enable-linger $USER", "Enabling user lingering for automatic service startup"):
+                return False
 
             # Reload user daemon
             if not self.execute("systemctl --user daemon-reload", "Reloading user systemd daemon"):
@@ -406,19 +477,34 @@ class FauxnosClientSetup:
         """Run the complete client setup process"""
         self.log("Starting Fauxnos client setup...")
 
-        # Step 1: Discover server
+        # Step 1: Initialize config from template
+        if not self.initialize_config_from_template():
+            return False
+
+        # Step 2: Get user input for display name
+        if not self.test_mode and not self.dry_run:
+            print(f"\n🔧 Setting up new Fauxnos client")
+            display_name = input("Enter display name for this client (e.g., 'Kitchen', 'Living Room'): ").strip()
+            if not display_name:
+                display_name = "Fauxnos Client"
+                print(f"Using default name: {display_name}")
+        else:
+            display_name = "Test Client"
+            self.log(f"TEST MODE: Using display name '{display_name}'", "WARNING")
+
+        # Step 3: Discover server
         server_ip = self.discover_server()
         if not server_ip:
             return False
 
-        # Step 2: Get MAC address
+        # Step 4: Get MAC address
         try:
             mac_address = self.get_mac_address()
         except Exception:
             return False
 
-        # Step 3: Register with server
-        registration_result = self.register_with_server(server_ip, mac_address)
+        # Step 5: Register with server
+        registration_result = self.register_with_server(server_ip, mac_address, display_name)
         if not registration_result:
             return False
 
@@ -427,31 +513,33 @@ class FauxnosClientSetup:
             self.log("No client_id received from server", "ERROR")
             return False
 
-        # Step 4: Download full configuration
-        config = self.download_client_config(server_ip, client_id)
-        if not config:
+        # Step 6: Update local configuration with registration info
+        if not self.update_local_config(client_id, display_name, mac_address, registration_result):
             return False
 
-        # Step 5: Save configuration locally
-        if not self.save_config(config):
-            return False
-
-        # Step 6: Apply hostname
+        # Step 7: Apply hostname
         if not self.apply_hostname(client_id):
             return False
 
-        # Step 7: Setup PulseAudio
+        # Step 8: Setup PulseAudio
+        config = self.load_local_config()
+        if not config:
+            return False
+
         if not self.setup_pulseaudio(config):
             return False
 
-        # Step 8: Deploy services
+        # Step 9: Deploy services
         if not self.deploy_services(config):
             return False
 
-        # Step 9: Success!
+        # Step 10: Success!
         self.log("Client setup completed successfully!", "SUCCESS")
         self.log(f"Client ID: {client_id}")
-        self.log(f"Display Name: {config.get('display_name', 'Unknown')}")
+        self.log(f"Display Name: {display_name}")
+        self.log(f"Config file: {self.config_file}")
+        self.log(f"Sources configured: {len(config.get('sources', []))}")
+
 
         if not self.test_mode and not self.dry_run:
             self.log("Rebooting in 10 seconds to apply changes... (Ctrl+C to cancel)")
@@ -463,12 +551,99 @@ class FauxnosClientSetup:
 
         return True
 
+
+def show_client_config(verbose: bool = False):
+    """Show current client configuration in readable format"""
+    print("⚙️  Fauxnos Client Configuration")
+    print("=" * 40)
+
+    # Check if client config exists
+    config_file = Path.home() / ".config" / "fauxnos" / "config.yaml"
+    if not config_file.exists():
+        print("❌ No client configuration found")
+        print(f"   Expected location: {config_file}")
+        print("   Run 'python3 setup-client.py --setup' to configure this client")
+        return
+
+    try:
+        import yaml
+        with open(config_file, 'r') as f:
+            config = yaml.safe_load(f)
+
+        # Basic client info
+        print(f"📍 Client ID: {config.get('client_id', 'Not set')}")
+        print(f"🏷️  Display Name: {config.get('display_name', 'Not set')}")
+        print(f"🌐 MAC Address: {config.get('mac_address', 'Not set')}")
+
+        # Server connection
+        server_config = config.get('server', {})
+        print(f"\n🔗 Server Connection:")
+        print(f"   Host: {server_config.get('host', 'Not set')}")
+        print(f"   Port: {server_config.get('port', 'Not set')}")
+
+        # Snapcast configuration
+        snapcast_config = config.get('snapcast', {})
+        print(f"\n🔊 Snapcast Configuration:")
+        print(f"   Server: {snapcast_config.get('server', 'Not set')}")
+        print(f"   Port: {snapcast_config.get('port', 'Not set')}")
+
+        # Go-Librespot configuration
+        librespot_config = config.get('go_librespot', {})
+        print(f"\n🎵 Go-Librespot Configuration:")
+        print(f"   Monitor URL: {librespot_config.get('monitor_url', 'Not set')}")
+
+        # Audio configuration
+        audio_config = config.get('audio', {})
+        if audio_config:
+            print(f"\n🔉 Audio Configuration:")
+            for key, value in audio_config.items():
+                print(f"   {key.replace('_', ' ').title()}: {value}")
+
+        # Service status
+        print(f"\n⚙️  Services:")
+        client_id = config.get('client_id', 'unknown')
+        services = [
+            f"snapclient-{client_id}",
+            f"fauxnos-client-{client_id}"
+        ]
+
+        import subprocess
+        for service in services:
+            try:
+                result = subprocess.run(
+                    ["systemctl", "--user", "is-active", service],
+                    capture_output=True, text=True, timeout=5
+                )
+                status = result.stdout.strip()
+                if status == "active":
+                    print(f"   ✅ {service}: Running")
+                elif status == "inactive":
+                    print(f"   ⭕ {service}: Stopped")
+                else:
+                    print(f"   ❓ {service}: {status}")
+            except:
+                print(f"   ❌ {service}: Unknown")
+
+        # File locations
+        if verbose:
+            print(f"\n📁 Configuration Files:")
+            print(f"   Client Config: {config_file}")
+            print(f"   Systemd Services: ~/.config/systemd/user/")
+            print(f"   PulseAudio Config: ~/.config/pulse/")
+
+    except Exception as e:
+        print(f"❌ Error reading configuration: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fauxnos Client Setup and Registration",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  # Show current client configuration
+  python3 setup-client.py --config
+
   # Test what would happen without making changes
   python3 setup-client.py --setup --dry-run
 
@@ -482,6 +657,10 @@ Examples:
 
     parser.add_argument('--setup', action='store_true',
                        help='Run client registration and setup')
+    parser.add_argument('--config', action='store_true',
+                       help='Show current client configuration')
+    parser.add_argument('--force-hostname', action='store_true',
+                       help='Force hostname change even on server machine')
     parser.add_argument('--dry-run', action='store_true',
                        help='Show what would be done without making changes')
     parser.add_argument('--test', action='store_true',
@@ -490,6 +669,10 @@ Examples:
                        help='Show detailed output')
 
     args = parser.parse_args()
+
+    if args.config:
+        show_client_config(args.verbose)
+        sys.exit(0)
 
     if not args.setup:
         parser.print_help()
@@ -501,6 +684,7 @@ Examples:
         test_mode=args.test,
         verbose=args.verbose
     )
+    setup.force_hostname = args.force_hostname
 
     # Run setup
     success = setup.run_setup()

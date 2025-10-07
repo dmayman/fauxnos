@@ -1,0 +1,114 @@
+# Fauxnos Client Configuration
+# ============================
+# This config gets downloaded with the fauxnos-client and customized during setup.
+# The client owns and manages its source configuration.
+
+# Client identification (filled in during setup)
+client_id: ""                    # Will be assigned by server (e.g., "fauxnos001")
+display_name: ""                 # Human name from user input (e.g., "Kitchen")
+mac: ""                          # Detected during setup
+
+# Server connection endpoints (filled in during registration)
+server_host: "fauxnos-server.local"
+api_port: 8080
+go_librespot_monitor_url: ""     # Set during registration based on assigned ports
+
+# Sound files for UI feedback
+sounds:
+  switch: "~/src/fauxnos-client/sounds/source_switch.wav"
+  volume_up: "~/src/fauxnos-client/sounds/volume_up.wav"
+  volume_down: "~/src/fauxnos-client/sounds/volume_down.wav"
+
+# Audio sources - CLIENT OWNS THIS
+# =================================
+# The client manages its own sources and switching logic.
+# Server only cares about multiroom grouping via snapcast.
+
+sources:
+  # Primary multiroom source - connects to snapcast server
+  - id: "snapcast"
+    label: "Multiroom"
+    type: "internal"              # Routed through PulseAudio
+    sink: "snapsink"              # PulseAudio sink (see configs/pulseaudio/default.pa)
+    starting_volume: 50
+    volume_controller: "snapcast" # Volume controlled by snapcast server
+    default: true                 # Default source on startup
+
+  # Local analog input (3.5mm, line in, etc.)
+  - id: "analog"
+    label: "Analog In"
+    type: "internal"
+    sink: "analogsink"
+    starting_volume: 30
+    volume_controller: "self"     # Client controls volume directly
+
+# EXTERNAL SOURCE EXAMPLES
+# =========================
+# Uncomment and customize for your setup. These are controlled via API calls
+# to external devices (smart mixers, IoT switches, etc.)
+
+# Example: Amazon Alexa via smart mixer
+# - id: "alexa"
+#   label: "Alexa"
+#   type: "external"              # Controlled via API calls
+#   control_api: "http://mixer.local/api/set-input"
+#   control_payload:
+#     source: "alexa"
+#   starting_volume: 40
+
+# Example: Vinyl turntable
+# - id: "vinyl"
+#   label: "Vinyl"
+#   type: "external"
+#   control_api: "http://mixer.local/api/set-input"
+#   control_payload:
+#     source: "vinyl"
+#   starting_volume: 60
+
+# Example: AUX input
+# - id: "aux"
+#   label: "Aux"
+#   type: "external"
+#   control_api: "http://mixer.local/api/set-input"
+#   control_payload:
+#     source: "aux"
+#   starting_volume: 50
+
+# Logging
+log_file: "~/logs/fauxnos-client.log"
+
+# MQTT for coordination with server (optional)
+mqtt:
+  broker_host: "fauxnos-server.local"
+  broker_port: 1883
+  enabled: false                  # Enable when MQTT coordination is implemented
+
+# Client behavior settings
+# ========================
+
+# Volume control
+volume:
+  fade_duration_ms: 500           # Smooth transitions between sources
+  system_sink_range: [10, 40]    # System sounds volume range (% of source)
+
+# Source switching behavior
+switching:
+  auto_switch_on_analog: true     # Auto-switch when analog input detected
+  debounce_ms: 2000              # Prevent rapid switching back and forth
+  startup_source: "snapcast"     # Source to activate on boot
+
+# Hardware-specific settings
+hardware:
+  hifiberry_dac: true            # Enable HiFiBerry DAC+ optimizations
+  analog_input_threshold: -40    # dB threshold for analog detection
+
+# Optional integrations (for future use)
+integrations:
+  home_assistant:
+    enabled: false
+    base_url: ""
+    access_token: ""
+
+  spotify_monitoring:
+    enabled: true                 # Monitor go-librespot for playback events
+    auto_switch: true            # Switch to snapcast when Spotify starts

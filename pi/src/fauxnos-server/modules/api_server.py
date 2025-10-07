@@ -18,18 +18,18 @@ from pathlib import Path
 import sys
 import os
 
-# Add current directory to path for imports
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Module imports handled by relative imports
 
-from config_manager import ConfigManager, ClientConfig
+from .config_manager import ConfigManager, ClientConfig
+from typing import Optional
 
 app = Flask(__name__)
 
 class FauxnosAPIServer:
-    def __init__(self, test_mode: bool = False, verbose: bool = False):
+    def __init__(self, config_manager: Optional[ConfigManager] = None, test_mode: bool = False, verbose: bool = False):
         self.test_mode = test_mode
         self.verbose = verbose
-        self.config_manager = ConfigManager(test_mode=test_mode)
+        self.config_manager = config_manager or ConfigManager(test_mode=test_mode)
 
         # Setup Flask routes
         self.setup_routes()
@@ -82,6 +82,7 @@ class FauxnosAPIServer:
 
             mac_address = data.get('mac_address')
             hostname = data.get('hostname', 'unknown')
+            display_name = data.get('display_name', 'Fauxnos Client')
 
             if not mac_address:
                 return jsonify({"error": "mac_address is required"}), 400
@@ -95,7 +96,6 @@ class FauxnosAPIServer:
                 return jsonify({
                     "status": "already_registered",
                     "client_id": existing_client.id,
-                    "name": existing_client.name,
                     "server_port": existing_client.server_port,
                     "zeroconf_port": existing_client.zeroconf_port
                 })
@@ -112,7 +112,8 @@ class FauxnosAPIServer:
                 print(f"\n🔧 New client registration: {next_id}")
                 print(f"   MAC Address: {mac_address}")
                 print(f"   Hostname: {hostname}")
-                client_name = input("Enter display name for this client (e.g., 'Kitchen', 'Living Room'): ").strip()
+                # Use display name provided by client instead of prompting
+                client_name = display_name
 
                 if not client_name:
                     client_name = f"Fauxnos {next_id[-3:]}"
@@ -121,31 +122,57 @@ class FauxnosAPIServer:
             # Add client to configuration
             try:
                 new_client = self.config_manager.add_client(
-                    name=client_name,
+                    name=display_name,
                     mac=mac_address
                 )
 
                 if not self.test_mode:
                     # Deploy server-side infrastructure
                     self.log("Deploying server infrastructure...")
-                    from deploy import DeploymentManager
+                    from .deploy import DeploymentManager
                     deployer = DeploymentManager(self.config_manager)
 
                     if deployer.deploy_server_configs():
                         self.log("Server infrastructure deployed successfully", "SUCCESS")
+
+                        # Restart snapserver to load new configuration before group assignment
+                        self.log("Restarting snapserver to load new client configuration...")
+                        import subprocess
+                        try:
+                            subprocess.run(["systemctl", "--user", "restart", "snapserver"], check=True, timeout=10)
+                            self.log("Snapserver restarted successfully", "SUCCESS")
+
+                            # Wait a moment for snapserver to fully start
+                            import time
+                            time.sleep(2)
+                        except Exception as e:
+                            self.log(f"Failed to restart snapserver: {e}", "WARNING")
+
+                        # Auto-assign new client to home group
+                        self.log("Assigning new client to home group...")
+                        from .group_manager import assign_all_clients_to_home
+
+                        if assign_all_clients_to_home(self.config_manager, dry_run=False):
+                            self.log(f"Client {new_client.id} assigned to home group", "SUCCESS")
+                        else:
+                            self.log(f"Failed to assign {new_client.id} to home group", "WARNING")
+                            # Don't fail registration if group assignment fails
                     else:
                         self.log("Server deployment failed", "ERROR")
                         return jsonify({"error": "Failed to deploy server infrastructure"}), 500
+
+                # Save server configuration
+                self.log("Saving server configuration...")
+                self.config_manager.save_server_config()
+                self.log("Server configuration saved successfully", "SUCCESS")
 
                 self.log(f"Client registered successfully: {new_client.id} ({client_name})", "SUCCESS")
 
                 return jsonify({
                     "status": "registered",
                     "client_id": new_client.id,
-                    "name": new_client.name,
                     "server_port": new_client.server_port,
-                    "zeroconf_port": new_client.zeroconf_port,
-                    "config_url": f"/api/config/{new_client.id}"
+                    "zeroconf_port": new_client.zeroconf_port
                 })
 
             except Exception as e:
@@ -158,60 +185,27 @@ class FauxnosAPIServer:
 
     def handle_get_client_config(self, client_id: str):
         """Handle GET /api/config/<client_id>"""
+        # NOTE: This endpoint is deprecated in the new architecture.
+        # Clients now own their config and don't download it from server.
+        # Keeping for backward compatibility or debugging.
         try:
             client = self.config_manager.get_client(client_id)
             if not client:
                 return jsonify({"error": f"Client {client_id} not found"}), 404
 
-            # Generate full client configuration
+            # Return basic server info only
             server_host = "fauxnos-server.local" if not self.test_mode else "localhost"
 
-            config = {
+            basic_info = {
                 "client_id": client.id,
-                "name": client.id.replace("fauxnos", "").lstrip("0") or client.id,  # e.g., "001" -> "1"
-                "display_name": client.name,
-                "mac": client.mac,
-                "server_config_url": f"http://{server_host}:8080/api/config/{client.id}",
+                "server_port": client.server_port,
+                "zeroconf_port": client.zeroconf_port,
                 "go_librespot_monitor_url": f"http://{server_host}:{client.server_port}/player/volume",
-                "sounds": {
-                    "switch": "~/src/sounds/source_switch.wav",
-                    "volume_up": "~/src/sounds/volume_up.wav",
-                    "volume_down": "~/src/sounds/volume_down.wav"
-                },
-                "sources": [
-                    {
-                        "id": "snapcast",
-                        "label": "Multiroom",
-                        "type": "internal",
-                        "sink": "snapsink",
-                        "starting_volume": 50,
-                        "volume_controller": "snapcast"
-                    },
-                    {
-                        "id": "analog",
-                        "label": "Analog In",
-                        "type": "internal",
-                        "sink": "analogsink",
-                        "starting_volume": 30,
-                        "volume_controller": "self"
-                    },
-                    {
-                        "id": "alexa",
-                        "label": "Alexa",
-                        "type": "external",
-                        "control_api": "https://webhook.site/example",
-                        "control_payload": {"source": "alexa"}
-                    }
-                ],
-                "log_file": f"~/logs/audio_controller_{client.id}.log",
-                "mqtt": {
-                    "broker_host": server_host,
-                    "broker_port": 1883
-                }
+                "note": "Client owns its own configuration. This endpoint provides server connection info only."
             }
 
-            self.log(f"Served config for {client_id}")
-            return jsonify(config)
+            self.log(f"Served basic server info for {client_id}")
+            return jsonify(basic_info)
 
         except Exception as e:
             self.log(f"Config retrieval error: {e}", "ERROR")

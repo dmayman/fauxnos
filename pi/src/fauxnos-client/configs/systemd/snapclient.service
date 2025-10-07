@@ -1,13 +1,15 @@
 [Unit]
-Description=Snapclient for {CLIENT_ID}
-After=pulseaudio.service
-Wants=pulseaudio.service
+Description=Snapcast client
+Documentation=https://github.com/badaix/snapcast
+Wants=sound.target
+After=sound.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
-Type=simple
-ExecStart=/usr/bin/snapclient --host fauxnos-server.local --port 1704 --hostID {CLIENT_ID} --player pulse:device=snapsink
+ExecStart=/usr/bin/snapclient --hostID {CLIENT_ID}
 Restart=always
-RestartSec=5
+RestartSec=12
 
 [Install]
 WantedBy=default.target

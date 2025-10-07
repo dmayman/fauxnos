@@ -87,19 +87,21 @@ sudo bash pi-setup.sh --skip-updates --skip-reboot
 
 ## Architecture
 
-This client system implements the **ping-based configuration model** where:
+This client system implements a **client-owned configuration model** where:
 
-- Clients discover server via mDNS (`fauxnos-server.local`)
-- Registration uses MAC address as unique identifier
-- Server assigns client_id (fauxnos001, fauxnos002, etc.)
-- Full configuration downloaded from `/api/config/{client_id}`
-- Local deployment applies hostname, services, PulseAudio config
+- **Client downloads complete system** from GitHub (config, sounds, templates)
+- **Client fills in local info** (MAC address, display name from user input)
+- **Client registers with server** for server-side multiroom management
+- **Server returns connection info** (ports, URLs) to complete client setup
+- **Client owns its source configuration** - server only handles grouping
 
 ## Files
 
+- `config.yaml` - Client configuration (filled in during setup)
 - `setup-client.py` - Registration and initial setup
-- `fauxnos-client.py` - Main client daemon (placeholder)
-- `config.json` - Downloaded client configuration
+- `fauxnos-client.py` - Main client daemon (future)
+- `sounds/` - Audio feedback files (source switch, volume)
+- `configs/` - Template files (PulseAudio, systemd services)
 - Generated systemd services:
   - `snapclient-{client_id}.service`
   - `fauxnos-client-{client_id}.service`

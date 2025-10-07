@@ -12,7 +12,7 @@ import tempfile
 import logging
 from pathlib import Path
 from typing import List, Dict, Any
-from config_manager import ConfigManager
+from .config_manager import ConfigManager
 
 
 class DeploymentManager:
@@ -309,11 +309,21 @@ class DeploymentManager:
 
                 # Start and enable user snapserver
                 try:
-                    subprocess.run(["systemctl", "--user", "enable", "snapserver.service"], check=True)
-                    subprocess.run(["systemctl", "--user", "start", "snapserver.service"], check=True)
-                    self.logger.info("Started and enabled user snapserver.service")
+                    # Check if snapserver is already running
+                    result = subprocess.run(["systemctl", "--user", "is-active", "snapserver.service"],
+                                          capture_output=True, text=True)
+
+                    if result.returncode == 0:  # Service is active
+                        self.logger.info("Restarting snapserver to load new configuration")
+                        subprocess.run(["systemctl", "--user", "restart", "snapserver.service"], check=True)
+                    else:
+                        self.logger.info("Starting snapserver service")
+                        subprocess.run(["systemctl", "--user", "enable", "snapserver.service"], check=True)
+                        subprocess.run(["systemctl", "--user", "start", "snapserver.service"], check=True)
+
+                    self.logger.info("Snapserver service is running with updated configuration")
                 except Exception as e:
-                    self.logger.error(f"Failed to start user snapserver.service: {e}")
+                    self.logger.error(f"Failed to start/restart user snapserver.service: {e}")
                     return False
 
             # Start and enable all go-librespot services (they'll wait for FIFO service)

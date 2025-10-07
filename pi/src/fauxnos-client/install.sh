@@ -26,7 +26,7 @@ TEMP_HOSTNAME_PREFIX="fauxnos-temp"
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
+BLUE='\033[1;36m'  # Bright cyan for better visibility
 BOLD='\033[1m'
 NC='\033[0m'
 
@@ -122,7 +122,7 @@ install_system_dependencies() {
         python3-requests
 
     log "Installing Python packages..."
-    pip3 install --user requests --break-system-packages
+    pip3 install --user requests pyyaml --break-system-packages
 
     log_success "System dependencies installed"
 }
@@ -137,6 +137,10 @@ configure_system() {
     sudo systemctl start avahi-daemon
     sudo systemctl enable ssh
     sudo systemctl start ssh
+
+    # Enable user service lingering for automatic startup
+    log "Enabling user service lingering for automatic startup..."
+    sudo loginctl enable-linger "$USER"
 
     # Add user to audio groups
     log "Configuring audio permissions..."
