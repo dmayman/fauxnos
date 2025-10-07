@@ -1,0 +1,14 @@
+{
+  "server_name": "fauxnos-server",
+  "api_port": 8080,
+  "clients": [],
+  "snapserver": {
+    "control_port": 1705,
+    "stream_port": 1704
+  },
+  "paths": {
+    "config_dir": "~/.config",
+    "staging_dir": "~/fauxnos-staging",
+    "fifo_dir": "/tmp/fauxnos-fifos"
+  }
+}

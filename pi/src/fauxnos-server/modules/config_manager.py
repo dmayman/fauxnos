@@ -36,9 +36,30 @@ class ConfigManager:
         self.config_file = config_file
         self.test_mode = test_mode
         self.logger = logging.getLogger('ConfigManager')
+
+        # Initialize from template if config doesn't exist
+        self._ensure_config_exists()
         self.server_config = self._load_server_config()
 
         # No longer need client template - client owns its config
+
+    def _ensure_config_exists(self):
+        """Ensure config file exists, create from template if needed"""
+        if not os.path.exists(self.config_file):
+            # Look for template
+            template_path = Path(__file__).parent.parent / "configs" / "server_config.json.template"
+            if template_path.exists():
+                self.logger.info(f"Initializing server config from template: {template_path}")
+                try:
+                    with open(template_path, 'r') as src:
+                        template_data = json.load(src)
+                    with open(self.config_file, 'w') as dst:
+                        json.dump(template_data, dst, indent=2)
+                    self.logger.info(f"Created server config: {self.config_file}")
+                except Exception as e:
+                    self.logger.error(f"Failed to create config from template: {e}")
+            else:
+                self.logger.warning(f"No template found at {template_path}, will create default config")
 
     def _load_server_config(self) -> Dict[str, Any]:
         """Load server configuration from JSON file"""

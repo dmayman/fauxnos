@@ -209,23 +209,47 @@ class SnapcastGroupManager:
 
         # Check if this client has a remembered home group (using config ID)
         if not self.get_client_home_group(config_id):
-            # First time seeing this client - remember their current group
+            # Only auto-save home group if client is alone in their group (not manually grouped)
             client_config = self.get_client_config(config_id)
             if client_config:
-                self.save_home_group(config_id, current_group_id)
-                print(f"   📝 First time setup - saved home group {current_group_id} for {config_id}")
+                # Check if this client is alone in the group
+                clients_in_group = len(current_group.get("clients", []))
+                if clients_in_group == 1:
+                    # Client is alone - this is likely their home group
+                    self.save_home_group(config_id, current_group_id)
+                    print(f"   📝 First time setup - saved home group {current_group_id} for {config_id}")
+                else:
+                    # Client is grouped with others - don't auto-save as home
+                    print(f"   ⚠️ Client {config_id} is grouped with {clients_in_group-1} other(s), not auto-saving as home group")
+                    print(f"   💡 To set home group, separate this client first, then run assign-groups again")
 
         # Get the home group (using config ID)
         home_group_id = self.get_client_home_group(config_id)
         if not home_group_id:
-            home_group_id = current_group_id  # Fallback to current if no memory
+            # No saved home group
+            clients_in_group = len(current_group.get("clients", []))
+            if clients_in_group == 1:
+                # Client is alone - use current group as home
+                home_group_id = current_group_id
+            else:
+                # Client is grouped - they need to be separated to get their own group
+                # For now, don't change their group but flag it
+                home_group_id = None
+                print(f"   ⚠️ No home group saved and client is grouped with others")
 
         print(f"   Current: group={current_group_id}, source={current_source_id}")
         print(f"   Home: group={home_group_id}, preferred_source={preferred_source}")
 
         # Check if we need changes
-        needs_group_change = current_group_id != home_group_id
-        needs_source_change = current_source_id != preferred_source
+        if home_group_id is None:
+            # No home group and client is grouped - we need to separate them
+            needs_group_change = False  # Can't move to a non-existent home
+            needs_source_change = False  # Don't change source of shared group
+            print(f"   ⏸️  Skipping {config_id} - needs to be separated first")
+            return True  # Not a failure, just skipped
+        else:
+            needs_group_change = current_group_id != home_group_id
+            needs_source_change = current_source_id != preferred_source
 
         if not needs_group_change and not needs_source_change:
             print(f"   ✅ Client {config_id} already correctly assigned")
@@ -255,13 +279,49 @@ class SnapcastGroupManager:
                         print(f"   ❌ Failed to move to home group")
                         success = False
                 else:
-                    print(f"   ⚠️ Home group {home_group_id} no longer exists, updating to current group")
-                    self.save_home_group(config_id, current_group_id)
-                    needs_group_change = False
+                    print(f"   ⚠️ Home group {home_group_id} no longer exists")
+                    # Create a new group for this client by removing from current group
+                    print(f"   🔄 Creating new home group for {config_id}")
+
+                    # Get all clients in current group
+                    current_clients = [c.get("id") for c in current_group.get("clients", [])]
+                    other_clients = [c for c in current_clients if c != snapcast_id]
+
+                    if other_clients:
+                        # Remove this client from the group (keeping others)
+                        result = self.send_snapcast_command("Group.SetClients", {
+                            "id": current_group_id,
+                            "clients": other_clients
+                        })
+
+                        if result and "error" not in result:
+                            # Client was removed and should be in a new group now
+                            # Find the new group
+                            import time
+                            time.sleep(0.5)  # Give snapcast time to create new group
+                            new_group = self.find_client_group(snapcast_id)
+                            if new_group:
+                                new_group_id = new_group.get("id")
+                                print(f"   ✅ Created new home group: {new_group_id}")
+                                self.save_home_group(config_id, new_group_id)
+                                current_group_id = new_group_id
+                                needs_group_change = False
+                            else:
+                                print(f"   ❌ Failed to find new group after separation")
+                                needs_group_change = False
+                        else:
+                            print(f"   ❌ Failed to separate from current group")
+                            needs_group_change = False
+                    else:
+                        # Client is alone, just update home to current
+                        print(f"   📝 Client is alone, updating home group to current")
+                        self.save_home_group(config_id, current_group_id)
+                        needs_group_change = False
 
         # Set the source for the group the client is in
         if success and needs_source_change:
-            target_group = home_group_id if not needs_group_change else current_group_id
+            # Always use current_group_id since it's where the client actually is
+            target_group = current_group_id
             if dry_run:
                 print(f"   DRY RUN: Would set group {target_group} source to {preferred_source}")
             else:
@@ -288,21 +348,45 @@ class SnapcastGroupManager:
         # Snapcast API returns stream_id directly, not a nested stream object
         current_source_id = current_group.get("stream_id")
 
-        # First time seeing this client? Remember their current group as home
+        # Check if this client has a remembered home group
         if not self.get_client_home_group(client_id):
-            self.remember_client_group(client_id)
+            # Only auto-save home group if client is alone in their group (not manually grouped)
+            clients_in_group = len(current_group.get("clients", []))
+            if clients_in_group == 1:
+                # Client is alone - this is likely their home group
+                self.remember_client_group(client_id)
+            else:
+                # Client is grouped with others - don't auto-save as home
+                print(f"   ⚠️ Client {client_id} is grouped with {clients_in_group-1} other(s), not auto-saving as home group")
+                print(f"   💡 To set home group, separate this client first, then run assign-groups again")
 
         # Get the home group (could be the one we just remembered)
         home_group_id = self.get_client_home_group(client_id)
         if not home_group_id:
-            home_group_id = current_group_id  # Fallback to current if no memory
+            # No saved home group
+            clients_in_group = len(current_group.get("clients", []))
+            if clients_in_group == 1:
+                # Client is alone - use current group as home
+                home_group_id = current_group_id
+            else:
+                # Client is grouped - they need to be separated to get their own group
+                # For now, don't change their group but flag it
+                home_group_id = None
+                print(f"   ⚠️ No home group saved and client is grouped with others")
 
         print(f"   Current: group={current_group_id}, source={current_source_id}")
         print(f"   Home: group={home_group_id}, preferred_source={preferred_source}")
 
         # Check if we need changes
-        needs_group_change = current_group_id != home_group_id
-        needs_source_change = current_source_id != preferred_source
+        if home_group_id is None:
+            # No home group and client is grouped - we need to separate them
+            needs_group_change = False  # Can't move to a non-existent home
+            needs_source_change = False  # Don't change source of shared group
+            print(f"   ⏸️  Skipping {client_id} - needs to be separated first")
+            return True  # Not a failure, just skipped
+        else:
+            needs_group_change = current_group_id != home_group_id
+            needs_source_change = current_source_id != preferred_source
 
         if not needs_group_change and not needs_source_change:
             print(f"   ✅ Client {client_id} already correctly assigned")
@@ -332,14 +416,49 @@ class SnapcastGroupManager:
                         print(f"   ❌ Failed to move to home group")
                         success = False
                 else:
-                    print(f"   ⚠️ Home group {home_group_id} no longer exists, updating to current group")
-                    needs_group_change = False
-                    # Save the current group as the new home group
-                    self.save_home_group(client_id, current_group_id)
+                    print(f"   ⚠️ Home group {home_group_id} no longer exists")
+                    # Create a new group for this client by removing from current group
+                    print(f"   🔄 Creating new home group for {client_id}")
+
+                    # Get all clients in current group
+                    current_clients = [c.get("id") for c in current_group.get("clients", [])]
+                    other_clients = [c for c in current_clients if c != client_id]
+
+                    if other_clients:
+                        # Remove this client from the group (keeping others)
+                        result = self.send_snapcast_command("Group.SetClients", {
+                            "id": current_group_id,
+                            "clients": other_clients
+                        })
+
+                        if result and "error" not in result:
+                            # Client was removed and should be in a new group now
+                            # Find the new group
+                            import time
+                            time.sleep(0.5)  # Give snapcast time to create new group
+                            new_group = self.find_client_group(client_id)
+                            if new_group:
+                                new_group_id = new_group.get("id")
+                                print(f"   ✅ Created new home group: {new_group_id}")
+                                self.save_home_group(client_id, new_group_id)
+                                current_group_id = new_group_id
+                                needs_group_change = False
+                            else:
+                                print(f"   ❌ Failed to find new group after separation")
+                                needs_group_change = False
+                        else:
+                            print(f"   ❌ Failed to separate from current group")
+                            needs_group_change = False
+                    else:
+                        # Client is alone, just update home to current
+                        print(f"   📝 Client is alone, updating home group to current")
+                        self.save_home_group(client_id, current_group_id)
+                        needs_group_change = False
 
         # Set the source for the group the client is in
         if success and needs_source_change:
-            target_group = home_group_id if not needs_group_change else current_group_id
+            # Always use current_group_id since it's where the client actually is
+            target_group = current_group_id
             if dry_run:
                 print(f"   DRY RUN: Would set group {target_group} source to {preferred_source}")
             else:

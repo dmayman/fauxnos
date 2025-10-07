@@ -17,7 +17,7 @@ Usage:
   python3 fauxnos-client.py restart      # Restart client services
 """
 
-import json
+import yaml
 import sys
 import time
 import signal
@@ -30,7 +30,8 @@ from typing import List, Optional
 class FauxnosClient:
     def __init__(self):
         self.running = True
-        self.config_file = Path.home() / "src" / "fauxnos-client" / "config.json"
+        # Use the same config location as setup-client.py
+        self.config_file = Path.home() / ".config" / "fauxnos" / "config.yaml"
         self.config = self.load_config()
 
     def log(self, message: str, level: str = "INFO"):
@@ -50,7 +51,7 @@ class FauxnosClient:
         try:
             if self.config_file.exists():
                 with open(self.config_file, 'r') as f:
-                    return json.load(f)
+                    return yaml.safe_load(f)
             else:
                 self.log(f"Config file not found: {self.config_file}", "WARNING")
                 return {}
@@ -68,10 +69,20 @@ class FauxnosClient:
         self.log("🧹 Cleaning up old client services")
         self.log("=" * 50)
 
+        # Try to get current client ID from config or hostname
         current_client_id = self.config.get('client_id')
         if not current_client_id:
-            self.log("No client ID found in config - skipping cleanup", "WARNING")
-            return False
+            # Fall back to hostname if config not available
+            import socket
+            hostname = socket.gethostname()
+            if hostname.startswith('fauxnos'):
+                current_client_id = hostname
+                self.log(f"No config found, using hostname as client ID: {current_client_id}", "WARNING")
+            else:
+                self.log("No client ID found in config and hostname is not a fauxnos ID", "WARNING")
+                self.log("Will clean up ALL fauxnos services - be careful!", "WARNING")
+                # Set to empty to clean all fauxnos services
+                current_client_id = None
 
         self.log(f"Current client ID: {current_client_id}")
 
@@ -112,7 +123,8 @@ class FauxnosClient:
                         client_id = service_name.replace("fauxnos-client-", "").replace(".service", "")
 
                     # Check if this is an old service (not matching current client ID)
-                    if client_id != current_client_id:
+                    # If current_client_id is None, clean up all fauxnos services
+                    if current_client_id is None or client_id != current_client_id:
                         self.log(f"Found orphaned service: {service_name}", "WARNING")
 
                         if dry_run:
@@ -160,7 +172,8 @@ class FauxnosClient:
         # Show client info
         client_id = self.config.get('client_id', 'Unknown')
         display_name = self.config.get('display_name', 'Unknown')
-        mac = self.config.get('mac_address', 'Unknown')
+        # Handle both 'mac' and 'mac_address' keys for compatibility
+        mac = self.config.get('mac') or self.config.get('mac_address', 'Unknown')
 
         self.log(f"Client ID: {client_id}")
         self.log(f"Display Name: {display_name}")
@@ -203,19 +216,16 @@ class FauxnosClient:
 
         for pattern in patterns:
             try:
-                result = subprocess.run(
-                    ["ls", "-1", f"{Path.home()}/.config/systemd/user/{pattern}"],
-                    shell=True, capture_output=True, text=True, check=False
-                )
+                # Use proper glob command
+                import glob
+                service_files = glob.glob(str(Path.home() / ".config" / "systemd" / "user" / pattern))
 
-                if result.returncode == 0:
-                    for line in result.stdout.strip().split('\n'):
-                        if line:
-                            service_name = Path(line).name
-                            # Check if this is not the current client's service
-                            if client_id not in service_name:
-                                orphaned.append(service_name)
-            except:
+                for service_path in service_files:
+                    service_name = Path(service_path).name
+                    # Check if this is not the current client's service
+                    if client_id not in service_name:
+                        orphaned.append(service_name)
+            except Exception as e:
                 pass
 
         if orphaned:

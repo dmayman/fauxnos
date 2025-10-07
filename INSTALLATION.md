@@ -6,7 +6,7 @@ A comprehensive guide for setting up a DIY multiroom audio system using Raspberr
 
 - Raspberry Pi Zero 2 W
 - HiFiBerry DAC+ (PCM5102A-based DAC)
-- Good quality SD card (16GB+ recommended)
+- Good quality SD card (8GB+ recommended)
 - Power supply
 - Audio cables/speakers
 

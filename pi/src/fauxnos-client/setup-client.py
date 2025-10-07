@@ -256,8 +256,8 @@ class FauxnosClientSetup:
             self.log("Config file already exists, skipping template copy")
             return True
 
-        # Find template config
-        template_path = self.client_dir / "config.yaml"
+        # Find template config in configs directory
+        template_path = self.client_dir / "configs" / "config.yaml.template"
         if not template_path.exists():
             self.log(f"Template config not found: {template_path}", "ERROR")
             self.log("Make sure you've downloaded the complete fauxnos-client directory")
@@ -320,14 +320,33 @@ class FauxnosClientSetup:
             return True
 
         try:
-            # Fill in the registration info
+            # Fill in the registration info - these are the top-level keys
             config['client_id'] = client_id
             config['display_name'] = display_name
-            config['mac'] = mac_address
+            config['mac'] = mac_address  # Note: key is 'mac' not 'mac_address' in template
+
+            # Update server host if different
+            config['server_host'] = self.server_hostname
+            config['api_port'] = self.server_port
 
             # Update server connection info from registration response
             if 'server_port' in server_info:
                 config['go_librespot_monitor_url'] = f"http://{self.server_hostname}:{server_info['server_port']}/player/volume"
+
+            # Update sound file paths to use absolute paths
+            if 'sounds' in config:
+                for sound_key in config['sounds']:
+                    if config['sounds'][sound_key].startswith('~/'):
+                        # Replace ~/ with actual home path
+                        config['sounds'][sound_key] = str(Path.home() / config['sounds'][sound_key][2:])
+
+            # Log what we're updating
+            self.log(f"  Client ID: {client_id}")
+            self.log(f"  Display Name: {display_name}")
+            self.log(f"  MAC Address: {mac_address}")
+            self.log(f"  Server: {self.server_hostname}:{self.server_port}")
+            if 'server_port' in server_info:
+                self.log(f"  Go-librespot Monitor Port: {server_info['server_port']}")
 
             return self.save_config(config)
 
