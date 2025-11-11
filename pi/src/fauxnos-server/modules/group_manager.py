@@ -471,6 +471,63 @@ class SnapcastGroupManager:
 
         return success
 
+    def join_client_to_group(self, client_id: str, target_client_id: str) -> bool:
+        """
+        Join a client to another client's group (multiroom sync)
+
+        Args:
+            client_id: Client to move
+            target_client_id: Client whose group to join
+
+        Returns:
+            True if successful, False otherwise
+        """
+        # Find target client's group
+        target_group = self.find_client_group(target_client_id)
+        if not target_group:
+            print(f"❌ Could not find {target_client_id} in any group")
+            return False
+
+        target_group_id = target_group.get('id')
+        target_source = target_group.get('stream_id')
+
+        # Get all existing clients in target group
+        existing_clients = [c.get('id') for c in target_group.get('clients', [])]
+
+        # Add our client if not already in the group
+        if client_id not in existing_clients:
+            existing_clients.append(client_id)
+        else:
+            print(f"ℹ️  {client_id} is already in {target_client_id}'s group")
+            return True
+
+        # Set the group to have all these clients
+        result = self.send_snapcast_command('Group.SetClients', {
+            'id': target_group_id,
+            'clients': existing_clients
+        })
+
+        if result and 'result' in result:
+            print(f"✅ Joined {client_id} to {target_client_id}'s group")
+            print(f"   Both clients are now in group {target_group_id[:8]}... with source: {target_source}")
+            return True
+        else:
+            print(f"❌ Failed to join {client_id} to group")
+            return False
+
+    def separate_client(self, client_id: str, preferred_source: str) -> bool:
+        """
+        Separate a client to its own group with its home source
+
+        Args:
+            client_id: Client to separate
+            preferred_source: The source to use for the client's group
+
+        Returns:
+            True if successful, False otherwise
+        """
+        return self.ensure_client_home_assignment(client_id, preferred_source, dry_run=False)
+
 def assign_all_clients_to_home(config_manager: ConfigManager, dry_run: bool = False) -> bool:
     """Assign all clients to their home groups and sources"""
     print("🏠 Assigning clients to home groups and sources")

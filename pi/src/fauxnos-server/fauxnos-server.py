@@ -390,6 +390,100 @@ def cmd_reset_groups(args):
     print("💡 Run 'python3 fauxnos-server.py assign-groups' to trigger reassignment now")
     return 0
 
+def cmd_join_group(args):
+    """Join a client to another client's group (multiroom)"""
+    config_manager = ConfigManager(test_mode=args.test)
+    group_manager = SnapcastGroupManager(config_manager=config_manager)
+
+    print(f"🔗 Joining {args.client_id} to {args.target_id}'s group...")
+
+    if group_manager.join_client_to_group(args.client_id, args.target_id):
+        # Show current groups
+        print("\n📊 Current groups:")
+        groups = group_manager.get_groups()
+        for group in groups:
+            clients = group.get('clients', [])
+            if clients:  # Only show non-empty groups
+                client_ids = [c.get('id') for c in clients]
+                source = group.get('stream_id')
+                print(f"   • Group {group['id'][:8]}... ({source})")
+                print(f"     Clients: {', '.join(client_ids)}")
+        return 0
+    else:
+        return 1
+
+def cmd_separate_client(args):
+    """Separate a client to its own group"""
+    config_manager = ConfigManager(test_mode=args.test)
+    group_manager = SnapcastGroupManager(config_manager=config_manager)
+
+    print(f"🔀 Separating {args.client_id} to its own group...")
+
+    # Find client's home source
+    client_dict = None
+    for client in config_manager.server_config.get('clients', []):
+        if client.get('id') == args.client_id:
+            client_dict = client
+            break
+
+    if not client_dict:
+        print(f"❌ Client {args.client_id} not found in config")
+        return 1
+
+    home_source = client_dict.get('home_source')
+    if not home_source:
+        print(f"❌ Client {args.client_id} missing home_source in config")
+        return 1
+
+    if group_manager.separate_client(args.client_id, home_source):
+        # Show current groups
+        print("\n📊 Current groups:")
+        groups = group_manager.get_groups()
+        for group in groups:
+            clients = group.get('clients', [])
+            if clients:  # Only show non-empty groups
+                client_ids = [c.get('id') for c in clients]
+                source = group.get('stream_id')
+                print(f"   • Group {group['id'][:8]}... ({source})")
+                print(f"     Clients: {', '.join(client_ids)}")
+        return 0
+    else:
+        return 1
+
+def cmd_show_groups(args):
+    """Show current snapcast groups"""
+    config_manager = ConfigManager(test_mode=args.test)
+    group_manager = SnapcastGroupManager(config_manager=config_manager)
+
+    print("📊 Snapcast Groups")
+    print("=" * 60)
+
+    groups = group_manager.get_groups()
+    if not groups:
+        print("No groups found")
+        return 0
+
+    for i, group in enumerate(groups, 1):
+        clients = group.get('clients', [])
+        if not clients:
+            continue  # Skip empty groups
+
+        source = group.get('stream_id', 'None')
+        group_id = group.get('id', 'unknown')
+
+        print(f"\nGroup {i}: {group_id[:8]}...")
+        print(f"  Source: {source}")
+        print(f"  Clients: {len(clients)}")
+        for client in clients:
+            client_id = client.get('id', 'unknown')
+            client_name = client.get('host', {}).get('name', 'unknown')
+            volume = client.get('config', {}).get('volume', {}).get('percent', 0)
+            connected = "✓" if client.get('connected') else "✗"
+            print(f"    [{connected}] {client_id} ({client_name}) @ {volume}%")
+
+    print("\n" + "=" * 60)
+    return 0
+
 def cmd_config(args):
     """Show server configuration in readable format"""
     config_manager = ConfigManager(test_mode=args.test)
@@ -471,16 +565,28 @@ Examples:
   python3 fauxnos-server.py reset-groups
   python3 fauxnos-server.py reset-groups --client-id fauxnos001
 
+  # Show current snapcast groups
+  python3 fauxnos-server.py show-groups
+
+  # Join clients together (multiroom sync)
+  python3 fauxnos-server.py join-group fauxnos001 fauxnos000
+
+  # Separate a client to its own group
+  python3 fauxnos-server.py separate-client fauxnos001
+
 Command Overview:
-  run           Start the complete server daemon (API + monitoring + maintenance)
-  add-client    Add a new client and deploy infrastructure
-  remove-client Remove a client and clean up infrastructure
-  deploy-server Deploy/update server infrastructure for all clients
-  cleanup       Clean up orphaned infrastructure files
-  assign-groups Assign all clients to their home groups and sources
-  status        Show server status and client information
-  config        Show detailed server configuration
-  reset-groups  Reset home groups (for testing auto-detection)
+  run              Start the complete server daemon (API + monitoring + maintenance)
+  add-client       Add a new client and deploy infrastructure
+  remove-client    Remove a client and clean up infrastructure
+  deploy-server    Deploy/update server infrastructure for all clients
+  cleanup          Clean up orphaned infrastructure files
+  assign-groups    Assign all clients to their home groups and sources
+  status           Show server status and client information
+  config           Show detailed server configuration
+  reset-groups     Reset home groups (for testing auto-detection)
+  show-groups      Show current snapcast groups
+  join-group       Join a client to another client's group (multiroom)
+  separate-client  Separate a client to its own group
         """
     )
 
@@ -538,6 +644,21 @@ Command Overview:
     reset_parser = subparsers.add_parser('reset-groups', help='Reset home groups for testing')
     reset_parser.add_argument('--client-id', help='Reset specific client (default: all)')
     reset_parser.set_defaults(func=cmd_reset_groups)
+
+    # Show groups
+    groups_parser = subparsers.add_parser('show-groups', help='Show current snapcast groups')
+    groups_parser.set_defaults(func=cmd_show_groups)
+
+    # Join group (multiroom)
+    join_parser = subparsers.add_parser('join-group', help='Join a client to another client\'s group (multiroom)')
+    join_parser.add_argument('client_id', help='Client ID to move (e.g., fauxnos001)')
+    join_parser.add_argument('target_id', help='Client ID to join with (e.g., fauxnos000)')
+    join_parser.set_defaults(func=cmd_join_group)
+
+    # Separate client
+    separate_parser = subparsers.add_parser('separate-client', help='Separate a client to its own group')
+    separate_parser.add_argument('client_id', help='Client ID to separate (e.g., fauxnos001)')
+    separate_parser.set_defaults(func=cmd_separate_client)
 
     # Parse and execute
     args = parser.parse_args()
