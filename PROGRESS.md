@@ -91,10 +91,17 @@ MULTIROOM & GROUP MANAGEMENT (IN PROGRESS):
 ✅ Volume synchronization (go-librespot -> snapclient via WebSocket)
 🔲 Group volume control with proportional scaling
 
-SOURCE MANAGEMENT (TODO):
-🔲 Source controller for internal/external source management
-🔲 Analog input switching and auto-detection (client-side)
+SOURCE MANAGEMENT (IN PROGRESS):
+✅ Modular source management system (fauxnos_client.py + 6 modules)
+✅ Internal source control (PulseAudio-based routing)
+✅ External source control (HTTP webhook triggers)
+✅ Smart volume routing (PA sink vs snapcast control)
+✅ State persistence across restarts
+✅ Smooth source transitions with volume fading
+✅ Interactive CLI and daemon modes
+🔲 Analog input auto-detection (client-side)
 🔲 MQTT protocol for device coordination
+🔲 Integration with systemd services
 
 APPS & INTERFACES (FUTURE):
 🔲 Enhanced REST API for group/source control
@@ -135,3 +142,27 @@ The generated snapclient service should match the one I created, it has some ext
 - Fixed ConfigManager to support dedicated server device ID assignment
 - Volume synchronization architecture: go-librespot WebSocket /events → VolumeManager → Snapcast JSON-RPC Client.SetVolume
 - Preserved proportional group volume scaling algorithm from archived code for future group volume control
+
+11/12/2025
+- Built complete modular client-side source management system (fauxnos_client.py)
+- Created 6 specialized modules for clean separation of concerns:
+  * config_manager.py - YAML configuration with type-safe dataclasses
+  * logger.py - Centralized logging with rotation
+  * pulse_controller.py - PulseAudio control via pactl subprocess
+  * snapcast_controller.py - Snapcast JSON-RPC client for volume control
+  * state_manager.py - Atomic state persistence with JSON
+  * source_manager.py - Core source switching with smart volume routing
+- Implemented intelligent volume controller routing:
+  * volume_controller: self - PA sink controls volume directly (analog input)
+  * volume_controller: snapcast - PA at 100%, snapcast controls volume (Spotify/multiroom)
+- Added smooth volume fading between sources (5% steps, 50ms delay)
+- Implemented state persistence across restarts (current source + all source volumes)
+- Created internal vs external source architecture:
+  * Internal sources: PulseAudio-based (Spotify, analog input)
+  * External sources: HTTP webhook-controlled (Alexa, vinyl, aux)
+- Built interactive CLI and daemon modes for fauxnos_client.py
+- Successfully deployed and tested on fauxnos001 hardware
+- Updated setup-client.py to install Python dependencies (pyyaml, requests)
+- Integrated dependency installation into client setup workflow
+- Consolidated README.md with complete source management documentation
+- Updated requirements.txt with all necessary dependencies

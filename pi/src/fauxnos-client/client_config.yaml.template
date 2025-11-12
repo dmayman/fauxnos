@@ -1,0 +1,61 @@
+# Fauxnos Client Configuration
+# =============================
+# Copy this file to ~/.config/fauxnos/client_config.yaml and edit for your device
+
+# Device identification
+device:
+  name: kitchen             # Unique device name (lowercase, no spaces)
+  mac: "00:00:00:00:00:00"  # MAC address of this device
+  display_name: Kitchen     # Human-readable name
+
+# Audio sources
+sources:
+  # Internal source - Spotify via Snapcast
+  - id: spotify
+    label: Spotify
+    type: internal
+    sink: snapsink                   # PulseAudio sink name
+    starting_volume: 50              # Default volume (0-100)
+    volume_controller: snapcast      # 'self' or 'snapcast'
+    external_switch:
+      enabled: true
+      url: https://webhook.site/your-webhook-id
+      payload:
+        source: fauxnos
+
+  # Internal source - Analog input
+  - id: analog
+    label: Analog Input
+    type: internal
+    sink: analogsink
+    starting_volume: 30
+    volume_controller: self          # Use PA sink for volume control
+    external_switch:
+      enabled: true
+      url: https://webhook.site/your-webhook-id
+      payload:
+        source: fauxnos
+
+  # External source - Alexa (controlled downstream)
+  - id: alexa
+    label: Alexa
+    type: external
+    control_url: https://webhook.site/your-webhook-id
+    control_payload:
+      source: alexa
+
+  # External source - Vinyl (controlled downstream)
+  - id: vinyl
+    label: Vinyl
+    type: external
+    control_url: https://webhook.site/your-webhook-id
+    control_payload:
+      source: vinyl
+
+# Logging configuration
+logging:
+  file: ~/logs/fauxnos-client.log
+  level: INFO                        # DEBUG, INFO, WARNING, ERROR
+
+# State file (stores current source and volumes)
+state_file: ~/.config/fauxnos/client_state.json

@@ -1,7 +1,10 @@
 # Fauxnos Client Python Dependencies
 # Install with: pip3 install -r requirements.txt --break-system-packages
 
-# Core HTTP client for server communication
+# YAML configuration file support
+pyyaml>=6.0
+
+# Core HTTP client for server communication and external switches
 requests>=2.25.1
 
 # Optional: MQTT client for advanced messaging (future feature)

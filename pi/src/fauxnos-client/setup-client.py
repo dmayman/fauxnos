@@ -43,7 +43,7 @@ class FauxnosClientSetup:
         self.server_port = 8080
         self.client_dir = Path.home() / "src" / "fauxnos-client"
         # Store config in user's home directory, not in the source tree
-        self.config_file = Path.home() / ".config" / "fauxnos" / "config.yaml"
+        self.config_file = Path.home() / ".config" / "fauxnos" / "client_config.yaml"
 
         # Ensure directories exist
         self.client_dir.mkdir(parents=True, exist_ok=True)
@@ -256,8 +256,12 @@ class FauxnosClientSetup:
             self.log("Config file already exists, skipping template copy")
             return True
 
-        # Find template config in configs directory
-        template_path = self.client_dir / "configs" / "config.yaml.template"
+        # Find template config (try new location first, fall back to old)
+        template_path = self.client_dir / "client_config.yaml.template"
+        if not template_path.exists():
+            # Try old location for backward compatibility
+            template_path = self.client_dir / "configs" / "config.yaml.template"
+
         if not template_path.exists():
             self.log(f"Template config not found: {template_path}", "ERROR")
             self.log("Make sure you've downloaded the complete fauxnos-client directory")
@@ -509,6 +513,27 @@ ctl.!default {
             self.log(f"Failed to setup ALSA config: {e}", "ERROR")
             return False
 
+    def install_dependencies(self) -> bool:
+        """Install Python dependencies from requirements.txt"""
+        self.log("Installing Python dependencies...")
+
+        if self.dry_run:
+            self.log("DRY RUN: Would install Python dependencies")
+            return True
+
+        if self.test_mode:
+            self.log("TEST MODE: Skipping dependency installation", "WARNING")
+            return True
+
+        requirements_file = self.client_dir / "requirements.txt"
+        if not requirements_file.exists():
+            self.log(f"Requirements file not found: {requirements_file}", "ERROR")
+            return False
+
+        # Install dependencies with --break-system-packages flag for Raspberry Pi OS
+        cmd = f"pip3 install -r {requirements_file} --break-system-packages"
+        return self.execute(cmd, "Installing Python dependencies")
+
     def setup_pulseaudio(self, config: Dict[str, Any]) -> bool:
         """Configure PulseAudio for this client"""
         self.log("Setting up PulseAudio configuration...")
@@ -548,11 +573,15 @@ ctl.!default {
         """Run the complete client setup process"""
         self.log("Starting Fauxnos client setup...")
 
-        # Step 1: Initialize config from template
+        # Step 1: Install Python dependencies
+        if not self.install_dependencies():
+            return False
+
+        # Step 2: Initialize config from template
         if not self.initialize_config_from_template():
             return False
 
-        # Step 2: Get user input for display name
+        # Step 3: Get user input for display name
         if not self.test_mode and not self.dry_run:
             print(f"\n🔧 Setting up new Fauxnos client")
             display_name = input("Enter display name for this client (e.g., 'Kitchen', 'Living Room'): ").strip()
@@ -563,18 +592,18 @@ ctl.!default {
             display_name = "Test Client"
             self.log(f"TEST MODE: Using display name '{display_name}'", "WARNING")
 
-        # Step 3: Discover server
+        # Step 4: Discover server
         server_ip = self.discover_server()
         if not server_ip:
             return False
 
-        # Step 4: Get MAC address
+        # Step 5: Get MAC address
         try:
             mac_address = self.get_mac_address()
         except Exception:
             return False
 
-        # Step 5: Register with server
+        # Step 6: Register with server
         registration_result = self.register_with_server(server_ip, mac_address, display_name)
         if not registration_result:
             return False
@@ -584,15 +613,15 @@ ctl.!default {
             self.log("No client_id received from server", "ERROR")
             return False
 
-        # Step 6: Update local configuration with registration info
+        # Step 7: Update local configuration with registration info
         if not self.update_local_config(client_id, display_name, mac_address, registration_result):
             return False
 
-        # Step 7: Apply hostname
+        # Step 8: Apply hostname
         if not self.apply_hostname(client_id):
             return False
 
-        # Step 8: Setup PulseAudio
+        # Step 9: Setup PulseAudio
         config = self.load_local_config()
         if not config:
             return False
@@ -600,15 +629,15 @@ ctl.!default {
         if not self.setup_pulseaudio(config):
             return False
 
-        # Step 9: Setup ALSA to route through PulseAudio
+        # Step 10: Setup ALSA to route through PulseAudio
         if not self.setup_alsa_config():
             return False
 
-        # Step 10: Deploy services
+        # Step 11: Deploy services
         if not self.deploy_services(config):
             return False
 
-        # Step 11: Success!
+        # Step 12: Success!
         self.log("Client setup completed successfully!", "SUCCESS")
         self.log(f"Client ID: {client_id}")
         self.log(f"Display Name: {display_name}")
