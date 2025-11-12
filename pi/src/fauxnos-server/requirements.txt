@@ -8,6 +8,12 @@ flask>=2.0.0
 # YAML configuration template support
 pyyaml>=6.0
 
+# WebSocket client for go-librespot event streaming
+websockets>=10.0
+
+# HTTP requests for API calls
+requests>=2.28.0
+
 # Optional: Enhanced JSON support (for future use)
 # jsonschema>=4.0.0
 

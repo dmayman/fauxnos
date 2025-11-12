@@ -105,22 +105,31 @@ class ConfigManager:
 
     # Template methods no longer needed - client owns its config
 
-    def add_client(self, name: str, mac: str, client_id: Optional[str] = None) -> ClientConfig:
+    def add_client(self, name: str, mac: str, client_id: Optional[str] = None, is_server_device: bool = False) -> ClientConfig:
         """Add a new client to the configuration
 
         Args:
             name: Client display name
             mac: Client MAC address
             client_id: Optional specific client ID to use (e.g., 'fauxnos000' for server device)
+            is_server_device: If True, forces client_id to 'fauxnos000' (for server's own hardware)
         """
         existing_ids = [client['id'] for client in self.server_config['clients']]
 
         # Generate client ID if not provided
         if client_id is None:
-            next_num = 1
-            while f"fauxnos{next_num:03d}" in existing_ids:
-                next_num += 1
-            client_id = f"fauxnos{next_num:03d}"
+            if is_server_device:
+                # Server device always gets fauxnos000
+                client_id = "fauxnos000"
+                if client_id in existing_ids:
+                    raise ValueError("Server device (fauxnos000) already exists")
+                next_num = 0
+            else:
+                # Regular clients start from 001
+                next_num = 1
+                while f"fauxnos{next_num:03d}" in existing_ids:
+                    next_num += 1
+                client_id = f"fauxnos{next_num:03d}"
         else:
             # Validate provided client_id is not already in use
             if client_id in existing_ids:

@@ -28,6 +28,7 @@ from modules.deploy import DeploymentManager
 from modules.cleanup import main as cleanup_main
 from modules.group_manager import assign_all_clients_to_home, SnapcastGroupManager
 from modules.client_monitor import SnapcastClientMonitor
+from modules.volume_manager import VolumeManager
 
 class FauxnosServer:
     """Main server daemon that orchestrates all components"""
@@ -42,6 +43,7 @@ class FauxnosServer:
         self.api_server = FauxnosAPIServer(config_manager=self.config_manager, test_mode=test_mode, verbose=verbose)
         self.deployment_manager = DeploymentManager(self.config_manager)
         self.client_monitor = SnapcastClientMonitor()
+        self.volume_manager = VolumeManager(config_manager=self.config_manager)
 
         # Threads for background tasks
         self.api_thread = None
@@ -152,6 +154,16 @@ class FauxnosServer:
         else:
             self.log("❌ Failed to start client monitoring", "ERROR")
 
+    def start_volume_management(self):
+        """Start volume management (WebSocket listeners)"""
+        self.log("Starting volume management...")
+
+        try:
+            self.volume_manager.start()
+            self.log("✅ Volume management started", "SUCCESS")
+        except Exception as e:
+            self.log(f"❌ Failed to start volume management: {e}", "ERROR")
+
     def run_daemon(self):
         """Run the complete server daemon"""
         self.log("🚀 Starting Fauxnos Server Daemon")
@@ -166,6 +178,10 @@ class FauxnosServer:
             if hasattr(self, 'client_monitor'):
                 self.client_monitor.stop_monitoring()
 
+            # Stop volume management
+            if hasattr(self, 'volume_manager'):
+                self.volume_manager.stop()
+
             sys.exit(0)
 
         signal.signal(signal.SIGINT, signal_handler)
@@ -179,11 +195,16 @@ class FauxnosServer:
         if not self.test_mode:
             self.start_client_monitoring()
 
+        # Start volume management (skip in test mode)
+        if not self.test_mode:
+            self.start_volume_management()
+
         self.log("✅ Server daemon started successfully!")
         self.log("📡 API server running on port 8080")
         self.log("🔄 Maintenance tasks running every 5 minutes")
         if not self.test_mode:
             self.log("👀 Client event monitoring active")
+            self.log("🎚️ Volume management active")
         self.log("Press Ctrl+C to stop")
 
         # Keep main thread alive
@@ -212,7 +233,8 @@ def cmd_add_client(args):
         return 1
 
     try:
-        new_client = config_manager.add_client(name=args.name, mac=args.mac)
+        is_server = getattr(args, 'is_server_device', False)
+        new_client = config_manager.add_client(name=args.name, mac=args.mac, is_server_device=is_server)
         print(f"✅ Added client: {new_client.id} ({args.name})")
 
         # Auto-deploy if requested
@@ -607,6 +629,7 @@ Command Overview:
     add_parser = subparsers.add_parser('add-client', help='Add a new client')
     add_parser.add_argument('--name', required=True, help='Display name for client')
     add_parser.add_argument('--mac', required=True, help='MAC address of client')
+    add_parser.add_argument('--is-server-device', action='store_true', help='Mark as server device (forces fauxnos000 ID)')
     add_parser.add_argument('--no-deploy', action='store_true', help='Skip auto-deployment')
     add_parser.add_argument('--no-assign', action='store_true', help='Skip auto-group assignment')
     add_parser.set_defaults(func=cmd_add_client)
