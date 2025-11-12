@@ -88,7 +88,7 @@ MULTIROOM & GROUP MANAGEMENT (IN PROGRESS):
 ✅ Event-driven group assignment (new client registration trigger)
 ✅ Automatic home group detection and persistence
 ✅ Group restoration on client reconnect
-🔲 Volume synchronization (go-librespot -> snapclient)
+✅ Volume synchronization (go-librespot -> snapclient via WebSocket)
 🔲 Group volume control with proportional scaling
 
 SOURCE MANAGEMENT (TODO):
@@ -126,3 +126,12 @@ The generated snapclient service should match the one I created, it has some ext
 - Added /etc/asound.conf creation to client setup to route ALSA apps through PulseAudio
 - Discovered and fixed snapsink loopback volumes that were saved at 75% by PulseAudio's stream-restore module
 - Both clients now have consistent audio routing: snapclient → PulseAudio → snapsink → loopback (100%) → hardware
+- Implemented WebSocket-based Spotify volume control with real-time synchronization
+- Created VolumeManager module for event-driven volume monitoring from go-librespot
+- Volume changes in Spotify app now automatically update snapcast client volumes with <100ms latency
+- Added websockets and requests dependencies to requirements.txt
+- Integrated VolumeManager into server daemon lifecycle with proper start/stop handling
+- Implemented smart client numbering: server device gets fauxnos000 (--is-server-device flag), regular clients start at 001
+- Fixed ConfigManager to support dedicated server device ID assignment
+- Volume synchronization architecture: go-librespot WebSocket /events → VolumeManager → Snapcast JSON-RPC Client.SetVolume
+- Preserved proportional group volume scaling algorithm from archived code for future group volume control
