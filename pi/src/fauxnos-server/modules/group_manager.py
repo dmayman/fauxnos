@@ -517,16 +517,211 @@ class SnapcastGroupManager:
 
     def separate_client(self, client_id: str, preferred_source: str) -> bool:
         """
-        Separate a client to its own group with its home source
+        Separate a client from its current group into its own group with correct source.
+
+        This is the "break away" operation - it removes a client from a shared group
+        and puts them in their own group with their preferred source.
 
         Args:
             client_id: Client to separate
-            preferred_source: The source to use for the client's group
+            preferred_source: The source to use for the client's new group
 
         Returns:
             True if successful, False otherwise
         """
-        return self.ensure_client_home_assignment(client_id, preferred_source, dry_run=False)
+        # Find current group
+        current_group = self.find_client_group(client_id)
+        if not current_group:
+            print(f"   ❌ Client {client_id} not found in any group")
+            return False
+
+        current_group_id = current_group.get("id")
+        clients_in_group = current_group.get("clients", [])
+
+        # Check if already alone
+        if len(clients_in_group) == 1:
+            print(f"   ℹ️  {client_id} is already in their own group")
+            # Just make sure the source is correct
+            current_source = current_group.get("stream_id")
+            if current_source != preferred_source:
+                print(f"   🔄 Setting source to {preferred_source}")
+                if self.set_group_source(current_group_id, preferred_source):
+                    print(f"   ✅ Source updated")
+                    # Save this as their home group
+                    self.save_home_group(client_id, current_group_id)
+                    return True
+                else:
+                    return False
+            else:
+                # Already correct, save as home group
+                self.save_home_group(client_id, current_group_id)
+                return True
+
+        # Client is grouped with others - separate them
+        print(f"   🔀 Separating {client_id} from {len(clients_in_group)-1} other client(s)")
+
+        # Get all client IDs except this one
+        other_clients = [c.get("id") for c in clients_in_group if c.get("id") != client_id]
+
+        # Remove this client from the group (keep others)
+        result = self.send_snapcast_command("Group.SetClients", {
+            "id": current_group_id,
+            "clients": other_clients
+        })
+
+        if not result or "error" in result:
+            print(f"   ❌ Failed to separate client from group")
+            return False
+
+        # Wait for snapcast to create the new group
+        import time
+        time.sleep(0.5)
+
+        # Find the new group this client is in
+        new_group = self.find_client_group(client_id)
+        if not new_group:
+            print(f"   ❌ Failed to find client's new group after separation")
+            return False
+
+        new_group_id = new_group.get("id")
+        print(f"   ✅ Client separated to new group {new_group_id[:8]}...")
+
+        # Set the correct source for the new group
+        print(f"   🔄 Setting source to {preferred_source}")
+        if self.set_group_source(new_group_id, preferred_source):
+            print(f"   ✅ Source set to {preferred_source}")
+            # Save this as their home group
+            self.save_home_group(client_id, new_group_id)
+            return True
+        else:
+            print(f"   ❌ Failed to set source")
+            return False
+
+    def return_client_to_home(self, client_id: str) -> bool:
+        """
+        Return a client to their saved home group and source.
+
+        This uses snapcast's native ability to move clients between groups.
+        The home group and source must already be saved in the config.
+
+        Args:
+            client_id: Client to return home
+
+        Returns:
+            True if successful, False otherwise
+        """
+        # Get client config to find home group and source
+        client_config = self.get_client_config(client_id)
+        if not client_config:
+            print(f"   ❌ Client {client_id} not found in config")
+            return False
+
+        home_group_id = client_config.get('home_group')
+        home_source = client_config.get('home_source')
+
+        if not home_group_id:
+            print(f"   ⚠️  {client_id} has no home group saved - run 'separate-client' first")
+            return False
+
+        if not home_source:
+            print(f"   ❌ {client_id} has no home_source in config")
+            return False
+
+        # Find current group
+        current_group = self.find_client_group(client_id)
+        if not current_group:
+            print(f"   ❌ Client {client_id} not found in any group")
+            return False
+
+        current_group_id = current_group.get("id")
+        current_source = current_group.get("stream_id")
+
+        print(f"   Current: group={current_group_id[:8]}..., source={current_source}")
+        print(f"   Home: group={home_group_id[:8]}..., source={home_source}")
+
+        # Check if already home
+        if current_group_id == home_group_id and current_source == home_source:
+            print(f"   ✅ {client_id} already at home")
+            return True
+
+        # Check if home group still exists
+        home_group_exists = False
+        for group in self.get_groups():
+            if group.get("id") == home_group_id:
+                home_group_exists = True
+                break
+
+        if not home_group_exists:
+            print(f"   ⚠️  Home group {home_group_id[:8]}... no longer exists")
+            print(f"   🔄 Creating new home group by separating client...")
+            # Use separate_client to create a new home group
+            return self.separate_client(client_id, home_source)
+
+        # Move client to home group
+        print(f"   🔄 Moving to home group...")
+        if not self.move_client_to_group(client_id, home_group_id):
+            print(f"   ❌ Failed to move to home group")
+            return False
+
+        print(f"   ✅ Moved to home group")
+
+        # Set the correct source (home group might have wrong source)
+        if current_source != home_source:
+            print(f"   🔄 Setting home group source to {home_source}")
+            if self.set_group_source(home_group_id, home_source):
+                print(f"   ✅ Source set correctly")
+            else:
+                print(f"   ⚠️  Failed to set source (client is home but source may be wrong)")
+                return False
+
+        return True
+
+    def return_all_clients_to_home(self, dry_run: bool = False) -> bool:
+        """
+        Return all clients to their saved home groups and sources.
+
+        Args:
+            dry_run: If True, only show what would be done
+
+        Returns:
+            True if all succeeded, False if any failed
+        """
+        if not self.config_manager:
+            print("❌ No config manager available")
+            return False
+
+        clients = self.config_manager.server_config.get('clients', [])
+        if not clients:
+            print("📋 No clients found in config")
+            return True
+
+        print(f"🏠 Returning {len(clients)} client(s) to home groups")
+        print("=" * 50)
+
+        if dry_run:
+            print("🔍 DRY RUN MODE: No changes will be made")
+            print()
+
+        success = True
+        for client in clients:
+            client_id = client.get('id')
+            print(f"\n🔧 Processing {client_id}...")
+
+            if dry_run:
+                home_group = client.get('home_group')
+                home_source = client.get('home_source')
+                print(f"   DRY RUN: Would return to group={home_group}, source={home_source}")
+            else:
+                if not self.return_client_to_home(client_id):
+                    success = False
+
+        print()
+        if success:
+            print("✅ All clients returned to home!")
+        else:
+            print("⚠️  Some clients could not be returned home")
+
+        return success
 
 def assign_all_clients_to_home(config_manager: ConfigManager, dry_run: bool = False) -> bool:
     """Assign all clients to their home groups and sources"""

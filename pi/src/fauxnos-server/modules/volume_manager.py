@@ -156,12 +156,130 @@ class VolumeManager:
                 last_volume = self.last_volumes.get(client_id)
 
                 if last_volume is None or abs(normalized_volume - last_volume) >= 1:
-                    # Volume changed by at least 1% - update snapcast
-                    if self._set_snapcast_volume(client_id, normalized_volume):
+                    # Volume changed by at least 1% - check if we need group or individual control
+                    if self._apply_volume_change(client_id, normalized_volume):
                         self.logger.info(
                             f"Updated {client_id} volume: {last_volume}% → {normalized_volume}%"
                         )
                         self.last_volumes[client_id] = normalized_volume
+
+    def _apply_volume_change(self, client_id: str, volume: int) -> bool:
+        """
+        Apply volume change - either to individual client or to whole group
+
+        Args:
+            client_id: Client ID that received the volume change
+            volume: Target volume (0-100)
+
+        Returns:
+            True if successful
+        """
+        try:
+            # Get current snapcast status to find this client's group
+            status = self.group_manager.send_snapcast_command('Server.GetStatus', {})
+            if not status or 'result' not in status:
+                self.logger.error("Failed to get snapcast status")
+                return self._set_snapcast_volume(client_id, volume)
+
+            server_status = status['result']['server']
+            groups = server_status.get('groups', [])
+
+            # Find which group this client belongs to
+            client_group = None
+            for group in groups:
+                for client in group.get('clients', []):
+                    if client.get('id') == client_id:
+                        client_group = group
+                        break
+                if client_group:
+                    break
+
+            if not client_group:
+                self.logger.warning(f"Client {client_id} not found in any group")
+                return self._set_snapcast_volume(client_id, volume)
+
+            # Check if group has multiple clients
+            clients_in_group = client_group.get('clients', [])
+            if len(clients_in_group) <= 1:
+                # Single client in group - just set individual volume
+                return self._set_snapcast_volume(client_id, volume)
+            else:
+                # Multiple clients - use proportional group volume scaling
+                self.logger.info(f"Group has {len(clients_in_group)} clients, applying proportional scaling")
+                return self._set_group_volume_proportional(client_group, volume)
+
+        except Exception as e:
+            self.logger.error(f"Error in _apply_volume_change: {e}")
+            # Fallback to individual volume control
+            return self._set_snapcast_volume(client_id, volume)
+
+    def _set_group_volume_proportional(self, group: dict, target_volume: int) -> bool:
+        """
+        Set group volume using proportional scaling (preserves relative volumes)
+        Based on snapweb's algorithm
+
+        Args:
+            group: Group dict from snapcast status
+            target_volume: Target master volume (0-100)
+
+        Returns:
+            True if successful
+        """
+        try:
+            clients = group.get('clients', [])
+            if not clients:
+                return False
+
+            # Calculate current group average volume
+            client_volumes = {}
+            group_volume = 0
+
+            for client in clients:
+                client_id = client.get('id')
+                client_volume = client.get('config', {}).get('volume', {}).get('percent', 0)
+                client_volumes[client_id] = client_volume
+                group_volume += client_volume
+
+            group_volume /= len(clients)  # Average volume
+
+            # Calculate delta and ratio (snapweb algorithm)
+            delta = target_volume - group_volume
+
+            if delta < 0:
+                # Volume decreasing
+                ratio = (group_volume - target_volume) / group_volume if group_volume > 0 else 0
+            else:
+                # Volume increasing
+                ratio = (target_volume - group_volume) / (100 - group_volume) if group_volume < 100 else 0
+
+            # Apply proportional scaling to each client
+            success_count = 0
+            for client in clients:
+                client_id = client.get('id')
+                original_volume = client_volumes[client_id]
+
+                if delta < 0:
+                    # Decrease volume proportionally
+                    new_volume = original_volume - (ratio * original_volume)
+                else:
+                    # Increase volume proportionally
+                    new_volume = original_volume + (ratio * (100 - original_volume))
+
+                # Clamp to valid range
+                new_volume = max(0, min(100, int(round(new_volume))))
+
+                if self._set_snapcast_volume(client_id, new_volume):
+                    self.logger.info(f"Scaled {client_id}: {original_volume}% → {new_volume}%")
+                    # Update last known volume for this client
+                    self.last_volumes[client_id] = new_volume
+                    success_count += 1
+
+            self.logger.info(f"Group volume scaled: {group_volume:.1f}% → {target_volume}% ({success_count}/{len(clients)} clients)")
+            return success_count > 0
+
+        except Exception as e:
+            self.logger.error(f"Error in _set_group_volume_proportional: {e}")
+            return False
 
     def _set_snapcast_volume(self, client_id: str, volume: int) -> bool:
         """

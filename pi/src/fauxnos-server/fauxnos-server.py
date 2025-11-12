@@ -434,43 +434,34 @@ def cmd_join_group(args):
     else:
         return 1
 
-def cmd_separate_client(args):
-    """Separate a client to its own group"""
+def cmd_return_home(args):
+    """Return client(s) to their home groups"""
     config_manager = ConfigManager(test_mode=args.test)
     group_manager = SnapcastGroupManager(config_manager=config_manager)
 
-    print(f"🔀 Separating {args.client_id} to its own group...")
-
-    # Find client's home source
-    client_dict = None
-    for client in config_manager.server_config.get('clients', []):
-        if client.get('id') == args.client_id:
-            client_dict = client
-            break
-
-    if not client_dict:
-        print(f"❌ Client {args.client_id} not found in config")
-        return 1
-
-    home_source = client_dict.get('home_source')
-    if not home_source:
-        print(f"❌ Client {args.client_id} missing home_source in config")
-        return 1
-
-    if group_manager.separate_client(args.client_id, home_source):
-        # Show current groups
-        print("\n📊 Current groups:")
-        groups = group_manager.get_groups()
-        for group in groups:
-            clients = group.get('clients', [])
-            if clients:  # Only show non-empty groups
-                client_ids = [c.get('id') for c in clients]
-                source = group.get('stream_id')
-                print(f"   • Group {group['id'][:8]}... ({source})")
-                print(f"     Clients: {', '.join(client_ids)}")
-        return 0
+    if args.client_id:
+        # Return specific client to home
+        print(f"🏠 Returning {args.client_id} to home group...")
+        if group_manager.return_client_to_home(args.client_id):
+            # Show current groups
+            print("\n📊 Current groups:")
+            groups = group_manager.get_groups()
+            for group in groups:
+                clients = group.get('clients', [])
+                if clients:  # Only show non-empty groups
+                    client_ids = [c.get('id') for c in clients]
+                    source = group.get('stream_id')
+                    print(f"   • Group {group['id'][:8]}... ({source})")
+                    print(f"     Clients: {', '.join(client_ids)}")
+            return 0
+        else:
+            return 1
     else:
-        return 1
+        # Return all clients to home
+        if group_manager.return_all_clients_to_home(dry_run=args.dry_run):
+            return 0
+        else:
+            return 1
 
 def cmd_show_groups(args):
     """Show current snapcast groups"""
@@ -553,6 +544,57 @@ def cmd_config(args):
 
     return 0
 
+def cmd_help(args):
+    """Show concise help for all commands"""
+    print("📚 Fauxnos Server Commands")
+    print("=" * 70)
+    print()
+
+    print("🎛️  SERVER MANAGEMENT")
+    print("  run                Start server daemon (API + monitoring + volume sync)")
+    print("  status             Show server and client status")
+    print("  config             Show detailed configuration")
+    print()
+
+    print("👥 CLIENT MANAGEMENT")
+    print("  add-client         Add new client and deploy infrastructure")
+    print("                     --name NAME --mac MAC [--is-server-device]")
+    print("  remove-client      Remove client and cleanup")
+    print("                     --client-id ID [--force]")
+    print()
+
+    print("🏗️  INFRASTRUCTURE")
+    print("  deploy-server      Deploy/update snapserver and go-librespot configs")
+    print("  cleanup            Remove orphaned service files [--dry-run]")
+    print()
+
+    print("🏠 GROUP MANAGEMENT")
+    print("  show-groups        Display current snapcast groups and clients")
+    print("  join-group         Join client to another's group (multiroom)")
+    print("                     CLIENT_ID TARGET_ID")
+    print("  return-home        Return client(s) to saved home groups")
+    print("                     [--client-id ID] [--dry-run]")
+    print("  assign-groups      Auto-assign all clients to home (first setup)")
+    print("                     [--dry-run]")
+    print("  reset-groups       Clear saved home groups for testing")
+    print("                     [--client-id ID]")
+    print()
+
+    print("💡 COMMON WORKFLOWS")
+    print("  • First setup:     add-client → deploy-server → assign-groups")
+    print("  • Multiroom:       join-group fauxnos001 fauxnos000")
+    print("  • Return home:     return-home --client-id fauxnos001")
+    print("  • Return all home: return-home")
+    print()
+
+    print("🔧 GLOBAL FLAGS")
+    print("  --test             Run in test mode (use test config)")
+    print("  --verbose          Show detailed output")
+    print()
+
+    print("📖 For detailed help: python3 fauxnos-server.py COMMAND --help")
+    return 0
+
 def main():
     parser = argparse.ArgumentParser(
         description="Fauxnos Server - Unified Interface",
@@ -593,8 +635,9 @@ Examples:
   # Join clients together (multiroom sync)
   python3 fauxnos-server.py join-group fauxnos001 fauxnos000
 
-  # Separate a client to its own group
-  python3 fauxnos-server.py separate-client fauxnos001
+  # Return client(s) to their home groups
+  python3 fauxnos-server.py return-home --client-id fauxnos001  # single client
+  python3 fauxnos-server.py return-home                          # all clients
 
 Command Overview:
   run              Start the complete server daemon (API + monitoring + maintenance)
@@ -608,7 +651,7 @@ Command Overview:
   reset-groups     Reset home groups (for testing auto-detection)
   show-groups      Show current snapcast groups
   join-group       Join a client to another client's group (multiroom)
-  separate-client  Separate a client to its own group
+  return-home      Return client(s) to their saved home groups
         """
     )
 
@@ -620,6 +663,10 @@ Command Overview:
 
     # Subcommands
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
+
+    # Help
+    help_parser = subparsers.add_parser('help', help='Show command help')
+    help_parser.set_defaults(func=cmd_help)
 
     # Run daemon
     run_parser = subparsers.add_parser('run', help='Start the server daemon')
@@ -678,16 +725,18 @@ Command Overview:
     join_parser.add_argument('target_id', help='Client ID to join with (e.g., fauxnos000)')
     join_parser.set_defaults(func=cmd_join_group)
 
-    # Separate client
-    separate_parser = subparsers.add_parser('separate-client', help='Separate a client to its own group')
-    separate_parser.add_argument('client_id', help='Client ID to separate (e.g., fauxnos001)')
-    separate_parser.set_defaults(func=cmd_separate_client)
+    # Return home
+    return_parser = subparsers.add_parser('return-home', help='Return client(s) to their saved home groups')
+    return_parser.add_argument('--client-id', help='Client ID to return home (default: all clients)')
+    return_parser.add_argument('--dry-run', action='store_true', help='Show what would be done (all clients only)')
+    return_parser.set_defaults(func=cmd_return_home)
 
     # Parse and execute
     args = parser.parse_args()
 
     if not hasattr(args, 'func'):
-        parser.print_help()
+        # Show our custom help instead of argparse default
+        cmd_help(args)
         return 1
 
     return args.func(args)
