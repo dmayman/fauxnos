@@ -461,6 +461,54 @@ class FauxnosClientSetup:
             self.log(f"Failed to deploy user services: {e}", "ERROR")
             return False
 
+    def setup_alsa_config(self) -> bool:
+        """Configure ALSA to route through PulseAudio"""
+        self.log("Setting up ALSA configuration...")
+
+        if self.dry_run:
+            self.log("DRY RUN: Would create /etc/asound.conf")
+            return True
+
+        if self.test_mode:
+            self.log("TEST MODE: Skipping ALSA configuration", "WARNING")
+            return True
+
+        try:
+            # Create /etc/asound.conf to route ALSA through PulseAudio
+            asound_conf_content = """# Route ALSA applications through PulseAudio
+pcm.!default {
+  type pulse
+}
+
+ctl.!default {
+  type pulse
+}
+"""
+            # Write to /etc/asound.conf (requires sudo)
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp:
+                tmp.write(asound_conf_content)
+                tmp_path = tmp.name
+
+            # Copy to /etc/asound.conf with sudo
+            result = subprocess.run(
+                f"sudo cp {tmp_path} /etc/asound.conf",
+                shell=True,
+                check=True,
+                capture_output=True,
+                text=True
+            )
+
+            # Clean up temp file
+            subprocess.run(f"rm {tmp_path}", shell=True)
+
+            self.log("ALSA config created at /etc/asound.conf", "SUCCESS")
+            return True
+
+        except Exception as e:
+            self.log(f"Failed to setup ALSA config: {e}", "ERROR")
+            return False
+
     def setup_pulseaudio(self, config: Dict[str, Any]) -> bool:
         """Configure PulseAudio for this client"""
         self.log("Setting up PulseAudio configuration...")
@@ -552,11 +600,15 @@ class FauxnosClientSetup:
         if not self.setup_pulseaudio(config):
             return False
 
-        # Step 9: Deploy services
+        # Step 9: Setup ALSA to route through PulseAudio
+        if not self.setup_alsa_config():
+            return False
+
+        # Step 10: Deploy services
         if not self.deploy_services(config):
             return False
 
-        # Step 10: Success!
+        # Step 11: Success!
         self.log("Client setup completed successfully!", "SUCCESS")
         self.log(f"Client ID: {client_id}")
         self.log(f"Display Name: {display_name}")
