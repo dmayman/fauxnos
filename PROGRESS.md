@@ -117,3 +117,12 @@ The generated snapclient service should match the one I created, it has some ext
 - Created test_snapcast_api.py debugging tool for direct Snapcast JSON-RPC testing
 - Resolved "Invalid params" error by fixing stream reading from API response
 - Group management now properly remembers and restores client assignments across reconnects
+
+11/11/2025
+- Implemented multiroom group management commands (show-groups, join-group, separate-client)
+- Created test_multiroom.py script to prototype and test group control functionality
+- Added join_client_to_group() and separate_client() methods to SnapcastGroupManager
+- Fixed volume inconsistency issue between clients caused by PulseAudio stream volumes
+- Added /etc/asound.conf creation to client setup to route ALSA apps through PulseAudio
+- Discovered and fixed snapsink loopback volumes that were saved at 75% by PulseAudio's stream-restore module
+- Both clients now have consistent audio routing: snapclient → PulseAudio → snapsink → loopback (100%) → hardware
