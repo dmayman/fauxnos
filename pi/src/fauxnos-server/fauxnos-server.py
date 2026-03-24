@@ -199,6 +199,10 @@ class FauxnosServer:
         if not self.test_mode:
             self.start_volume_management()
 
+        # Start MQTT listener for external source switching
+        if not self.test_mode:
+            self.api_server.start_mqtt_listener()
+
         self.log("✅ Server daemon started successfully!")
         self.log("📡 API server running on port 8080")
         self.log("🔄 Maintenance tasks running every 5 minutes")

@@ -16,6 +16,7 @@ from pathlib import Path
 from modules.config_manager import ConfigManager
 from modules import logger as logger_module
 from modules.source_manager import SourceManager
+from modules.mqtt_client import MQTTClient
 
 
 class FauxnosClient:
@@ -43,6 +44,13 @@ class FauxnosClient:
         # Initialize source manager
         self.source_manager = SourceManager(self.config_manager)
 
+        # Initialize MQTT client (connects to broker, routes commands through SourceManager)
+        self.mqtt_client = MQTTClient(
+            config_manager=self.config_manager,
+            volume_callback=self.source_manager.set_volume,
+            mode_callback=self.source_manager.switch_source,
+        )
+
         # Flag for graceful shutdown
         self.running = True
 
@@ -54,6 +62,7 @@ class FauxnosClient:
         """Handle shutdown signals"""
         self.logger.info(f"Received signal {sig}, shutting down...")
         self.running = False
+        self.mqtt_client.stop()
         sys.exit(0)
 
     def run_daemon(self):
@@ -63,13 +72,24 @@ class FauxnosClient:
         # Initialize audio system
         self.source_manager.initialize_audio_system()
 
+        # Start MQTT client (subscribes to control topics, publishes status)
+        self.mqtt_client.start()
+
+        # Publish initial state
+        current = self.source_manager.get_current_source()
+        if current:
+            self.mqtt_client.update_mode(current)
+            vol = self.source_manager.get_source_volume(current)
+            if vol is not None:
+                self.mqtt_client.update_volume(vol)
+
         try:
-            # Just keep running until signal
             while self.running:
                 time.sleep(1)
         except KeyboardInterrupt:
             pass
 
+        self.mqtt_client.stop()
         self.logger.info("Daemon shutting down")
 
     def run_interactive(self):

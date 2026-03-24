@@ -7,8 +7,8 @@ pyyaml>=6.0
 # Core HTTP client for server communication and external switches
 requests>=2.25.1
 
-# Optional: MQTT client for advanced messaging (future feature)
-# paho-mqtt>=1.5.1
+# MQTT client for remote control (volume, source switching)
+paho-mqtt>=1.5.1
 
 # Optional: Audio processing (if needed for volume monitoring)
 # pyaudio>=0.2.11

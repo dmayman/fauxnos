@@ -195,6 +195,18 @@ configure_system() {
 download_client_code() {
     log_section "Downloading Fauxnos Client"
 
+    # Determine download base URL
+    # Prefer FAUXNOS_SERVER_URL (injected by server) so we get the server's
+    # current copy of all files, including those not yet on GitHub.
+    local base_url
+    if [ -n "$FAUXNOS_SERVER_URL" ]; then
+        base_url="${FAUXNOS_SERVER_URL}/api/install/files/client"
+        log "Downloading from fauxnos server: $FAUXNOS_SERVER_URL"
+    else
+        base_url="${REPO_URL}/pi/src/fauxnos-client"
+        log "Downloading from GitHub"
+    fi
+
     # Create installation directory
     mkdir -p "$(dirname "$INSTALL_DIR")"
 
@@ -210,48 +222,62 @@ download_client_code() {
 
     log "Downloading client files..."
 
-    # Download all client files
+    # Main scripts and metadata
     local files=(
         "setup-client.py"
         "fauxnos-client.py"
+        "fauxnos_client.py"
         "README.md"
         "TESTING.md"
         "install.sh"
         "pi-setup.sh"
         "requirements.txt"
+        "client_config.yaml.template"
     )
 
-    # Download config files
+    # Config files (with subdirectory creation)
     local config_files=(
         "configs/pulseaudio/default.pa"
         "configs/systemd/snapclient.service"
         "configs/systemd/fauxnos-client.service"
     )
 
+    # Python modules
+    local module_files=(
+        "modules/__init__.py"
+        "modules/config_manager.py"
+        "modules/logger.py"
+        "modules/pulse_controller.py"
+        "modules/snapcast_controller.py"
+        "modules/source_manager.py"
+        "modules/state_manager.py"
+    )
+
     for file in "${files[@]}"; do
-        local url="${REPO_URL}/pi/src/fauxnos-client/$file"
-        if curl -fsSL "$url" -o "$file"; then
+        local url="${base_url}/$file"
+        if curl -fsSL "$url" -o "$file" 2>/dev/null; then
             log "Downloaded: $file"
         else
-            log_warning "Failed to download: $file (may not exist yet)"
+            log_warning "Failed to download: $file (may not exist)"
         fi
     done
 
-    # Download config files with directory creation
-    for file in "${config_files[@]}"; do
-        local url="${REPO_URL}/pi/src/fauxnos-client/$file"
-        local dir=$(dirname "$file")
+    for file in "${config_files[@]}" "${module_files[@]}"; do
+        local url="${base_url}/$file"
+        local dir
+        dir=$(dirname "$file")
         mkdir -p "$dir"
-        if curl -fsSL "$url" -o "$file"; then
-            log "Downloaded config: $file"
+        if curl -fsSL "$url" -o "$file" 2>/dev/null; then
+            log "Downloaded: $file"
         else
-            log_warning "Failed to download config: $file"
+            log_warning "Failed to download: $file (may not exist)"
         fi
     done
 
     # Make scripts executable
     chmod +x setup-client.py 2>/dev/null || true
     chmod +x fauxnos-client.py 2>/dev/null || true
+    chmod +x fauxnos_client.py 2>/dev/null || true
     chmod +x install.sh 2>/dev/null || true
     chmod +x pi-setup.sh 2>/dev/null || true
 
@@ -274,7 +300,13 @@ register_client() {
     log "This will discover the fauxnos-server and register this device"
 
     # Run the client setup
-    if python3 setup-client.py --setup; then
+    # Pass display name non-interactively if provided via env var
+    local setup_args="--setup"
+    if [ -n "$DISPLAY_NAME" ]; then
+        setup_args="$setup_args --display-name $DISPLAY_NAME"
+    fi
+
+    if python3 setup-client.py $setup_args; then
         log_success "Client registration completed successfully"
         return 0
     else

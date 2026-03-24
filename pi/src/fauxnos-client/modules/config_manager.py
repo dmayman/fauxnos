@@ -26,6 +26,7 @@ class ExternalSwitchConfig:
     enabled: bool
     url: str
     payload: Dict[str, Any]
+    content_type: str = 'json'  # 'json' or 'form'
 
 
 @dataclass
@@ -76,6 +77,7 @@ class ConfigManager:
         self.sources = self._parse_sources()
         self.logging_config = self._parse_logging_config()
         self.state_file = self._parse_state_file()
+        self.server_host = self.config.get('server_host', 'fauxnos000.local')
 
     def _load_config(self) -> Dict[str, Any]:
         """Load YAML configuration file"""
@@ -140,7 +142,8 @@ class ConfigManager:
                     external_switch = ExternalSwitchConfig(
                         enabled=True,
                         url=ext_switch_data.get('url', ''),
-                        payload=ext_switch_data.get('payload', {})
+                        payload=ext_switch_data.get('payload', {}),
+                        content_type=ext_switch_data.get('content_type', 'json')
                     )
 
             # Validate internal source fields

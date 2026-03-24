@@ -326,16 +326,20 @@ class DeploymentManager:
                     self.logger.error(f"Failed to start/restart user snapserver.service: {e}")
                     return False
 
-            # Start and enable all go-librespot services (they'll wait for FIFO service)
+            # Start and enable all go-librespot and snapclient services
             for client in clients:
-                service_name = f"go-librespot-{client.id}.service"
-                try:
-                    subprocess.run(["systemctl", "--user", "enable", service_name], check=True)
-                    subprocess.run(["systemctl", "--user", "start", service_name], check=True)
-                    self.logger.info(f"Started and enabled {service_name}")
-                except Exception as e:
-                    self.logger.error(f"Failed to start {service_name}: {e}")
-                    return False
+                for service_name in [
+                    f"go-librespot-{client.id}.service",
+                    f"snapclient-{client.id}.service",
+                ]:
+                    try:
+                        subprocess.run(["systemctl", "--user", "enable", service_name],
+                                       check=False, capture_output=True)
+                        subprocess.run(["systemctl", "--user", "start", service_name],
+                                       check=False, capture_output=True)
+                        self.logger.info(f"Started and enabled {service_name}")
+                    except Exception as e:
+                        self.logger.warning(f"Could not start {service_name}: {e}")
 
             return True
 

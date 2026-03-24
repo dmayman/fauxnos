@@ -6,7 +6,7 @@ Wants=snapclient-{CLIENT_ID}.service
 [Service]
 Type=simple
 WorkingDirectory={CLIENT_DIR}
-ExecStart=/usr/bin/python3 {CLIENT_DIR}/fauxnos-client.py
+ExecStart=/usr/bin/python3 {CLIENT_DIR}/fauxnos_client.py --daemon
 Restart=always
 RestartSec=10
 

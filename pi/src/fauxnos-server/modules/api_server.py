@@ -2,52 +2,64 @@
 """
 Fauxnos Server API
 
-Provides REST API endpoints for client registration and configuration management.
-Handles:
-- Client registration via MAC address
-- Configuration distribution
-- Server-side config management integration
+Provides REST API endpoints for client registration, configuration management,
+web UI serving, and zero-touch onboarding (firstrun.sh generation).
 
 Test modes available for safe development.
 """
 
 import json
 import argparse
-from flask import Flask, request, jsonify
-from pathlib import Path
-import sys
+import subprocess
+import socket
 import os
-
-# Module imports handled by relative imports
-
-from .config_manager import ConfigManager, ClientConfig
+import requests as http_requests
+from pathlib import Path
+from datetime import datetime, timezone
+from flask import Flask, request, jsonify, Response, send_from_directory, abort
 from typing import Optional
 
-app = Flask(__name__)
+from .config_manager import ConfigManager, ClientConfig
+
+# Path to the web UI static files (relative to this module's location)
+_SERVER_DIR = Path(__file__).parent.parent
+WEB_DIR = _SERVER_DIR / "web"
+CLIENT_INSTALL_SCRIPT = _SERVER_DIR.parent / "fauxnos-client" / "install.sh"
+CLIENT_DIR = CLIENT_INSTALL_SCRIPT.parent
+
+# Point Flask's built-in static handler at web/ so /static/style.css etc. work
+app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path='/static')
+
 
 class FauxnosAPIServer:
     def __init__(self, config_manager: Optional[ConfigManager] = None, test_mode: bool = False, verbose: bool = False):
         self.test_mode = test_mode
         self.verbose = verbose
         self.config_manager = config_manager or ConfigManager(test_mode=test_mode)
-
-        # Setup Flask routes
         self.setup_routes()
 
     def log(self, message: str, level: str = "INFO"):
-        if self.verbose or level in ["ERROR", "WARNING"]:
+        if self.verbose or level in ["ERROR", "WARNING", "SUCCESS"]:
             colors = {
-                "INFO": "\033[1;36m",    # Bright Cyan (more visible than blue)
-                "SUCCESS": "\033[0;32m", # Green
-                "WARNING": "\033[1;33m", # Yellow
-                "ERROR": "\033[0;31m",   # Red
+                "INFO": "\033[1;36m",
+                "SUCCESS": "\033[0;32m",
+                "WARNING": "\033[1;33m",
+                "ERROR": "\033[0;31m",
             }
             reset = "\033[0m"
             prefix = "🔧" if level == "INFO" else "✓" if level == "SUCCESS" else "⚠" if level == "WARNING" else "✗"
             print(f"{colors.get(level, '')}{prefix} {message}{reset}")
 
     def setup_routes(self):
-        """Setup Flask routes"""
+        """Setup all Flask routes"""
+
+        # ── Web UI ────────────────────────────────────────────────────────────
+
+        @app.route('/')
+        def index():
+            return self.handle_index()
+
+        # ── Client management ─────────────────────────────────────────────────
 
         @app.route('/api/clients/register', methods=['POST'])
         def register_client():
@@ -69,9 +81,89 @@ class FauxnosAPIServer:
         def delete_client(client_id):
             return self.handle_delete_client(client_id)
 
+        # ── Source management (per-client) ────────────────────────────────────
+
+        @app.route('/api/clients/<client_id>/sources', methods=['GET'])
+        def get_sources(client_id):
+            return self.handle_get_sources(client_id)
+
+        @app.route('/api/clients/<client_id>/sources', methods=['PUT'])
+        def replace_sources(client_id):
+            return self.handle_replace_sources(client_id)
+
+        @app.route('/api/clients/<client_id>/sources', methods=['POST'])
+        def add_source(client_id):
+            return self.handle_add_source(client_id)
+
+        @app.route('/api/clients/<client_id>/sources/<source_id>', methods=['PUT'])
+        def update_source(client_id, source_id):
+            return self.handle_update_source(client_id, source_id)
+
+        @app.route('/api/clients/<client_id>/sources/<source_id>', methods=['DELETE'])
+        def delete_source(client_id, source_id):
+            return self.handle_delete_source(client_id, source_id)
+
+        # ── Snapcast groups proxy ─────────────────────────────────────────────
+
+        @app.route('/api/groups', methods=['GET'])
+        def get_groups():
+            return self.handle_get_groups()
+
+        @app.route('/api/groups/join', methods=['POST'])
+        def join_group():
+            return self.handle_join_group()
+
+        @app.route('/api/groups/return-home', methods=['POST'])
+        def return_home():
+            return self.handle_return_home()
+
+        @app.route('/api/groups/stream', methods=['POST'])
+        def set_group_stream():
+            return self.handle_set_group_stream()
+
+        @app.route('/api/groups/source', methods=['POST'])
+        def set_group_source():
+            return self.handle_set_group_source()
+
+        # ── Status ────────────────────────────────────────────────────────────
+
         @app.route('/api/status', methods=['GET'])
         def get_status():
             return self.handle_get_status()
+
+        @app.route('/api/server/status', methods=['GET'])
+        def get_server_status():
+            return self.handle_get_server_status()
+
+        # ── Install / onboarding ──────────────────────────────────────────────
+
+        @app.route('/api/install/firstrun.sh', methods=['GET'])
+        def get_firstrun_sh():
+            return self.handle_get_firstrun_sh()
+
+        @app.route('/api/install/client.sh', methods=['GET'])
+        def get_client_sh():
+            return self.handle_get_client_sh()
+
+        @app.route('/api/install/files/client/<path:filepath>')
+        def serve_client_file(filepath):
+            return self.handle_serve_client_file(filepath)
+
+    # ── Web UI handler ─────────────────────────────────────────────────────────
+
+    def handle_index(self):
+        """Serve the web UI index page."""
+        index_file = WEB_DIR / "index.html"
+        if not index_file.exists():
+            return Response(
+                "<html><body><h1>Fauxnos Server</h1><p>Web UI not found. Deploy web/ directory.</p></body></html>",
+                mimetype="text/html",
+                status=200
+            )
+        with open(index_file) as f:
+            return Response(f.read(), mimetype="text/html")
+
+    # ── Client management handlers ─────────────────────────────────────────────
 
     def handle_client_registration(self):
         """Handle POST /api/clients/register"""
@@ -100,110 +192,88 @@ class FauxnosAPIServer:
                     "zeroconf_port": existing_client.zeroconf_port
                 })
 
-            # Check if this is the server device and assign fauxnos000
-            # Server device is detected by checking if request comes from localhost or server's own MAC
-            import socket
-            import subprocess
-
+            # Check if this is the server device
             is_server_device = False
             try:
-                # Check if request comes from localhost
-                self.log(f"Request remote_addr: {request.remote_addr}")
                 if request.remote_addr in ['127.0.0.1', '::1']:
                     is_server_device = True
-                    self.log("Detected server device via localhost", "INFO")
+                    self.log("Detected server device via localhost")
                 else:
-                    # Check if MAC address matches server's primary interface
                     result = subprocess.run(['ip', 'addr', 'show'], capture_output=True, text=True)
                     if mac_address.lower() in result.stdout.lower():
                         is_server_device = True
-                        self.log("Detected server device via MAC match", "INFO")
+                        self.log("Detected server device via MAC match")
             except Exception as e:
                 self.log(f"Error in server device detection: {e}", "WARNING")
 
-            # Generate client ID
-            self.log(f"is_server_device: {is_server_device}")
+            # Determine client ID
             if is_server_device:
-                # Check if fauxnos000 is already taken
                 existing_server = self.config_manager.get_client_config("fauxnos000")
-                self.log(f"fauxnos000 existing_server: {existing_server}")
                 if existing_server:
-                    # Server device already registered, assign next available ID
                     next_id = self.config_manager.get_next_client_id()
-                    self.log(f"fauxnos000 taken, assigned: {next_id}")
                 else:
-                    # Reserve fauxnos000 for server device
                     next_id = "fauxnos000"
-                    self.log(f"Reserved fauxnos000 for server device")
             else:
                 next_id = self.config_manager.get_next_client_id()
-                self.log(f"Regular client assigned: {next_id}")
 
-            if self.test_mode:
-                # In test mode, use mock data - no user input needed
-                client_name = f"Test Client {next_id[-3:]}"
-                self.log(f"TEST MODE: Auto-assigning name '{client_name}' to {next_id}", "WARNING")
-            else:
-                # In production, prompt for name
-                print(f"\n🔧 New client registration: {next_id}")
-                print(f"   MAC Address: {mac_address}")
-                print(f"   Hostname: {hostname}")
-                # Use display name provided by client instead of prompting
-                client_name = display_name
+            if not display_name:
+                display_name = f"Fauxnos {next_id[-3:]}"
 
-                if not client_name:
-                    client_name = f"Fauxnos {next_id[-3:]}"
-                    print(f"Using default name: {client_name}")
-
-            # Add client to configuration
             try:
                 new_client = self.config_manager.add_client(
                     name=display_name,
                     mac=mac_address,
-                    client_id=next_id  # Pass the determined client_id (fauxnos000 for server, auto-assigned otherwise)
+                    client_id=next_id
                 )
 
+                # Auto-populate default sources and detect hardware capabilities
+                aplay_output = data.get('aplay_output', '').lower()
+                has_adc = 'dacplusadc' in aplay_output or 'dac+adc' in aplay_output
+                default_sources = [
+                    {"id": "spotify", "label": "Spotify", "type": "internal", "category": "default",
+                     "sink": "snapsink", "starting_volume": 50, "volume_controller": "snapcast"},
+                    {"id": "airplay", "label": "AirPlay", "type": "internal", "category": "default",
+                     "sink": "snapsink", "starting_volume": 50, "volume_controller": "snapcast"},
+                ]
+                if has_adc:
+                    default_sources.append(
+                        {"id": "analog", "label": "Analog In", "type": "internal", "category": "default",
+                         "sink": "analogsink", "starting_volume": 50, "volume_controller": "self"}
+                    )
+                for client_entry in self.config_manager.server_config.get("clients", []):
+                    if client_entry.get("id") == new_client.id:
+                        client_entry["has_adc"] = has_adc
+                        if "sources" not in client_entry:
+                            client_entry["sources"] = default_sources
+                        break
+
                 if not self.test_mode:
-                    # Deploy server-side infrastructure
                     self.log("Deploying server infrastructure...")
                     from .deploy import DeploymentManager
                     deployer = DeploymentManager(self.config_manager)
 
                     if deployer.deploy_server_configs():
-                        self.log("Server infrastructure deployed successfully", "SUCCESS")
+                        self.log("Server infrastructure deployed", "SUCCESS")
 
-                        # Restart snapserver to load new configuration before group assignment
-                        self.log("Restarting snapserver to load new client configuration...")
-                        import subprocess
+                        import time
                         try:
-                            subprocess.run(["systemctl", "--user", "restart", "snapserver"], check=True, timeout=10)
-                            self.log("Snapserver restarted successfully", "SUCCESS")
-
-                            # Wait a moment for snapserver to fully start
-                            import time
+                            subprocess.run(["systemctl", "--user", "restart", "snapserver"],
+                                         check=True, timeout=10)
                             time.sleep(2)
                         except Exception as e:
                             self.log(f"Failed to restart snapserver: {e}", "WARNING")
 
-                        # Auto-assign new client to home group
-                        self.log("Assigning new client to home group...")
                         from .group_manager import assign_all_clients_to_home
-
                         if assign_all_clients_to_home(self.config_manager, dry_run=False):
                             self.log(f"Client {new_client.id} assigned to home group", "SUCCESS")
                         else:
                             self.log(f"Failed to assign {new_client.id} to home group", "WARNING")
-                            # Don't fail registration if group assignment fails
                     else:
                         self.log("Server deployment failed", "ERROR")
                         return jsonify({"error": "Failed to deploy server infrastructure"}), 500
 
-                # Save server configuration
-                self.log("Saving server configuration...")
                 self.config_manager.save_server_config()
-                self.log("Server configuration saved successfully", "SUCCESS")
-
-                self.log(f"Client registered successfully: {new_client.id} ({client_name})", "SUCCESS")
+                self.log(f"Client registered: {new_client.id}", "SUCCESS")
 
                 return jsonify({
                     "status": "registered",
@@ -222,28 +292,19 @@ class FauxnosAPIServer:
 
     def handle_get_client_config(self, client_id: str):
         """Handle GET /api/config/<client_id>"""
-        # NOTE: This endpoint is deprecated in the new architecture.
-        # Clients now own their config and don't download it from server.
-        # Keeping for backward compatibility or debugging.
         try:
             client = self.config_manager.get_client(client_id)
             if not client:
                 return jsonify({"error": f"Client {client_id} not found"}), 404
 
-            # Return basic server info only
             server_host = "fauxnos-server.local" if not self.test_mode else "localhost"
-
-            basic_info = {
+            return jsonify({
                 "client_id": client.id,
                 "server_port": client.server_port,
                 "zeroconf_port": client.zeroconf_port,
                 "go_librespot_monitor_url": f"http://{server_host}:{client.server_port}/player/volume",
-                "note": "Client owns its own configuration. This endpoint provides server connection info only."
-            }
-
-            self.log(f"Served basic server info for {client_id}")
-            return jsonify(basic_info)
-
+                "note": "Client owns its own configuration."
+            })
         except Exception as e:
             self.log(f"Config retrieval error: {e}", "ERROR")
             return jsonify({"error": "Internal server error"}), 500
@@ -252,6 +313,11 @@ class FauxnosAPIServer:
         """Handle GET /api/clients"""
         try:
             clients = self.config_manager.get_all_clients()
+
+            # Enrich with snapcast connection status
+            snapcast_status = self._get_snapcast_client_status()
+            raw_map = {c.get("id"): c for c in self.config_manager.server_config.get("clients", [])}
+
             return jsonify({
                 "clients": [
                     {
@@ -259,7 +325,9 @@ class FauxnosAPIServer:
                         "name": client.name,
                         "mac": client.mac,
                         "server_port": client.server_port,
-                        "zeroconf_port": client.zeroconf_port
+                        "zeroconf_port": client.zeroconf_port,
+                        "connected": snapcast_status.get(client.id, False),
+                        "has_adc": raw_map.get(client.id, {}).get("has_adc", False),
                     }
                     for client in clients
                 ]
@@ -267,6 +335,59 @@ class FauxnosAPIServer:
         except Exception as e:
             self.log(f"Client list error: {e}", "ERROR")
             return jsonify({"error": "Internal server error"}), 500
+
+    def _get_client_raw(self, client_id: str) -> Optional[dict]:
+        """Get raw client dict from server_config."""
+        for client in self.config_manager.server_config.get("clients", []):
+            if client.get("id") == client_id:
+                return client
+        return None
+
+    def _get_snapcast_client_status(self) -> dict:
+        """Query snapcast for connected clients. Returns {client_id: bool}."""
+        try:
+            rpc = self._snapcast_rpc("Server.GetStatus")
+            if not rpc or "result" not in rpc:
+                return {}
+            groups = rpc["result"].get("server", {}).get("groups", [])
+            status = {}
+            for group in groups:
+                for c in group.get("clients", []):
+                    cid = c.get("id", "")
+                    status[cid] = c.get("connected", False)
+            return status
+        except Exception:
+            return {}
+
+    def _snapcast_rpc(self, method: str, params: Optional[dict] = None) -> Optional[dict]:
+        """Send JSON-RPC request to snapserver."""
+        try:
+            payload = json.dumps({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params or {},
+                "id": 1
+            }).encode() + b"\r\n"
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
+            sock.connect(("127.0.0.1", 1705))
+            sock.sendall(payload)
+
+            data = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                try:
+                    return json.loads(data.decode())
+                except json.JSONDecodeError:
+                    continue
+            sock.close()
+            return None
+        except Exception:
+            return None
 
     def handle_update_client(self, client_id: str):
         """Handle PUT /api/clients/<client_id>"""
@@ -280,6 +401,7 @@ class FauxnosAPIServer:
                 return jsonify({"error": "name is required"}), 400
 
             if self.config_manager.rename_client(client_id, new_name):
+                self.config_manager.save_server_config()
                 self.log(f"Client {client_id} renamed to '{new_name}'", "SUCCESS")
                 return jsonify({"status": "updated", "name": new_name})
             else:
@@ -293,14 +415,307 @@ class FauxnosAPIServer:
         """Handle DELETE /api/clients/<client_id>"""
         try:
             if self.config_manager.remove_client(client_id):
+                self.config_manager.save_server_config()
                 self.log(f"Client {client_id} removed", "SUCCESS")
                 return jsonify({"status": "deleted"})
             else:
                 return jsonify({"error": f"Client {client_id} not found"}), 404
-
         except Exception as e:
             self.log(f"Client deletion error: {e}", "ERROR")
             return jsonify({"error": "Internal server error"}), 500
+
+    # ── Source management handlers ─────────────────────────────────────────────
+
+    def _get_client_config_yaml_path(self, client_id: str) -> Optional[Path]:
+        """Find a client's config.json or config.yaml on disk (if accessible)."""
+        # Clients store their config locally; server can't directly access it.
+        # This endpoint operates on server_config.json client metadata.
+        # For source management via API, we store sources in server_config.json.
+        return None
+
+    def _get_client_sources(self, client_id: str) -> Optional[list]:
+        """Get sources for a client from server_config."""
+        for client in self.config_manager.server_config.get("clients", []):
+            if client.get("id") == client_id:
+                return client.get("sources", [])
+        return None
+
+    def _set_client_sources(self, client_id: str, sources: list) -> bool:
+        """Set sources for a client in server_config."""
+        for client in self.config_manager.server_config.get("clients", []):
+            if client.get("id") == client_id:
+                client["sources"] = sources
+                self.config_manager.save_server_config()
+                return True
+        return False
+
+    def handle_get_sources(self, client_id: str):
+        """Handle GET /api/clients/<client_id>/sources"""
+        try:
+            sources = self._get_client_sources(client_id)
+            if sources is None:
+                return jsonify({"error": f"Client {client_id} not found"}), 404
+            raw = self._get_client_raw(client_id) or {}
+            return jsonify({"client_id": client_id, "sources": sources, "has_adc": raw.get("has_adc", False)})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def handle_replace_sources(self, client_id: str):
+        """Handle PUT /api/clients/<client_id>/sources — replace all sources"""
+        try:
+            data = request.get_json()
+            if not data or "sources" not in data:
+                return jsonify({"error": "sources array required"}), 400
+
+            if not self._set_client_sources(client_id, data["sources"]):
+                return jsonify({"error": f"Client {client_id} not found"}), 404
+
+            return jsonify({"status": "updated", "sources": data["sources"]})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def handle_add_source(self, client_id: str):
+        """Handle POST /api/clients/<client_id>/sources — add one source"""
+        try:
+            data = request.get_json()
+            if not data or "id" not in data or "type" not in data:
+                return jsonify({"error": "source must have 'id' and 'type'"}), 400
+
+            sources = self._get_client_sources(client_id)
+            if sources is None:
+                return jsonify({"error": f"Client {client_id} not found"}), 404
+
+            # Check for duplicate ID
+            if any(s.get("id") == data["id"] for s in sources):
+                return jsonify({"error": f"Source '{data['id']}' already exists"}), 409
+
+            sources.append(data)
+            self._set_client_sources(client_id, sources)
+            return jsonify({"status": "added", "source": data}), 201
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def handle_update_source(self, client_id: str, source_id: str):
+        """Handle PUT /api/clients/<client_id>/sources/<source_id> — patch a single source"""
+        try:
+            data = request.get_json()
+            if not data:
+                return jsonify({"error": "No JSON data provided"}), 400
+
+            sources = self._get_client_sources(client_id)
+            if sources is None:
+                return jsonify({"error": f"Client {client_id} not found"}), 404
+
+            for source in sources:
+                if source.get("id") == source_id:
+                    for key, value in data.items():
+                        source[key] = value
+                    self._set_client_sources(client_id, sources)
+                    return jsonify({"status": "updated", "source": source})
+
+            # Source not found — upsert (create with provided data)
+            new_source = {"id": source_id, **data}
+            sources.append(new_source)
+            self._set_client_sources(client_id, sources)
+            return jsonify({"status": "created", "source": new_source}), 201
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def handle_delete_source(self, client_id: str, source_id: str):
+        """Handle DELETE /api/clients/<client_id>/sources/<source_id>"""
+        try:
+            sources = self._get_client_sources(client_id)
+            if sources is None:
+                return jsonify({"error": f"Client {client_id} not found"}), 404
+
+            new_sources = [s for s in sources if s.get("id") != source_id]
+            if len(new_sources) == len(sources):
+                return jsonify({"error": f"Source '{source_id}' not found"}), 404
+
+            self._set_client_sources(client_id, new_sources)
+            return jsonify({"status": "deleted"})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # ── Snapcast group handlers ────────────────────────────────────────────────
+
+    def handle_get_groups(self):
+        """Handle GET /api/groups — proxy to snapcast, enriched with home/stream info"""
+        try:
+            rpc = self._snapcast_rpc("Server.GetStatus")
+            if not rpc or "result" not in rpc:
+                return jsonify({"groups": [], "error": "Snapcast unavailable"}), 503
+
+            server_data = rpc["result"].get("server", {})
+            groups = server_data.get("groups", [])
+            streams = server_data.get("streams", [])
+
+            # Build home_group → client_id map from raw server config
+            raw_clients = self.config_manager.server_config.get("clients", [])
+            home_group_map = {}  # group_id → client_id
+            for client in raw_clients:
+                hg = client.get("home_group")
+                if hg:
+                    home_group_map[hg] = client.get("id")
+
+            # Build available streams list
+            stream_list = [{"id": s.get("id", ""), "status": s.get("status", "")} for s in streams]
+
+            # Build raw client map for source lookup
+            raw_map = {c.get("id"): c for c in raw_clients}
+
+            # Enrich each group
+            for group in groups:
+                gid = group.get("id", "")
+                group["home_client_id"] = home_group_map.get(gid)
+
+                # Filter streams belonging to this group's home client
+                home_cid = group.get("home_client_id")
+                if home_cid:
+                    group["available_streams"] = [
+                        s for s in stream_list if home_cid in s["id"]
+                    ]
+                else:
+                    group["available_streams"] = stream_list
+
+                # Include home client's configured sources
+                if home_cid and home_cid in raw_map:
+                    group["sources"] = raw_map[home_cid].get("sources", [])
+                else:
+                    group["sources"] = []
+
+            return jsonify({"groups": groups, "streams": stream_list})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def handle_set_group_stream(self):
+        """Handle POST /api/groups/stream — {group_id, stream_id}"""
+        try:
+            data = request.get_json()
+            group_id = data.get("group_id")
+            stream_id = data.get("stream_id")
+            if not group_id or not stream_id:
+                return jsonify({"error": "group_id and stream_id required"}), 400
+
+            rpc = self._snapcast_rpc("Group.SetStream", {"id": group_id, "stream_id": stream_id})
+            if rpc and "result" in rpc:
+                return jsonify({"status": "ok"})
+            else:
+                return jsonify({"error": "Failed to set stream"}), 500
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def handle_set_group_source(self):
+        """Handle POST /api/groups/source — {group_id, home_client_id, source_id}
+
+        Switches the active source for a group:
+        1. Sets snapcast stream if one exists for this source
+        2. Calls external switch API if configured on the source
+        3. Publishes MQTT mode change
+        """
+        try:
+            data = request.get_json()
+            group_id = data.get("group_id")
+            home_client_id = data.get("home_client_id")
+            source_id = data.get("source_id")
+            if not group_id or not home_client_id or not source_id:
+                return jsonify({"error": "group_id, home_client_id, and source_id required"}), 400
+
+            results = {"source_id": source_id}
+
+            # 1. Try to set snapcast stream
+            expected_stream = f"source_{home_client_id}_{source_id}"
+            rpc = self._snapcast_rpc("Server.GetStatus")
+            if rpc and "result" in rpc:
+                streams = rpc["result"].get("server", {}).get("streams", [])
+                stream_exists = any(s.get("id") == expected_stream for s in streams)
+                if stream_exists:
+                    set_rpc = self._snapcast_rpc("Group.SetStream", {"id": group_id, "stream_id": expected_stream})
+                    results["stream_set"] = bool(set_rpc and "result" in set_rpc)
+                else:
+                    results["stream_set"] = False
+                    results["stream_note"] = f"No stream '{expected_stream}'"
+
+            # 2. Call external API if configured
+            raw_client = self._get_client_raw(home_client_id)
+            if raw_client:
+                sources = raw_client.get("sources", [])
+                source_cfg = next((s for s in sources if s.get("id") == source_id), None)
+                if source_cfg:
+                    # Built-in sources: API config under external_switch
+                    ext = source_cfg.get("external_switch", {})
+                    # Custom/external sources: API config at top level
+                    api_url = ext.get("control_api") if ext.get("enabled") else None
+                    api_payload = ext.get("control_payload", {})
+                    api_content_type = ext.get("content_type", "json")
+                    if not api_url and source_cfg.get("control_api"):
+                        api_url = source_cfg["control_api"]
+                        api_payload = source_cfg.get("control_payload", {})
+                        api_content_type = source_cfg.get("content_type", "json")
+                    if api_url:
+                        try:
+                            if api_content_type == "form":
+                                resp = http_requests.post(api_url, data=api_payload, timeout=5)
+                            else:
+                                resp = http_requests.post(api_url, json=api_payload, timeout=5)
+                            results["external_api"] = {"status": resp.status_code, "ok": resp.status_code == 200}
+                        except Exception as e:
+                            results["external_api"] = {"error": str(e)}
+
+            # 3. Publish MQTT mode change
+            try:
+                subprocess.run(
+                    ["mosquitto_pub", "-t", f"set/clients/{home_client_id}/mode", "-m", source_id],
+                    timeout=2, capture_output=True
+                )
+                results["mqtt_mode"] = True
+            except Exception:
+                results["mqtt_mode"] = False
+
+            return jsonify({"status": "ok", "results": results})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def handle_join_group(self):
+        """Handle POST /api/groups/join — {client_id, target_client_id}"""
+        try:
+            data = request.get_json()
+            client_id = data.get("client_id")
+            target_client_id = data.get("target_client_id")
+            if not client_id or not target_client_id:
+                return jsonify({"error": "client_id and target_client_id required"}), 400
+
+            from .group_manager import SnapcastGroupManager
+            gm = SnapcastGroupManager(config_manager=self.config_manager)
+            if gm.join_client_to_group(client_id, target_client_id):
+                return jsonify({"status": "joined"})
+            else:
+                return jsonify({"error": "Failed to join group"}), 500
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def handle_return_home(self):
+        """Handle POST /api/groups/return-home — {client_id}"""
+        try:
+            data = request.get_json() or {}
+            client_id = data.get("client_id")
+
+            from .group_manager import SnapcastGroupManager, assign_all_clients_to_home
+            gm = SnapcastGroupManager(config_manager=self.config_manager)
+
+            if client_id:
+                success = gm.return_client_to_home(client_id)
+            else:
+                success = gm.return_all_clients_to_home()
+
+            if success:
+                return jsonify({"status": "ok"})
+            else:
+                return jsonify({"error": "Failed to return home"}), 500
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    # ── Status handlers ────────────────────────────────────────────────────────
 
     def handle_get_status(self):
         """Handle GET /api/status"""
@@ -316,47 +731,246 @@ class FauxnosAPIServer:
             self.log(f"Status error: {e}", "ERROR")
             return jsonify({"error": "Internal server error"}), 500
 
+    def handle_get_server_status(self):
+        """Handle GET /api/server/status — full system status"""
+        try:
+            clients = self.config_manager.get_all_clients()
+            snapcast_status = self._get_snapcast_client_status()
+
+            # Service states
+            services = {}
+            user_services = ["snapserver", "fauxnos-fifo-setup", "snapclient-fauxnos000"]
+            for client in clients:
+                user_services.append(f"go-librespot-{client.id}")
+
+            for svc in user_services:
+                try:
+                    result = subprocess.run(
+                        ["systemctl", "--user", "is-active", svc],
+                        capture_output=True, text=True, timeout=3
+                    )
+                    services[svc] = {"active": result.stdout.strip() == "active", "scope": "user"}
+                except Exception:
+                    services[svc] = {"active": False, "scope": "user"}
+
+            for svc in ["mosquitto", "avahi-daemon"]:
+                try:
+                    result = subprocess.run(
+                        ["systemctl", "is-active", svc],
+                        capture_output=True, text=True, timeout=3
+                    )
+                    services[svc] = {"active": result.stdout.strip() == "active", "scope": "system"}
+                except Exception:
+                    services[svc] = {"active": False, "scope": "system"}
+
+            # Snapcast groups
+            rpc = self._snapcast_rpc("Server.GetStatus")
+            groups = []
+            if rpc and "result" in rpc:
+                groups = rpc["result"].get("server", {}).get("groups", [])
+
+            return jsonify({
+                "status": "running",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "hostname": os.uname().nodename,
+                "clients": [
+                    {
+                        "client_id": c.id,
+                        "name": c.name,
+                        "connected": snapcast_status.get(c.id, False),
+                    }
+                    for c in clients
+                ],
+                "services": services,
+                "snapcast_groups": len(groups),
+            })
+        except Exception as e:
+            self.log(f"Server status error: {e}", "ERROR")
+            return jsonify({"error": "Internal server error"}), 500
+
+    # ── Install / onboarding handlers ──────────────────────────────────────────
+
+    def handle_get_firstrun_sh(self):
+        """Handle GET /api/install/firstrun.sh — generate zero-touch bootstrap"""
+        display_name = request.args.get("display_name", "")
+
+        # Sanitize display_name (shell safety)
+        display_name = display_name.replace('"', '').replace("'", '').replace(';', '')[:64]
+
+        script = self._generate_firstrun_sh(display_name)
+        return Response(
+            script,
+            mimetype="text/plain",
+            headers={"Content-Disposition": "attachment; filename=firstrun.sh"}
+        )
+
+    def _generate_firstrun_sh(self, display_name: str = "") -> str:
+        return f"""#!/bin/bash
+# Fauxnos Client Bootstrap - Generated by fauxnos-server
+# Place this file in /boot/firmware/ on your Raspberry Pi SD card.
+# It will run automatically on first boot, install the client, and register
+# with the fauxnos server. The file self-deletes after running.
+#
+# Generated: {datetime.now(timezone.utc).isoformat()}
+# Server: fauxnos000.local
+
+FAUXNOS_SERVER_HOST="fauxnos000.local"
+DISPLAY_NAME="{display_name}"
+
+# Wait for network and mDNS resolution (up to 120 seconds)
+echo "[fauxnos] Waiting for network..."
+for i in $(seq 1 24); do
+  if avahi-resolve -n "$FAUXNOS_SERVER_HOST" &>/dev/null 2>&1; then
+    echo "[fauxnos] Server found: $FAUXNOS_SERVER_HOST"
+    break
+  fi
+  echo "[fauxnos] Waiting ($((i*5))s)..."
+  sleep 5
+done
+
+# Download and run install script from server
+export FAUXNOS_SERVER_HOST DISPLAY_NAME
+echo "[fauxnos] Starting install from http://${{FAUXNOS_SERVER_HOST}}:8080/api/install/client.sh"
+curl -sSL "http://${{FAUXNOS_SERVER_HOST}}:8080/api/install/client.sh" | bash
+
+# Self-delete
+rm -- "$0"
+"""
+
+    def handle_get_client_sh(self):
+        """Handle GET /api/install/client.sh — serve client install script with server URL injected"""
+        if not CLIENT_INSTALL_SCRIPT.exists():
+            return Response(
+                f"# Client install script not found at {CLIENT_INSTALL_SCRIPT}",
+                mimetype="text/plain",
+                status=404
+            )
+
+        with open(CLIENT_INSTALL_SCRIPT) as f:
+            content = f.read()
+
+        # Inject FAUXNOS_SERVER_URL so install.sh downloads files from this server
+        # instead of GitHub, ensuring clients always get the current server's copy
+        server_host = request.host  # includes port if non-standard
+        server_url = f"http://{server_host}"
+        content = content.replace(
+            'REPO_URL="https://raw.githubusercontent.com/dmayman/fauxnos/main"',
+            f'REPO_URL="https://raw.githubusercontent.com/dmayman/fauxnos/main"\nFAUXNOS_SERVER_URL="{server_url}"'
+        )
+
+        return Response(
+            content,
+            mimetype="text/plain",
+            headers={"Content-Disposition": "attachment; filename=client-install.sh"}
+        )
+
+    def handle_serve_client_file(self, filepath: str):
+        """Handle GET /api/install/files/client/<path> — serve individual client files"""
+        # Prevent path traversal
+        try:
+            safe_path = (CLIENT_DIR / filepath).resolve()
+            safe_path.relative_to(CLIENT_DIR.resolve())
+        except (ValueError, RuntimeError):
+            abort(403)
+
+        if not safe_path.exists():
+            abort(404)
+
+        return send_from_directory(str(CLIENT_DIR), filepath)
+
+    # ── MQTT mode listener ─────────────────────────────────────────────────────
+
+    def start_mqtt_listener(self):
+        """Start MQTT listener for mode status messages.
+
+        When a client publishes its active mode (source), trigger the
+        corresponding external API call if one is configured.  This keeps
+        external hardware (e.g. Particle Photon input mux) in sync on boot
+        and whenever the source changes from any control surface.
+        """
+        import paho.mqtt.client as mqtt_lib
+        import threading
+
+        def on_connect(client, userdata, flags, rc):
+            if rc == 0:
+                client.subscribe("status/clients/+/mode")
+                self.log("MQTT listener connected, subscribed to mode status")
+
+        def on_message(client, userdata, msg):
+            parts = msg.topic.split("/")
+            if len(parts) < 4:
+                return
+            client_id = parts[2]
+            source_id = msg.payload.decode().strip()
+            if not source_id:
+                return
+            self._trigger_external_for_source(client_id, source_id)
+
+        mqtt_client = mqtt_lib.Client()
+        mqtt_client.on_connect = on_connect
+        mqtt_client.on_message = on_message
+        try:
+            mqtt_client.connect("localhost", 1883, 60)
+        except Exception as e:
+            self.log(f"MQTT listener failed to connect: {e}", "ERROR")
+            return
+        self._mqtt_client = mqtt_client
+        t = threading.Thread(target=mqtt_client.loop_forever, daemon=True)
+        t.start()
+
+    def _trigger_external_for_source(self, client_id: str, source_id: str):
+        """Look up a client's source config and fire external API if present."""
+        raw_client = self._get_client_raw(client_id)
+        if not raw_client:
+            return
+        sources = raw_client.get("sources", [])
+        source_cfg = next((s for s in sources if s.get("id") == source_id), None)
+        if not source_cfg:
+            return
+
+        # Built-in sources: API under external_switch
+        ext = source_cfg.get("external_switch", {})
+        api_url = ext.get("control_api") if ext.get("enabled") else None
+        api_payload = ext.get("control_payload", {})
+        api_content_type = ext.get("content_type", "json")
+        # Custom/external sources: API at top level
+        if not api_url and source_cfg.get("control_api"):
+            api_url = source_cfg["control_api"]
+            api_payload = source_cfg.get("control_payload", {})
+            api_content_type = source_cfg.get("content_type", "json")
+        if not api_url:
+            return
+
+        try:
+            if api_content_type == "form":
+                resp = http_requests.post(api_url, data=api_payload, timeout=5)
+            else:
+                resp = http_requests.post(api_url, json=api_payload, timeout=5)
+            self.log(f"External API for {client_id}/{source_id}: {resp.status_code}", "SUCCESS")
+        except Exception as e:
+            self.log(f"External API error for {client_id}/{source_id}: {e}", "WARNING")
+
+    # ── Server runner ──────────────────────────────────────────────────────────
+
     def run(self, host: str = '0.0.0.0', port: int = 8080, debug: bool = False):
-        """Run the Flask server"""
         self.log(f"Starting Fauxnos API Server on {host}:{port}")
         if self.test_mode:
             self.log("Running in TEST MODE", "WARNING")
-
         app.run(host=host, port=port, debug=debug)
 
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Fauxnos API Server",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Run in test mode for development
-  python3 api_server.py --test --verbose
-
-  # Run production server
-  python3 api_server.py
-
-  # Run with debug mode
-  python3 api_server.py --debug --verbose
-        """
-    )
-
-    parser.add_argument('--test', action='store_true',
-                       help='Run in test mode (mock operations)')
-    parser.add_argument('--verbose', action='store_true',
-                       help='Show detailed output')
-    parser.add_argument('--debug', action='store_true',
-                       help='Run Flask in debug mode')
-    parser.add_argument('--host', default='0.0.0.0',
-                       help='Host to bind to (default: 0.0.0.0)')
-    parser.add_argument('--port', type=int, default=8080,
-                       help='Port to bind to (default: 8080)')
-
+    parser = argparse.ArgumentParser(description="Fauxnos API Server")
+    parser.add_argument('--test', action='store_true')
+    parser.add_argument('--verbose', action='store_true')
+    parser.add_argument('--debug', action='store_true')
+    parser.add_argument('--host', default='0.0.0.0')
+    parser.add_argument('--port', type=int, default=8080)
     args = parser.parse_args()
 
-    # Create and run server
     server = FauxnosAPIServer(test_mode=args.test, verbose=args.verbose)
     server.run(host=args.host, port=args.port, debug=args.debug)
+
 
 if __name__ == '__main__':
     main()

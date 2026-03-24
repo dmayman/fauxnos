@@ -38,8 +38,11 @@ class FauxnosClientSetup:
         self.test_mode = test_mode
         self.verbose = verbose
 
-        # Configuration
-        self.server_hostname = "fauxnos-server.local" if not test_mode else "localhost"
+        # Configuration — prefer env var (set by firstrun.sh), then fauxnos000.local
+        if test_mode:
+            self.server_hostname = "localhost"
+        else:
+            self.server_hostname = os.environ.get("FAUXNOS_SERVER_HOST", "fauxnos000.local")
         self.server_port = 8080
         self.client_dir = Path.home() / "src" / "fauxnos-client"
         # Store config in user's home directory, not in the source tree
@@ -206,11 +209,20 @@ class FauxnosClientSetup:
         """Register this client with the server"""
         self.log("Registering with server...")
 
+        # Detect hardware capabilities
+        aplay_output = ''
+        try:
+            aplay_result = subprocess.run(['aplay', '-l'], capture_output=True, text=True, timeout=5)
+            aplay_output = aplay_result.stdout
+        except Exception:
+            pass
+
         registration_data = {
             "mac_address": mac_address,
             "hostname": socket.gethostname(),
             "display_name": display_name,
-            "request_type": "register"
+            "request_type": "register",
+            "aplay_output": aplay_output,
         }
 
         if self.dry_run:
@@ -324,10 +336,18 @@ class FauxnosClientSetup:
             return True
 
         try:
-            # Fill in the registration info - these are the top-level keys
+            # Fill in the registration info — update both top-level keys
+            # and the device section (which config_manager.py reads from)
             config['client_id'] = client_id
             config['display_name'] = display_name
-            config['mac'] = mac_address  # Note: key is 'mac' not 'mac_address' in template
+            config['mac'] = mac_address
+
+            # Update the device section that config_manager parses
+            if 'device' not in config or not isinstance(config['device'], dict):
+                config['device'] = {}
+            config['device']['name'] = client_id
+            config['device']['mac'] = mac_address
+            config['device']['display_name'] = display_name
 
             # Update server host if different
             config['server_host'] = self.server_hostname
@@ -397,7 +417,15 @@ class FauxnosClientSetup:
 
         # Update /etc/hosts
         hosts_update = f"sudo sed -i 's/127.0.1.1.*/127.0.1.1\\t{client_id}/' /etc/hosts"
-        return self.execute(hosts_update, "Updating /etc/hosts")
+        if not self.execute(hosts_update, "Updating /etc/hosts"):
+            return False
+
+        # Configure cloud-init to not reset hostname on reboot (Debian Trixie/cloud-init OSes)
+        self.execute(
+            "sudo sed -i 's/^preserve_hostname:.*/preserve_hostname: true/' /etc/cloud/cloud.cfg",
+            "Configuring cloud-init to preserve hostname"
+        )
+        return True
 
     def deploy_services(self, config: Dict[str, Any]) -> bool:
         """Deploy systemd user services for this client"""
@@ -581,8 +609,11 @@ ctl.!default {
         if not self.initialize_config_from_template():
             return False
 
-        # Step 3: Get user input for display name
-        if not self.test_mode and not self.dry_run:
+        # Step 3: Get display name (from CLI arg, env var, or interactive prompt)
+        if getattr(self, 'display_name', ''):
+            display_name = self.display_name
+            self.log(f"Using display name: {display_name}")
+        elif not self.test_mode and not self.dry_run:
             print(f"\n🔧 Setting up new Fauxnos client")
             display_name = input("Enter display name for this client (e.g., 'Kitchen', 'Living Room'): ").strip()
             if not display_name:
@@ -771,6 +802,10 @@ Examples:
                        help='Use test configuration and skip system modifications')
     parser.add_argument('--verbose', action='store_true',
                        help='Show detailed output')
+    parser.add_argument('--display-name', default='',
+                       help='Device display name (skips interactive prompt)')
+    parser.add_argument('--server-host', default='',
+                       help='Fauxnos server hostname (overrides FAUXNOS_SERVER_HOST env var)')
 
     args = parser.parse_args()
 
@@ -789,6 +824,9 @@ Examples:
         verbose=args.verbose
     )
     setup.force_hostname = args.force_hostname
+    setup.display_name = args.display_name
+    if args.server_host:
+        setup.server_hostname = args.server_host
 
     # Run setup
     success = setup.run_setup()

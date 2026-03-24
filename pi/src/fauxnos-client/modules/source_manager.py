@@ -29,7 +29,7 @@ class SourceManager:
 
         # Initialize controllers
         self.pulse = PulseAudioController()
-        self.snapcast = SnapcastController()
+        self.snapcast = SnapcastController(host=config_manager.server_host)
         self.state_manager = StateManager(config_manager.state_file)
 
         # Track current source and volumes
@@ -111,7 +111,7 @@ class SourceManager:
 
         # Step 3: Trigger external switch if configured
         if source.external_switch and source.external_switch.enabled:
-            self._trigger_external_switch(source.external_switch.url, source.external_switch.payload)
+            self._trigger_external_switch(source.external_switch.url, source.external_switch.payload, source.external_switch.content_type)
 
         # Update current source and save state
         self.current_source = source.id
@@ -261,24 +261,24 @@ class SourceManager:
             self.logger.info(f"No previous source, using default: {first_source}")
             self.switch_source(first_source)
 
-    def _trigger_external_switch(self, url: str, payload: Dict) -> bool:
+    def _trigger_external_switch(self, url: str, payload: Dict, content_type: str = 'json') -> bool:
         """
         Trigger external source switch via HTTP POST
 
         Args:
             url: Webhook URL
-            payload: JSON payload to send
+            payload: Payload to send
+            content_type: 'json' or 'form'
 
         Returns:
             True if successful
         """
         try:
-            self.logger.debug(f"Triggering external switch: {url}")
-            response = requests.post(
-                url,
-                json=payload,
-                timeout=5
-            )
+            self.logger.debug(f"Triggering external switch: {url} ({content_type})")
+            if content_type == 'form':
+                response = requests.post(url, data=payload, timeout=5)
+            else:
+                response = requests.post(url, json=payload, timeout=5)
 
             if response.status_code == 200:
                 self.logger.debug("External switch triggered successfully")

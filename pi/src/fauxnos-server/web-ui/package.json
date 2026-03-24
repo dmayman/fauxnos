@@ -1,0 +1,21 @@
+{
+  "name": "fauxnos-web-ui",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "deploy": "vite build && scp -i ~/.ssh/id_rsa -r ../web/* user@fauxnos000.local:~/src/fauxnos-server/web/ && ssh -i ~/.ssh/id_rsa user@fauxnos000.local 'systemctl --user restart fauxnos-server'"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.4.0",
+    "vite": "^6.0.0"
+  }
+}
