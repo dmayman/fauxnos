@@ -8,6 +8,9 @@ device:
   mac: "00:00:00:00:00:00"  # MAC address of this device
   display_name: Kitchen     # Human-readable name
 
+# Server hostname (for snapcast and registration)
+server_host: fauxnos000.local
+
 # Audio sources
 sources:
   # Internal source - Spotify via Snapcast
@@ -17,40 +20,23 @@ sources:
     sink: snapsink                   # PulseAudio sink name
     starting_volume: 50              # Default volume (0-100)
     volume_controller: snapcast      # 'self' or 'snapcast'
-    external_switch:
-      enabled: true
-      url: https://webhook.site/your-webhook-id
-      payload:
-        source: fauxnos
 
-  # Internal source - Analog input
+  # Internal source - AirPlay via Snapcast
+  - id: airplay
+    label: AirPlay
+    type: internal
+    sink: snapsink
+    starting_volume: 50
+    volume_controller: snapcast
+
+  # Internal source - Analog input (only for devices with ADC hardware)
+  # Remove this section if your device doesn't have an analog input
   - id: analog
-    label: Analog Input
+    label: Analog In
     type: internal
     sink: analogsink
-    starting_volume: 30
+    starting_volume: 50
     volume_controller: self          # Use PA sink for volume control
-    external_switch:
-      enabled: true
-      url: https://webhook.site/your-webhook-id
-      payload:
-        source: fauxnos
-
-  # External source - Alexa (controlled downstream)
-  - id: alexa
-    label: Alexa
-    type: external
-    control_url: https://webhook.site/your-webhook-id
-    control_payload:
-      source: alexa
-
-  # External source - Vinyl (controlled downstream)
-  - id: vinyl
-    label: Vinyl
-    type: external
-    control_url: https://webhook.site/your-webhook-id
-    control_payload:
-      source: vinyl
 
 # Logging configuration
 logging:
@@ -59,3 +45,9 @@ logging:
 
 # State file (stores current source and volumes)
 state_file: ~/.config/fauxnos/client_state.json
+
+# MQTT configuration (for remote control from web UI and other clients)
+mqtt:
+  broker_host: fauxnos000.local
+  broker_port: 1883
+  enabled: true

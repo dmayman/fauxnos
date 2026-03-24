@@ -118,6 +118,7 @@ install_system_dependencies() {
         mosquitto-clients \
         avahi-daemon \
         avahi-utils \
+        shairport-sync \
         python3 \
         python3-pip \
         python3-yaml \

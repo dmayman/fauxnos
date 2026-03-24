@@ -92,7 +92,10 @@ class DeploymentManager:
             for dir_path in [go_librespot_dir, systemd_dir, scripts_dir]:
                 os.makedirs(dir_path, exist_ok=True)
 
-            # Generate go-librespot configs and services
+            shairport_dir = os.path.join(staging_dir, "shairport-sync")
+            os.makedirs(shairport_dir, exist_ok=True)
+
+            # Generate go-librespot and shairport-sync configs and services
             for client in clients:
                 # go-librespot config
                 config_content = self.config_manager.generate_go_librespot_config(client)
@@ -103,11 +106,23 @@ class DeploymentManager:
                 with open(config_file, 'w') as f:
                     f.write(config_content)
 
-                # Systemd service
+                # go-librespot systemd service
                 service_content = self.config_manager.generate_systemd_service(client)
                 service_file = os.path.join(systemd_dir, f"go-librespot-{client.id}.service")
                 with open(service_file, 'w') as f:
                     f.write(service_content)
+
+                # shairport-sync config
+                shairport_config = self.config_manager.generate_shairport_sync_config(client)
+                shairport_file = os.path.join(shairport_dir, f"{client.id}.conf")
+                with open(shairport_file, 'w') as f:
+                    f.write(shairport_config)
+
+                # shairport-sync systemd service
+                shairport_service = self.config_manager.generate_shairport_sync_service(client)
+                shairport_service_file = os.path.join(systemd_dir, f"shairport-sync-{client.id}.service")
+                with open(shairport_service_file, 'w') as f:
+                    f.write(shairport_service)
 
             # Generate FIFO setup service (once for all clients)
             if clients:  # Only if we have clients
@@ -221,6 +236,17 @@ class DeploymentManager:
                     shutil.copytree(client_dir, target_dir)
                     self.logger.info(f"Deployed go-librespot config for {client_dir_name}")
 
+            # Deploy shairport-sync configs
+            shairport_base = os.path.expanduser("~/.config/shairport-sync")
+            staging_shairport = os.path.join(staging_dir, "shairport-sync")
+            if os.path.exists(staging_shairport):
+                os.makedirs(shairport_base, exist_ok=True)
+                for filename in os.listdir(staging_shairport):
+                    src = os.path.join(staging_shairport, filename)
+                    dst = os.path.join(shairport_base, filename)
+                    shutil.copy2(src, dst)
+                    self.logger.info(f"Deployed shairport-sync config: {filename}")
+
             # Deploy systemd user services
             systemd_staging = os.path.join(staging_dir, "systemd")
             systemd_target = os.path.expanduser("~/.config/systemd/user")
@@ -280,6 +306,7 @@ class DeploymentManager:
             services_to_stop = ["snapserver.service", "fauxnos-fifo-setup.service"]
             for client in clients:
                 services_to_stop.append(f"go-librespot-{client.id}.service")
+                services_to_stop.append(f"shairport-sync-{client.id}.service")
 
             for service_name in services_to_stop:
                 try:
@@ -289,13 +316,14 @@ class DeploymentManager:
                 except Exception as e:
                     self.logger.warning(f"Failed to stop {service_name}: {e}")
 
-            # Disable system snapserver (if running)
-            try:
-                subprocess.run(["sudo", "systemctl", "stop", "snapserver"], check=False, capture_output=True)
-                subprocess.run(["sudo", "systemctl", "disable", "snapserver"], check=False, capture_output=True)
-                self.logger.info("Stopped and disabled system snapserver")
-            except Exception as e:
-                self.logger.warning(f"Could not disable system snapserver: {e}")
+            # Disable system snapserver and shairport-sync (we run per-client user services)
+            for sys_svc in ["snapserver", "shairport-sync"]:
+                try:
+                    subprocess.run(["sudo", "systemctl", "stop", sys_svc], check=False, capture_output=True)
+                    subprocess.run(["sudo", "systemctl", "disable", sys_svc], check=False, capture_output=True)
+                    self.logger.info(f"Stopped and disabled system {sys_svc}")
+                except Exception as e:
+                    self.logger.warning(f"Could not disable system {sys_svc}: {e}")
 
             # Enable and start FIFO setup service first
             if clients:  # Only if we have clients
@@ -326,10 +354,11 @@ class DeploymentManager:
                     self.logger.error(f"Failed to start/restart user snapserver.service: {e}")
                     return False
 
-            # Start and enable all go-librespot and snapclient services
+            # Start and enable all go-librespot, shairport-sync, and snapclient services
             for client in clients:
                 for service_name in [
                     f"go-librespot-{client.id}.service",
+                    f"shairport-sync-{client.id}.service",
                     f"snapclient-{client.id}.service",
                 ]:
                     try:
@@ -352,10 +381,11 @@ class DeploymentManager:
         status = {}
         clients = self.config_manager.list_clients()
 
-        # Check user services (go-librespot, FIFO setup, and snapserver)
+        # Check user services (go-librespot, shairport-sync, FIFO setup, and snapserver)
         user_services = ["snapserver.service", "fauxnos-fifo-setup.service"]
         for client in clients:
             user_services.append(f"go-librespot-{client.id}.service")
+            user_services.append(f"shairport-sync-{client.id}.service")
 
         for service_name in user_services:
             try:
