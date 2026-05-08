@@ -1,0 +1,88 @@
+#!/bin/bash
+# push-to-pi.sh — rsync the local fauxnos source tree onto a Pi for fast iteration.
+#
+# Usage:
+#   ./scripts/push-to-pi.sh                       # defaults to user@fauxnos000.local
+#   ./scripts/push-to-pi.sh fauxnos002.local      # override host
+#   PI_HOST=user@10.0.0.42 ./scripts/push-to-pi.sh
+#
+# After pushing, run install.sh on the Pi with FAUXNOS_LOCAL=1 so it skips
+# the GitHub download step and uses the freshly pushed files:
+#
+#   ssh user@fauxnos000.local 'FAUXNOS_LOCAL=1 ~/src/fauxnos-server/install.sh'
+
+set -euo pipefail
+
+# ─── Resolve target ───────────────────────────────────────────────────────────
+DEFAULT_USER="user"
+DEFAULT_HOST="fauxnos000.local"
+
+if [ -n "${1:-}" ]; then
+    target="$1"
+elif [ -n "${PI_HOST:-}" ]; then
+    target="$PI_HOST"
+else
+    target="${DEFAULT_USER}@${DEFAULT_HOST}"
+fi
+
+# Add `user@` if the caller passed only a hostname
+if [[ "$target" != *"@"* ]]; then
+    target="${DEFAULT_USER}@${target}"
+fi
+
+# ─── Locate the repo root (script may be invoked from anywhere) ───────────────
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repo_root=$(cd "$script_dir/.." && pwd)
+
+server_src="${repo_root}/pi/src/fauxnos-server/"
+client_src="${repo_root}/pi/src/fauxnos-client/"
+
+if [ ! -d "$server_src" ]; then
+    echo "ERROR: $server_src does not exist. Run from a fauxnos checkout." >&2
+    exit 1
+fi
+
+# ─── Common rsync options ─────────────────────────────────────────────────────
+# -a   archive (recurse, preserve perms/timestamps/symlinks)
+# -v   verbose (show files transferred)
+# -h   human-readable sizes
+# --delete  remove files on the remote that don't exist locally — keeps the
+#           Pi's tree in lockstep with our checkout. Safe because we only push
+#           into ~/src/fauxnos-{server,client}/ which we own.
+rsync_opts=(
+    -avh
+    --delete
+    --exclude='__pycache__/'
+    --exclude='*.pyc'
+    --exclude='*.pyo'
+    --exclude='.DS_Store'
+    --exclude='.git/'
+    --exclude='.venv/'
+    --exclude='venv/'
+    --exclude='node_modules/'
+    --exclude='*.log'
+    --exclude='*.bak'
+    --exclude='*.bak.*'
+)
+
+echo "→ Pushing to $target"
+echo
+
+# ─── Server tree ──────────────────────────────────────────────────────────────
+echo "═══ fauxnos-server ═══"
+ssh "$target" 'mkdir -p ~/src/fauxnos-server'
+rsync "${rsync_opts[@]}" "$server_src" "$target:~/src/fauxnos-server/"
+ssh "$target" 'chmod +x ~/src/fauxnos-server/install.sh ~/src/fauxnos-server/fauxnos-server.py 2>/dev/null || true'
+echo
+
+# ─── Client tree (server serves this to clients via /api/install/files) ──────
+if [ -d "$client_src" ]; then
+    echo "═══ fauxnos-client ═══"
+    ssh "$target" 'mkdir -p ~/src/fauxnos-client'
+    rsync "${rsync_opts[@]}" "$client_src" "$target:~/src/fauxnos-client/"
+    ssh "$target" 'chmod +x ~/src/fauxnos-client/install.sh ~/src/fauxnos-client/fauxnos_client.py 2>/dev/null || true'
+    echo
+fi
+
+echo "✓ Done. Next:"
+echo "    ssh $target 'FAUXNOS_LOCAL=1 ~/src/fauxnos-server/install.sh'"

@@ -157,12 +157,27 @@ _install_snapserver_from_github() {
         *)        log_error "Unknown arch: $arch"; return 1 ;;
     esac
 
-    local deb_file="snapserver_${SNAPCAST_TARGET_VERSION}-1_${deb_arch}.deb"
+    # Snapcast .deb assets are named like:
+    #   snapserver_0.31.0-1_arm64_bookworm.deb
+    #   snapserver_0.31.0-1_arm64_bullseye.deb
+    # Read the OS codename from /etc/os-release so we pick the matching asset.
+    local codename
+    codename=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
+    if [ -z "$codename" ]; then
+        log_error "Could not determine Debian codename from /etc/os-release"
+        return 1
+    fi
+
+    local deb_file="snapserver_${SNAPCAST_TARGET_VERSION}-1_${deb_arch}_${codename}.deb"
     local url="https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_TARGET_VERSION}/${deb_file}"
     local tmp_deb="/tmp/${deb_file}"
 
-    log "Downloading snapserver ${SNAPCAST_TARGET_VERSION} for ${deb_arch}..."
-    curl -fsSL "$url" -o "$tmp_deb"
+    log "Downloading snapserver ${SNAPCAST_TARGET_VERSION} for ${deb_arch}/${codename}..."
+    if ! curl -fsSL "$url" -o "$tmp_deb"; then
+        log_error "Download failed: $url"
+        log_error "Check that snapcast v${SNAPCAST_TARGET_VERSION} has a build for ${deb_arch}/${codename}."
+        return 1
+    fi
     sudo dpkg -i "$tmp_deb" || sudo apt-get install -f -y
     rm -f "$tmp_deb"
     log_success "snapserver ${SNAPCAST_TARGET_VERSION} installed"
@@ -222,6 +237,21 @@ install_go_librespot() {
 # ─── Step 5: Download server code ─────────────────────────────────────────────
 download_server_code() {
     log_section "Downloading Fauxnos Server Code"
+
+    # Local-development mode: skip the GitHub download and assume the caller
+    # has already pushed source files into $INSTALL_DIR (e.g. via rsync from
+    # a dev machine). Set FAUXNOS_LOCAL=1 to enable.
+    if [ "${FAUXNOS_LOCAL:-0}" = "1" ]; then
+        log "FAUXNOS_LOCAL=1 — skipping GitHub download, using files already at $INSTALL_DIR"
+        if [ ! -f "$INSTALL_DIR/fauxnos-server.py" ]; then
+            log_error "FAUXNOS_LOCAL=1 but $INSTALL_DIR/fauxnos-server.py is missing. Push the source tree first (scripts/push-to-pi.sh)."
+            return 1
+        fi
+        cd "$INSTALL_DIR"
+        chmod +x fauxnos-server.py 2>/dev/null || true
+        log_success "Using local files at $INSTALL_DIR"
+        return 0
+    fi
 
     mkdir -p "$(dirname "$INSTALL_DIR")"
 
@@ -347,6 +377,15 @@ configure_system() {
     # Disable system snapserver (we run it as user service)
     sudo systemctl stop snapserver 2>/dev/null || true
     sudo systemctl disable snapserver 2>/dev/null || true
+
+    # snapserver's apt postinst creates /tmp/snapfifo as a named pipe (its
+    # default source). Our user-mode setup-fifo.sh wants /tmp/snapfifo to be a
+    # *directory* and can't `rm` a non-user-owned file in /tmp (sticky bit).
+    # Clean it up here while we still have sudo.
+    if [ -e /tmp/snapfifo ] && [ ! -d /tmp/snapfifo ]; then
+        sudo rm -f /tmp/snapfifo
+        log "Removed leftover /tmp/snapfifo from snapserver default config"
+    fi
 
     log_success "System configuration completed"
 }
