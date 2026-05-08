@@ -374,6 +374,30 @@ configure_system() {
     sudo systemctl enable mosquitto
     sudo systemctl start mosquitto || true
 
+    # Add a mosquitto WebSocket listener on port 9001. The web UI's mqtt.js
+    # client connects via ws://<host>:9001 for real-time volume/mode updates.
+    # Without this, status/clients/+/volume MQTT messages reach the broker
+    # but the browser cannot subscribe, so the UI's volume slider doesn't
+    # follow Spotify-side changes.
+    if [ ! -f /etc/mosquitto/conf.d/websockets.conf ]; then
+        log "Adding mosquitto WebSocket listener on port 9001..."
+        sudo tee /etc/mosquitto/conf.d/websockets.conf > /dev/null <<'MOSQ_WS'
+# Web UI connects via mqtt.js over WebSocket. Without this listener the
+# browser cannot subscribe to status/clients/+/* and real-time volume
+# sync between Spotify and the UI does not work.
+listener 9001
+protocol websockets
+allow_anonymous true
+
+# Keep the standard TCP listener too (for fauxnos_client / mosquitto_sub).
+listener 1883
+protocol mqtt
+allow_anonymous true
+MOSQ_WS
+        sudo systemctl restart mosquitto
+        log_success "Mosquitto WebSocket listener configured on port 9001"
+    fi
+
     # Disable system snapserver and snapclient (we run them as user services
     # with our own configs and --hostID so they integrate with the rest of
     # the fauxnos pipeline). The apt postinsts auto-enable both system units;
