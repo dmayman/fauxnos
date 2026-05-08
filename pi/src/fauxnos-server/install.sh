@@ -674,7 +674,8 @@ SERVICE
     type: internal
     sink: analogsink
     starting_volume: 50
-    volume_controller: self"
+    volume_controller: self
+    pa_calibration: 100"
     fi
 
     cat > "$HOME/.config/fauxnos/client_config.yaml" <<CLIENTCFG
@@ -696,13 +697,15 @@ sources:
     sink: snapsink
     starting_volume: 50
     volume_controller: snapcast
+    pa_calibration: 50           # snap loopback ceiling — Spotify is loud out of the box
 
   - id: airplay
     label: AirPlay
     type: internal
     sink: snapsink
     starting_volume: 50
-    volume_controller: snapcast$analog_section
+    volume_controller: snapcast
+    pa_calibration: 50           # shares snapsink loopback with Spotify$analog_section
 
 logging:
   file: ~/logs/fauxnos-client.log

@@ -7,7 +7,7 @@ const BUILTIN_DEFS = [
 ]
 const ANALOG_DEF = { id: 'analog', label: 'Analog In', vc: 'self' }
 
-export default function SourcesPanel({ clientId, clientName, onClose }) {
+export default function SourcesPanel({ clientId, clientName, mqtt, onClose }) {
   const [sources, setSources] = useState([])
   const [hasAdc, setHasAdc] = useState(false)
   const [loading, setLoading] = useState(true)
@@ -55,7 +55,13 @@ export default function SourcesPanel({ clientId, clientName, onClose }) {
         <>
           <div className="source-section-header">Built-in Sources</div>
           {builtIns.map(s => (
-            <BuiltInSourceRow key={s.id} source={s} clientId={clientId} onUpdate={loadSources} />
+            <BuiltInSourceRow
+              key={s.id}
+              source={s}
+              clientId={clientId}
+              mqtt={mqtt}
+              onUpdate={loadSources}
+            />
           ))}
 
           <div className="source-section-header" style={{ marginTop: 16 }}>Custom Sources</div>
@@ -73,7 +79,7 @@ export default function SourcesPanel({ clientId, clientName, onClose }) {
   )
 }
 
-function BuiltInSourceRow({ source, clientId, onUpdate }) {
+function BuiltInSourceRow({ source, clientId, mqtt, onUpdate }) {
   const [expanded, setExpanded] = useState(false)
   const ext = source.external_switch || {}
   const [enabled, setEnabled] = useState(ext.enabled || false)
@@ -86,6 +92,17 @@ function BuiltInSourceRow({ source, clientId, onUpdate }) {
   const [saved, setSaved] = useState(false)
 
   const vc = source.volume_controller === 'self' ? 'self' : 'snapcast'
+
+  // Calibration: live value comes from mqtt.calibrations[clientId][source.id].
+  // Falls back to 100 (no attenuation) if we haven't received hello yet.
+  const calLive = mqtt?.calibrations?.[clientId]?.[source.id]
+  const calibration = (typeof calLive === 'number') ? calLive : 100
+  const handleCalibrationChange = (e) => {
+    const v = parseInt(e.target.value, 10)
+    if (Number.isFinite(v) && mqtt?.publishCalibration) {
+      mqtt.publishCalibration(clientId, source.id, v)
+    }
+  }
 
   const handleSave = async () => {
     setSaving(true)
@@ -129,6 +146,34 @@ function BuiltInSourceRow({ source, clientId, onUpdate }) {
       </div>
       {expanded && (
         <div className="source-ext-form">
+          {/* Per-source PA loopback calibration: a fixed pre-amp ceiling.
+              Lets you normalize across sources without changing the user
+              volume slider's range. See docs/VOLUME.md.
+
+              Sources sharing a sink (Spotify+AirPlay both target snapsink)
+              share the underlying loopback, so changing one updates both. */}
+          <div className="source-calibration" style={{ marginBottom: 14 }}>
+            <label style={{ display: 'block', marginBottom: 4 }}>
+              <strong>Calibration</strong>{' '}
+              <span style={{ opacity: 0.65 }}>
+                (max output for this source: {calibration}%)
+              </span>
+            </label>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              step={1}
+              value={calibration}
+              onChange={handleCalibrationChange}
+              style={{ width: '100%' }}
+            />
+            <p style={{ fontSize: 12, opacity: 0.6, margin: '4px 0 0 0' }}>
+              Tune so this source's loudness at 100% volume matches your
+              other sources. Spotify often comes in hot; analog input may be
+              quiet. Sources sharing a sink share calibration.
+            </p>
+          </div>
           <label className="source-ext-toggle">
             <input
               type="checkbox"

@@ -42,6 +42,13 @@ class SourceConfig:
     volume_controller: str = 'self'  # 'self' or 'snapcast'
     external_switch: Optional[ExternalSwitchConfig] = None
 
+    # PulseAudio loopback calibration (0-100). Applied to the
+    # <sink>.monitor → alsa_output loopback as a fixed pre-amp ceiling.
+    # Lets the user normalize different sources (Spotify-via-snapcast vs
+    # Analog vs AirPlay) without violating the single-stage user-control
+    # rule. See docs/VOLUME.md. Default 100 = no attenuation.
+    pa_calibration: int = 100
+
     # External source fields
     control_url: Optional[str] = None
     control_payload: Optional[Dict[str, Any]] = None
@@ -166,6 +173,7 @@ class ConfigManager:
                 sink=source_data.get('sink'),
                 volume_controller=source_data.get('volume_controller', 'self'),
                 external_switch=external_switch,
+                pa_calibration=int(source_data.get('pa_calibration', 100)),
                 control_url=source_data.get('control_url'),
                 control_payload=source_data.get('control_payload')
             )

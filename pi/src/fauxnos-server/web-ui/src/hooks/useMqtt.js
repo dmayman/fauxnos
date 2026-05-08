@@ -8,12 +8,17 @@ export function useMqtt() {
   const [connected, setConnected] = useState(false)
   const [volumes, setVolumes] = useState({})
   const [modes, setModes] = useState({})
+  // calibrations: { [deviceId]: { [sourceId]: 0..100 } }
+  const [calibrations, setCalibrations] = useState({})
   const clientRef = useRef(null)
 
   // Track last publish time per client to suppress echoes
   const lastPublishRef = useRef({})
   // Throttle state per client: { timerId, pendingValue }
   const throttleRef = useRef({})
+  // Per-(client,source) tracking for calibration echo suppression / throttling
+  const lastCalPublishRef = useRef({})  // key: `${cid}/${sid}` → timestamp
+  const calThrottleRef = useRef({})     // key: `${cid}/${sid}` → { timerId, pendingValue }
 
   useEffect(() => {
     const wsUrl = `ws://${location.hostname}:9001`
@@ -25,6 +30,11 @@ export function useMqtt() {
       client.subscribe('status/clients/+/volume')
       client.subscribe('status/clients/+/mode')
       client.subscribe('status/clients/+/hello')
+      // Per-source calibration: 5-part topic with source_id at the tail
+      client.subscribe('status/clients/+/calibration/+')
+      // Ask every connected client to broadcast hello so we get
+      // initial state (including pa_calibrations) without waiting.
+      client.publish('get/clients/all/status', '')
     })
     client.on('close', () => setConnected(false))
     client.on('message', (topic, msg) => {
@@ -41,6 +51,29 @@ export function useMqtt() {
         setVolumes(prev => ({ ...prev, [deviceId]: parseInt(msg.toString(), 10) }))
       } else if (action === 'mode') {
         setModes(prev => ({ ...prev, [deviceId]: msg.toString() }))
+      } else if (action === 'calibration' && parts.length >= 5) {
+        const sourceId = parts[4]
+        const key = `${deviceId}/${sourceId}`
+        const lastPub = lastCalPublishRef.current[key] || 0
+        if (Date.now() - lastPub < ECHO_SUPPRESS_MS) return
+        const value = parseInt(msg.toString(), 10)
+        if (Number.isFinite(value)) {
+          setCalibrations(prev => ({
+            ...prev,
+            [deviceId]: { ...(prev[deviceId] || {}), [sourceId]: value },
+          }))
+        }
+      } else if (action === 'hello') {
+        // Hello may include pa_calibrations: {source_id: value, ...}
+        try {
+          const payload = JSON.parse(msg.toString())
+          if (payload && payload.pa_calibrations) {
+            setCalibrations(prev => ({
+              ...prev,
+              [deviceId]: { ...(prev[deviceId] || {}), ...payload.pa_calibrations },
+            }))
+          }
+        } catch (e) { /* ignore */ }
       }
     })
 
@@ -84,5 +117,57 @@ export function useMqtt() {
     setModes(prev => ({ ...prev, [clientId]: mode }))
   }, [])
 
-  return { connected, volumes, modes, publishVolume, setMode }
+  /**
+   * Publish a calibration change for a given (client, source).
+   * Optimistic update + throttled MQTT publish, mirroring publishVolume.
+   */
+  const publishCalibration = useCallback((clientId, sourceId, value) => {
+    // Optimistic
+    setCalibrations(prev => ({
+      ...prev,
+      [clientId]: { ...(prev[clientId] || {}), [sourceId]: value },
+    }))
+
+    const key = `${clientId}/${sourceId}`
+    const now = Date.now()
+    lastCalPublishRef.current[key] = now
+
+    const state = calThrottleRef.current[key]
+    if (state?.timerId) {
+      state.pendingValue = value
+      return
+    }
+
+    if (clientRef.current?.connected) {
+      clientRef.current.publish(
+        `set/clients/${clientId}/calibration/${sourceId}`,
+        String(value)
+      )
+    }
+
+    calThrottleRef.current[key] = {
+      pendingValue: null,
+      timerId: setTimeout(() => {
+        const s = calThrottleRef.current[key]
+        if (s?.pendingValue != null && clientRef.current?.connected) {
+          clientRef.current.publish(
+            `set/clients/${clientId}/calibration/${sourceId}`,
+            String(s.pendingValue)
+          )
+          lastCalPublishRef.current[key] = Date.now()
+        }
+        calThrottleRef.current[key] = null
+      }, THROTTLE_MS),
+    }
+  }, [])
+
+  return {
+    connected,
+    volumes,
+    modes,
+    calibrations,
+    publishVolume,
+    setMode,
+    publishCalibration,
+  }
 }

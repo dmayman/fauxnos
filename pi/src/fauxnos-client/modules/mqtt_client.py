@@ -38,6 +38,8 @@ class MQTTClient:
     def __init__(self, config_manager: ConfigManager,
                  volume_callback: Callable[[int], bool],
                  mode_callback: Callable[[str], bool],
+                 calibration_callback: Optional[Callable[[str, int], bool]] = None,
+                 calibration_getter: Optional[Callable[[str], int]] = None,
                  broker_host: Optional[str] = None,
                  broker_port: int = 1883):
         """
@@ -47,6 +49,9 @@ class MQTTClient:
             config_manager: ConfigManager instance with device/source info
             volume_callback: Called on volume command → SourceManager.set_volume()
             mode_callback: Called on mode command → SourceManager.switch_source()
+            calibration_callback: (source_id, value) → SourceManager.set_calibration().
+                Called when 'set/clients/<id>/calibration/<source>' arrives. Optional.
+            calibration_getter: (source_id) → int. Used to populate hello/status.
             broker_host: MQTT broker hostname (defaults to server_host from config)
             broker_port: MQTT broker port
         """
@@ -62,6 +67,8 @@ class MQTTClient:
         # Callbacks for handling commands
         self.volume_callback = volume_callback
         self.mode_callback = mode_callback
+        self.calibration_callback = calibration_callback
+        self.calibration_getter = calibration_getter
 
         # MQTT client setup
         self.client = mqtt.Client(client_id=f"fauxnos-{self.device_id}")
@@ -104,9 +111,12 @@ class MQTTClient:
         topics = [
             f"set/clients/{self.device_id}/volume",
             f"set/clients/{self.device_id}/mode",
+            # Calibration is per-source (5-part topic), so use a + wildcard.
+            f"set/clients/{self.device_id}/calibration/+",
             f"get/clients/{self.device_id}/volume",
             f"get/clients/{self.device_id}/status",
             f"get/clients/{self.device_id}/activity",
+            f"get/clients/{self.device_id}/calibration",
             "get/clients/all/status",
         ]
         for topic in topics:
@@ -123,14 +133,23 @@ class MQTTClient:
             self._send_hello()
             return
 
-        # Parse topic: {command_type}/clients/{device_id}/{action}
+        # Parse topic: {command_type}/clients/{device_id}/{action}[/{sub_action}]
         parts = topic.split('/')
         if len(parts) >= 4:
-            command_type, _, device_id, action = parts[0], parts[1], parts[2], parts[3]
+            command_type = parts[0]
+            device_id = parts[2]
+            action = parts[3]
+            sub_action = parts[4] if len(parts) >= 5 else None
             if device_id == self.device_id:
-                self._handle_command(command_type, action, payload)
+                self._handle_command(command_type, action, payload, sub_action)
 
-    def _handle_command(self, command_type: str, action: str, payload: str):
+    def _handle_command(
+        self,
+        command_type: str,
+        action: str,
+        payload: str,
+        sub_action: Optional[str] = None,
+    ):
         try:
             if command_type == "set":
                 if action == "volume":
@@ -150,6 +169,30 @@ class MQTTClient:
                     else:
                         logger.error(f"Invalid mode: {payload}. Available: {self.sources_list}")
 
+                elif action == "calibration" and sub_action:
+                    # set/clients/<id>/calibration/<source_id> payload: "75"
+                    source_id = sub_action
+                    if self.calibration_callback is None:
+                        logger.warning(
+                            f"MQTT calibration command for {source_id} but no callback wired"
+                        )
+                    else:
+                        try:
+                            value = int(payload)
+                        except ValueError:
+                            logger.error(f"Invalid calibration value: {payload}")
+                            return
+                        if not (0 <= value <= 100):
+                            logger.error(f"Calibration value out of range: {value}")
+                            return
+                        logger.info(f"MQTT calibration command: {source_id} → {value}%")
+                        if self.calibration_callback(source_id, value):
+                            # Echo current value(s) back so the UI can update.
+                            # The setter may apply to multiple sources (sources
+                            # sharing a sink share calibration), so re-publish
+                            # everything we know.
+                            self.publish_calibrations()
+
             elif command_type == "get":
                 if action == "volume":
                     self.publish_volume()
@@ -158,6 +201,8 @@ class MQTTClient:
                     self.publish_mode()
                 elif action == "activity":
                     self.publish_activity()
+                elif action == "calibration":
+                    self.publish_calibrations()
 
         except ValueError as e:
             logger.error(f"Error parsing command payload: {e}")
@@ -201,11 +246,35 @@ class MQTTClient:
         hello_payload = {
             "id": self.device_id,
             "name": self.display_name,
-            "sources": self.sources_list
+            "sources": self.sources_list,
+            "pa_calibrations": self._collect_calibrations(),
         }
         topic = f"status/clients/{self.device_id}/hello"
         self.client.publish(topic, json.dumps(hello_payload))
         logger.debug(f"Sent hello: {self.display_name}")
+
+    def _collect_calibrations(self) -> dict:
+        """Build a {source_id: calibration} map for hello + status payloads."""
+        if self.calibration_getter is None:
+            return {}
+        out = {}
+        for source_id in self.sources_list:
+            try:
+                out[source_id] = int(self.calibration_getter(source_id))
+            except Exception:
+                pass
+        return out
+
+    def publish_calibrations(self):
+        """Publish status/clients/<id>/calibration/<source_id> for every source."""
+        if not self.connected:
+            return
+        cals = self._collect_calibrations()
+        for source_id, value in cals.items():
+            self.client.publish(
+                f"status/clients/{self.device_id}/calibration/{source_id}",
+                str(value),
+            )
 
     def update_mode(self, mode: str):
         """Update current mode and publish"""

@@ -49,6 +49,8 @@ class FauxnosClient:
             config_manager=self.config_manager,
             volume_callback=self.source_manager.set_volume,
             mode_callback=self.source_manager.switch_source,
+            calibration_callback=self.source_manager.set_calibration,
+            calibration_getter=self.source_manager.get_calibration,
         )
 
         # Flag for graceful shutdown

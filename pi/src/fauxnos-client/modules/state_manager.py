@@ -29,21 +29,35 @@ class StateManager:
         # Create parent directory if it doesn't exist
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
-    def save_state(self, current_source: Optional[str], source_volumes: Dict[str, int]) -> bool:
+    def save_state(
+        self,
+        current_source: Optional[str],
+        source_volumes: Dict[str, int],
+        pa_calibrations: Optional[Dict[str, int]] = None,
+    ) -> bool:
         """
         Save current state to file
 
         Args:
             current_source: ID of currently active source (or None)
             source_volumes: Dict mapping source_id → volume level
+            pa_calibrations: Dict mapping source_id → PA loopback
+                calibration percent (override of YAML's pa_calibration).
+                Optional — if None, existing on-disk value is preserved.
 
         Returns:
             True if successful, False otherwise
         """
         try:
+            # Preserve existing pa_calibrations if caller didn't pass one.
+            # Otherwise we'd wipe them on every save_state(current_source, ...) call.
+            if pa_calibrations is None:
+                pa_calibrations = self._load_raw().get('pa_calibrations', {})
+
             state = {
                 'current_source': current_source,
-                'source_volumes': source_volumes
+                'source_volumes': source_volumes,
+                'pa_calibrations': pa_calibrations,
             }
 
             # Write to temporary file first (atomic write)
@@ -72,6 +86,45 @@ class StateManager:
                 pass
             return False
 
+    def _load_raw(self) -> Dict:
+        """Load raw state dict (no validation, no defaults). Used to merge new fields."""
+        if not self.state_file.exists():
+            return {}
+        try:
+            with open(self.state_file, 'r') as f:
+                return json.load(f) or {}
+        except Exception:
+            return {}
+
+    def get_pa_calibration(self, source_id: str) -> Optional[int]:
+        """
+        Get persisted PA loopback calibration for a source. Returns None
+        if not set in state (caller should fall back to YAML default).
+        """
+        state = self.load_state()
+        cals = state.get('pa_calibrations', {}) or {}
+        v = cals.get(source_id)
+        if v is None:
+            return None
+        try:
+            return max(0, min(100, int(v)))
+        except (TypeError, ValueError):
+            return None
+
+    def set_pa_calibration(self, source_id: str, value: int) -> bool:
+        """
+        Persist a single source's PA loopback calibration. Other state
+        fields are preserved.
+        """
+        state = self.load_state()
+        cals = dict(state.get('pa_calibrations', {}) or {})
+        cals[source_id] = max(0, min(100, int(value)))
+        return self.save_state(
+            current_source=state.get('current_source'),
+            source_volumes=state.get('source_volumes', {}),
+            pa_calibrations=cals,
+        )
+
     def load_state(self) -> Dict:
         """
         Load state from file
@@ -83,7 +136,8 @@ class StateManager:
         # Default empty state
         empty_state = {
             'current_source': None,
-            'source_volumes': {}
+            'source_volumes': {},
+            'pa_calibrations': {},
         }
 
         if not self.state_file.exists():
@@ -98,6 +152,9 @@ class StateManager:
             if 'current_source' not in state or 'source_volumes' not in state:
                 self.logger.warning("State file has invalid structure, using empty state")
                 return empty_state
+
+            # pa_calibrations was added later — fill in if missing
+            state.setdefault('pa_calibrations', {})
 
             self.logger.info(f"State loaded: source={state['current_source']}")
             return state

@@ -12,6 +12,12 @@ device:
 server_host: fauxnos000.local
 
 # Audio sources
+#
+# pa_calibration (0-100, default 100): a fixed pre-amp ceiling on the
+# PA loopback for this source's sink. Used to normalize loudness across
+# sources that have different inherent gain (Spotify often comes hot,
+# analog input from a turntable might be quiet, etc.). Sources sharing
+# a sink share the calibration. See docs/VOLUME.md.
 sources:
   # Internal source - Spotify via Snapcast
   - id: spotify
@@ -20,6 +26,7 @@ sources:
     sink: snapsink                   # PulseAudio sink name
     starting_volume: 50              # Default volume (0-100)
     volume_controller: snapcast      # 'self' or 'snapcast'
+    pa_calibration: 100              # Loopback ceiling 0-100; tune in UI later
 
   # Internal source - AirPlay via Snapcast
   - id: airplay
@@ -28,6 +35,7 @@ sources:
     sink: snapsink
     starting_volume: 50
     volume_controller: snapcast
+    pa_calibration: 100              # Shares snapsink loopback with Spotify
 
   # Internal source - Analog input (only for devices with ADC hardware)
   # Remove this section if your device doesn't have an analog input
@@ -37,6 +45,7 @@ sources:
     sink: analogsink
     starting_volume: 50
     volume_controller: self          # Use PA sink for volume control
+    pa_calibration: 100
 
 # Logging configuration
 logging:

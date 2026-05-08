@@ -198,6 +198,73 @@ class PulseAudioController:
             self.logger.error(f"Error checking if {sink_name} exists: {e}")
             return False
 
+    def set_loopback_calibration(self, media_role: str, volume: int) -> bool:
+        """
+        Set the volume of a module-loopback sink-input by its media.role.
+
+        We use module-loopback sink-inputs as fixed pre-amp ceilings between
+        per-source virtual sinks (snapsink, analogsink, …) and alsa_output.
+        Each loopback in default.pa is given a unique sink_input_properties
+        media.role (e.g. 'fauxnos-snapsink-out'); this method finds the
+        sink-input matching that role and sets its volume.
+
+        Args:
+            media_role: media.role of the loopback sink-input
+                (e.g. 'fauxnos-snapsink-out', 'fauxnos-analogsink-out')
+            volume: 0-100 percent
+
+        Returns:
+            True if a matching sink-input was found and the volume was set.
+        """
+        if not (0 <= volume <= 100):
+            self.logger.error(f"set_loopback_calibration: volume {volume} out of range")
+            return False
+
+        try:
+            # Find the sink-input id by scanning `pactl list sink-inputs`.
+            # sink-input IDs are not stable across reboots, so we always
+            # look up by media.role just before setting.
+            result = subprocess.run(
+                ["pactl", "list", "sink-inputs"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode != 0:
+                self.logger.error(f"pactl list sink-inputs failed: {result.stderr}")
+                return False
+
+            # Walk the output: the role line, when found, belongs to the
+            # most recently seen "Sink Input #N" header.
+            current_id = None
+            target_id = None
+            role_line = f'media.role = "{media_role}"'
+            for raw in result.stdout.splitlines():
+                line = raw.strip()
+                if line.startswith("Sink Input #"):
+                    current_id = line.split("#", 1)[1].strip()
+                elif role_line in line and current_id is not None:
+                    target_id = current_id
+                    break
+
+            if target_id is None:
+                self.logger.warning(
+                    f"set_loopback_calibration: no sink-input found with media.role={media_role}"
+                )
+                return False
+
+            cmd = ["pactl", "set-sink-input-volume", target_id, f"{volume}%"]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if r.returncode != 0:
+                self.logger.error(f"set-sink-input-volume failed: {r.stderr}")
+                return False
+
+            self.logger.info(
+                f"Calibration set: media.role={media_role} → {volume}% (sink-input #{target_id})"
+            )
+            return True
+        except Exception as e:
+            self.logger.error(f"set_loopback_calibration error: {e}")
+            return False
+
     def list_sinks(self) -> list:
         """
         List all available PulseAudio sinks

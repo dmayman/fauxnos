@@ -241,10 +241,90 @@ class SourceManager:
         """Get all source volumes"""
         return self.source_volumes.copy()
 
+    @staticmethod
+    def loopback_role_for_sink(sink_name: str) -> str:
+        """
+        Convention: each <sink>.monitor → alsa_output loopback gets a
+        media.role of f'fauxnos-{sink_name}-out' in default.pa. This is
+        what we calibrate. Multiple sources may share a sink (e.g.
+        spotify and airplay both target snapsink), so they share the
+        same calibration loopback.
+        """
+        return f"fauxnos-{sink_name}-out"
+
+    def apply_calibrations(self):
+        """
+        Apply per-source PA loopback calibration for every internal source.
+        Idempotent — safe to call on startup and on every change. State
+        overrides take priority over the YAML default.
+        """
+        # Build a sink -> calibration map. If multiple sources target the
+        # same sink, the LAST one wins (they share the loopback anyway).
+        sink_calibrations: Dict[str, int] = {}
+        for source_id, source in self.config_manager.get_internal_sources().items():
+            if not source.sink:
+                continue
+            cal = self.state_manager.get_pa_calibration(source_id)
+            if cal is None:
+                cal = source.pa_calibration
+            sink_calibrations[source.sink] = cal
+
+        for sink_name, cal in sink_calibrations.items():
+            role = self.loopback_role_for_sink(sink_name)
+            ok = self.pulse.set_loopback_calibration(role, cal)
+            if ok:
+                self.logger.info(
+                    f"Applied calibration for sink={sink_name} (role={role}) → {cal}%"
+                )
+            else:
+                self.logger.warning(
+                    f"Could not apply calibration for sink={sink_name} (role={role}) — "
+                    f"loopback not loaded? PA may still be starting."
+                )
+
+    def set_calibration(self, source_id: str, value: int) -> bool:
+        """
+        Set the PA loopback calibration for a source. Persists the value
+        to state, applies via PA, and returns True on success.
+        Affects all sources that share the same sink (since they share
+        the underlying loopback).
+        """
+        if not (0 <= value <= 100):
+            self.logger.error(f"set_calibration: value {value} out of range 0-100")
+            return False
+
+        source = self.config_manager.get_source(source_id)
+        if not source or source.type != 'internal' or not source.sink:
+            self.logger.warning(f"set_calibration: source {source_id} not internal or no sink")
+            return False
+
+        role = self.loopback_role_for_sink(source.sink)
+        if not self.pulse.set_loopback_calibration(role, value):
+            return False
+
+        # Persist for THIS source plus every other source sharing the sink
+        for sid, src in self.config_manager.get_internal_sources().items():
+            if src.sink == source.sink:
+                self.state_manager.set_pa_calibration(sid, value)
+
+        self.logger.info(f"Calibration saved: {source_id} (sink={source.sink}) → {value}%")
+        return True
+
+    def get_calibration(self, source_id: str) -> int:
+        """Return effective calibration: state override else YAML default."""
+        source = self.config_manager.get_source(source_id)
+        if not source:
+            return 100
+        cal = self.state_manager.get_pa_calibration(source_id)
+        if cal is None:
+            cal = source.pa_calibration
+        return cal
+
     def initialize_audio_system(self):
         """
         Initialize audio system on startup:
         - Mute all sinks
+        - Apply per-source PA loopback calibrations (fixed pre-amp ceilings)
         - Load previous state or switch to first source
         """
         self.logger.info("Initializing audio system...")
@@ -252,6 +332,11 @@ class SourceManager:
         # Mute all internal sources
         for source_id, source in self.config_manager.get_internal_sources().items():
             self.pulse.mute_sink(source.sink)
+
+        # Apply per-source PA loopback calibration ceilings (e.g. Spotify cap
+        # at 50%, Analog at 100%) so volume normalization is in place before
+        # we restore any source/volume state.
+        self.apply_calibrations()
 
         # Try to restore previous source or use first source
         saved_source = self.state_manager.get_current_source()

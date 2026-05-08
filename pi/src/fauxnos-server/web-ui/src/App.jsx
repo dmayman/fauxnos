@@ -122,6 +122,7 @@ export default function App() {
           <SourcesPanel
             clientId={sourcesPanel.clientId}
             clientName={sourcesPanel.clientName}
+            mqtt={mqtt}
             onClose={closeSources}
           />
         </>
