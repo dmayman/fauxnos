@@ -307,6 +307,17 @@ download_server_code() {
     mkdir -p modules web tests configs/pulseaudio configs/avahi
 
     for file in "${files[@]}" "${module_files[@]}" "${web_files[@]}" "${test_files[@]}" "${config_files[@]}"; do
+        # Don't blow away live deployment state on re-runs. server_config.json
+        # is mutable state owned by the Pi (clients, MACs, ports). The starter
+        # in the repo has clients:[] — downloading it on every install run
+        # wipes the registered clients. Skip if a valid one already exists.
+        if [ "$file" = "server_config.json" ] && \
+           [ -f "$file" ] && \
+           python3 -c "import json,sys; d=json.load(open('$file')); sys.exit(0 if 'clients' in d else 1)" 2>/dev/null; then
+            log "Preserving existing server_config.json (has $(python3 -c "import json; print(len(json.load(open('$file'))['clients']))") clients)"
+            continue
+        fi
+
         local url="${REPO_URL}/pi/src/fauxnos-server/$file"
         local dir
         dir=$(dirname "$file")
