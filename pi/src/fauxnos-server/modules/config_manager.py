@@ -334,7 +334,17 @@ pipe = {{
         return config
 
     def generate_snapserver_sources(self) -> List[str]:
-        """Generate snapserver source configurations (Spotify + AirPlay per client)"""
+        """Generate snapserver source configurations (Spotify + AirPlay per client)
+
+        Uses mode=create on the pipe sources, NOT mode=read. With mode=read
+        snapserver opens the FIFO O_RDONLY; if no writer is connected at open
+        time the first read returns EOF and snapcast's AsioStream treats that
+        as fatal, stops reading, and never reopens. With no reader-end held
+        open, when go-librespot later tries to open the FIFO for writing it
+        gets ENXIO ("no such device or address"), and Spotify playback hangs
+        before the playhead ever moves. mode=create has snapserver open the
+        FIFO O_RDWR so there's always a reader attached and EOF can't happen.
+        """
         fifo_base = self.server_config['server']['paths']['fifo_base']
         sources = []
 
@@ -344,12 +354,12 @@ pipe = {{
             # Spotify source
             spotify_fifo = f"{fifo_base}/spotify_{client_id}"
             spotify_name = f"source_{client_id}_spotify"
-            sources.append(f"source = pipe://{spotify_fifo}?name={spotify_name}&mode=read")
+            sources.append(f"source = pipe://{spotify_fifo}?name={spotify_name}&mode=create")
 
             # AirPlay source
             airplay_fifo = f"{fifo_base}/airplay_{client_id}"
             airplay_name = f"source_{client_id}_airplay"
-            sources.append(f"source = pipe://{airplay_fifo}?name={airplay_name}&mode=read")
+            sources.append(f"source = pipe://{airplay_fifo}?name={airplay_name}&mode=create")
 
         return sources
 
@@ -420,16 +430,85 @@ filter = *:info
         """Generate systemd service for user snapserver"""
         config_file = os.path.expanduser("~/.config/snapcast/snapserver.conf")
 
+        # Note: depend on fauxnos-fifo-pinner.service. Without that pinner,
+        # snapcast 0.31's PipeStream opens a writerless FIFO, hits EOF, and
+        # silently abandons the source — Spotify then fails with ENXIO when
+        # go-librespot tries to write. The pinner keeps a no-op writer on
+        # each FIFO so snapserver always sees a writer at startup.
         service_content = f"""[Unit]
 Description=Snapcast Server (User)
-After=network.target fauxnos-fifo-setup.service
-Requires=fauxnos-fifo-setup.service
+After=network.target fauxnos-fifo-setup.service fauxnos-fifo-pinner.service
+Requires=fauxnos-fifo-setup.service fauxnos-fifo-pinner.service
 
 [Service]
 Type=simple
 ExecStart=/usr/bin/snapserver --config {config_file}
 Restart=always
 RestartSec=3
+
+[Install]
+WantedBy=default.target
+"""
+        return service_content.strip()
+
+    def generate_fifo_pinner_script(self) -> str:
+        """Generate the FIFO writer-pinner script.
+
+        Why this exists: snapcast 0.31's PipeStream opens FIFOs O_RDONLY. If
+        no writer is attached at the moment of open, the kernel's first read
+        returns EOF, asio reports it as fatal, and snapserver permanently
+        abandons that FIFO source. With no reader, when go-librespot or
+        shairport later try to open the FIFO for writing they get ENXIO
+        ("no such device or address") and audio fails silently. This script
+        pins a no-op writer (a backgrounded `sleep infinity` holding the FD
+        open) on each FIFO so snapserver always finds a writer at startup
+        and EOF can never happen.
+        """
+        fifo_base = self.server_config['server']['paths']['fifo_base']
+
+        lines = [
+            "#!/bin/bash",
+            "# FIFO writer-pinner — keeps a no-op writer attached to every fauxnos FIFO.",
+            "# See modules/config_manager.py::generate_fifo_pinner_script for the full",
+            "# rationale. Short version: snapcast 0.31's PipeStream gives up on",
+            "# writerless FIFOs at startup, so we always need at least one writer pinned.",
+            "set -euo pipefail",
+            "",
+            "FIFOS=(",
+        ]
+        for client in self.server_config['clients']:
+            client_id = client['id']
+            lines.append(f'  "{fifo_base}/spotify_{client_id}"')
+            lines.append(f'  "{fifo_base}/airplay_{client_id}"')
+        lines.extend([
+            ")",
+            "",
+            "# Open each FIFO O_WRONLY on a numbered FD on this bash process,",
+            "# starting at fd 3. Then exec into `sleep infinity` so the FDs",
+            "# stay open for the lifetime of the (long-lived) sleep process.",
+            "fd=3",
+            'for f in "${FIFOS[@]}"; do',
+            '  eval "exec ${fd}>\\"$f\\""',
+            "  fd=$((fd+1))",
+            "done",
+            "",
+            "exec sleep infinity",
+        ])
+        return "\n".join(lines)
+
+    def generate_fifo_pinner_service(self) -> str:
+        """Generate systemd user service for the FIFO pinner."""
+        scripts_dir = os.path.expanduser("~/scripts")
+        service_content = f"""[Unit]
+Description=Fauxnos FIFO writer pinner (keeps a no-op writer on each snapcast FIFO so snapserver doesn't EOF on startup)
+After=fauxnos-fifo-setup.service
+Requires=fauxnos-fifo-setup.service
+
+[Service]
+Type=simple
+ExecStart={scripts_dir}/fifo-pinner.sh
+Restart=always
+RestartSec=2
 
 [Install]
 WantedBy=default.target

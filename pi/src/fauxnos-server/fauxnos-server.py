@@ -15,11 +15,23 @@ Usage:
 """
 
 import argparse
+import logging
 import sys
 import threading
 import time
 import signal
 from typing import Dict, Any
+
+# Configure root logging early so submodule loggers (VolumeManager,
+# SnapcastClientMonitor, etc.) actually surface in journalctl. Without this
+# Python's root logger has no handler attached and every self.logger.info()
+# call vanishes into the void. Emit to stderr so systemd's journal captures it.
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S',
+    stream=sys.stderr,
+)
 
 # Import our modular components
 from modules.config_manager import ConfigManager

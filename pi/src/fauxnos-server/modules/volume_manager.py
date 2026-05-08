@@ -15,6 +15,7 @@ import logging
 import asyncio
 import websockets
 from typing import Dict, Optional
+import paho.mqtt.client as mqtt
 from .config_manager import ConfigManager
 from .group_manager import SnapcastGroupManager
 
@@ -35,6 +36,39 @@ class VolumeManager:
 
         # Track last known volume for each client to detect changes
         self.last_volumes: Dict[str, int] = {}
+
+        # MQTT publisher for status/clients/<id>/volume after applying changes.
+        # Without this, a volume change driven by Spotify (Spotify app slider →
+        # go-librespot WS event → snapcast Client.SetVolume) never reaches the
+        # web UI, because the UI subscribes to status/clients/+/volume but
+        # nothing publishes that topic on this code path. fauxnos_client.py's
+        # mqtt_client publishes status only for UI-driven (set/...) commands.
+        self.mqtt: Optional[mqtt.Client] = None
+        self._init_mqtt()
+
+    def _init_mqtt(self):
+        """Connect to the MQTT broker for publishing status updates."""
+        try:
+            mqtt_cfg = self.config_manager.server_config.get('server', {}).get('mqtt', {})
+            host = mqtt_cfg.get('broker_host', 'localhost')
+            port = int(mqtt_cfg.get('broker_port', 1883))
+            self.mqtt = mqtt.Client(client_id='fauxnos-volume-manager')
+            self.mqtt.connect(host, port, keepalive=60)
+            self.mqtt.loop_start()
+            self.logger.info(f"VolumeManager MQTT publisher connected to {host}:{port}")
+        except Exception as e:
+            self.logger.warning(f"VolumeManager MQTT connect failed (status updates won't reach UI): {e}")
+            self.mqtt = None
+
+    def _publish_volume_status(self, client_id: str, volume: int):
+        """Publish status/clients/<client_id>/volume so UI subscribers see the change."""
+        if self.mqtt is None:
+            return
+        try:
+            topic = f"status/clients/{client_id}/volume"
+            self.mqtt.publish(topic, str(volume))
+        except Exception as e:
+            self.logger.warning(f"MQTT publish failed for {client_id}: {e}")
 
     def start(self):
         """Start WebSocket listeners for all clients"""
@@ -69,6 +103,16 @@ class VolumeManager:
             thread.join(timeout=2.0)
 
         self.threads = []
+
+        # Tear down the MQTT publisher
+        if self.mqtt is not None:
+            try:
+                self.mqtt.loop_stop()
+                self.mqtt.disconnect()
+            except Exception:
+                pass
+            self.mqtt = None
+
         self.logger.info("Volume manager stopped")
 
     def _run_websocket_listener(self, client_id: str, server_port: int):
@@ -162,6 +206,9 @@ class VolumeManager:
                             f"Updated {client_id} volume: {last_volume}% → {normalized_volume}%"
                         )
                         self.last_volumes[client_id] = normalized_volume
+                        # Mirror the new volume to MQTT so the web UI's volume
+                        # slider follows along in real time.
+                        self._publish_volume_status(client_id, normalized_volume)
 
     def _apply_volume_change(self, client_id: str, volume: int) -> bool:
         """

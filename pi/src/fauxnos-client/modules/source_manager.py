@@ -182,13 +182,17 @@ class SourceManager:
             else:
                 self.pulse.set_sink_volume(sink_name, 100)
 
-            # Get snapcast client ID from device MAC
-            client_id = self.snapcast.get_client_id_by_mac(self.config_manager.device_config.mac)
-            if client_id:
-                self.snapcast.set_volume(volume, client_id)
+            # Use the device name as the snapcast client_id. We always launch
+            # snapclient with `--hostID <device.name>` (e.g. fauxnos000), so
+            # snapcast knows the client by that exact id. Looking up by MAC
+            # was unreliable: install.sh records eth0's MAC in
+            # server_config.json, but on a WiFi-attached Pi snapcast sees the
+            # wlan0 MAC instead — and they differ on Pi 3B+/Zero 2 W.
+            client_id = self.config_manager.device_config.name
+            if self.snapcast.set_volume(volume, client_id):
                 self.logger.debug(f"Set {source.label} volume to {volume}% (snapcast control, PA at 100%)")
             else:
-                self.logger.warning(f"Could not find snapcast client for MAC {self.config_manager.device_config.mac}")
+                self.logger.warning(f"snapcast set_volume failed for client '{client_id}' — is it connected?")
 
         # Update stored volume
         self.source_volumes[source.id] = volume

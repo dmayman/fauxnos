@@ -131,6 +131,14 @@ class DeploymentManager:
                 with open(fifo_service_file, 'w') as f:
                     f.write(fifo_service_content)
 
+                # Generate FIFO pinner service (keeps a writer attached so
+                # snapcast PipeStream doesn't EOF on startup — see
+                # config_manager.generate_fifo_pinner_script for full notes).
+                pinner_service_content = self.config_manager.generate_fifo_pinner_service()
+                pinner_service_file = os.path.join(systemd_dir, "fauxnos-fifo-pinner.service")
+                with open(pinner_service_file, 'w') as f:
+                    f.write(pinner_service_content)
+
                 # Generate snapserver service
                 snapserver_service_content = self.config_manager.generate_snapserver_service()
                 snapserver_service_file = os.path.join(systemd_dir, "snapserver.service")
@@ -152,6 +160,14 @@ class DeploymentManager:
             with open(fifo_script_file, 'w') as f:
                 f.write(fifo_script)
             os.chmod(fifo_script_file, 0o755)
+
+            # Generate FIFO pinner script (keeps a no-op writer attached to
+            # each FIFO; see config_manager.generate_fifo_pinner_script).
+            pinner_script = self.config_manager.generate_fifo_pinner_script()
+            pinner_script_file = os.path.join(scripts_dir, "fifo-pinner.sh")
+            with open(pinner_script_file, 'w') as f:
+                f.write(pinner_script)
+            os.chmod(pinner_script_file, 0o755)
 
             # Generate snapserver sources (for manual addition to snapserver.conf)
             sources = self.config_manager.generate_snapserver_sources()
@@ -303,7 +319,11 @@ class DeploymentManager:
             clients = self.config_manager.list_clients()
 
             # Stop all user services first
-            services_to_stop = ["snapserver.service", "fauxnos-fifo-setup.service"]
+            services_to_stop = [
+                "snapserver.service",
+                "fauxnos-fifo-pinner.service",
+                "fauxnos-fifo-setup.service",
+            ]
             for client in clients:
                 services_to_stop.append(f"go-librespot-{client.id}.service")
                 services_to_stop.append(f"shairport-sync-{client.id}.service")
@@ -333,6 +353,16 @@ class DeploymentManager:
                     self.logger.info("Started and enabled fauxnos-fifo-setup.service")
                 except Exception as e:
                     self.logger.error(f"Failed to start fauxnos-fifo-setup.service: {e}")
+                    return False
+
+                # Then the FIFO pinner — must come before snapserver so
+                # snapcast PipeStream sees a writer at open time.
+                try:
+                    subprocess.run(["systemctl", "--user", "enable", "fauxnos-fifo-pinner.service"], check=True)
+                    subprocess.run(["systemctl", "--user", "start", "fauxnos-fifo-pinner.service"], check=True)
+                    self.logger.info("Started and enabled fauxnos-fifo-pinner.service")
+                except Exception as e:
+                    self.logger.error(f"Failed to start fauxnos-fifo-pinner.service: {e}")
                     return False
 
                 # Start and enable user snapserver

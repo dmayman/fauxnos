@@ -29,8 +29,12 @@ These should already be set up. Verify before your first new-client install:
 
 1. Insert SD card. Open **Raspberry Pi Imager**.
 2. **Choose Device**: the model of Pi you're flashing.
-3. **Choose OS**: *Raspberry Pi OS Lite (64-bit)*.
-   > ⚠️ Use **Bookworm**, not Trixie. The zero-touch `firstrun.sh` mechanism relies on `raspberrypi-firstboot.service`, which Trixie replaces with cloud-init and breaks.
+3. **Choose OS**: must be **Raspberry Pi OS Lite (64-bit) — Bookworm**. **Do not pick Desktop.**
+   - Path in Imager: **Raspberry Pi OS (other) → Raspberry Pi OS Lite (64-bit)**.
+   - Verify the description on the right says ***"Debian Bookworm"*** before clicking — Imager's default selection often jumps to the latest release (currently Trixie) or to Desktop, which we don't want.
+   - **Why Lite, not Desktop**: a Pi 3B+ has 1GB of RAM. Desktop edition spends ~400MB on LXDE, lightdm, Plymouth, and various GUI services we never use, leaving fauxnos's audio stack (snapserver + go-librespot + snapclient + Flask + PulseAudio + mosquitto) hugging the OOM ceiling. We've crashed Pis this way already; don't repeat history.
+   - **Why Bookworm, not Trixie**: the zero-touch `firstrun.sh` mechanism relies on `raspberrypi-firstboot.service`, which Trixie replaces with cloud-init and breaks.
+   - **Why 64-bit, not 32-bit**: matches modern packages and matches our snapcast/go-librespot binary preferences. Pi 3B+/Zero 2 W/4/5 are all 64-bit capable. (32-bit also works — `install.sh` handles both archs — but 64 is the default we test against.)
 4. **Choose Storage**: the SD card.
 5. Click **Next** → **Edit Settings** when asked to apply OS customization.
 
