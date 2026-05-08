@@ -374,9 +374,14 @@ configure_system() {
     sudo systemctl enable mosquitto
     sudo systemctl start mosquitto || true
 
-    # Disable system snapserver (we run it as user service)
-    sudo systemctl stop snapserver 2>/dev/null || true
-    sudo systemctl disable snapserver 2>/dev/null || true
+    # Disable system snapserver and snapclient (we run them as user services
+    # with our own configs and --hostID so they integrate with the rest of
+    # the fauxnos pipeline). The apt postinsts auto-enable both system units;
+    # leaving them on causes duplicate snapcast clients to register against
+    # snapserver — one under MAC (system unit, no --hostID) and one under
+    # fauxnos000 (our user unit) — which surfaces as two groups in the UI.
+    sudo systemctl stop snapserver snapclient 2>/dev/null || true
+    sudo systemctl disable snapserver snapclient 2>/dev/null || true
 
     # snapserver's apt postinst creates /tmp/snapfifo as a named pipe (its
     # default source). Our user-mode setup-fifo.sh wants /tmp/snapfifo to be a
