@@ -352,6 +352,13 @@ configure_system() {
 }
 
 _configure_hifiberry() {
+    # Server hardware is fixed: HiFiBerry DAC+ADC. No detection — just set it.
+    # (Clients are also fixed at hifiberry-dac in the client install.sh.)
+    # Auto-detection was removed because the HAT EEPROM isn't always
+    # programmed/readable, and `aplay -l` parsing has a chicken-and-egg
+    # bootstrap problem on first install.
+    local dtoverlay="hifiberry-dacplusadc"
+
     local config_txt
     if [ -f "/boot/firmware/config.txt" ]; then
         config_txt="/boot/firmware/config.txt"
@@ -362,28 +369,16 @@ _configure_hifiberry() {
         return
     fi
 
-    # Detect HiFiBerry model from aplay -l
-    local dtoverlay="hifiberry-dac"  # default
-    local aplay_out
-    aplay_out=$(aplay -l 2>/dev/null || true)
-
-    if echo "$aplay_out" | grep -qi "dacplusadc\|DAC+ADC"; then
-        dtoverlay="hifiberry-dacplusadc"
-    elif echo "$aplay_out" | grep -qi "dacplus\|DAC+"; then
-        dtoverlay="hifiberry-dacplus"
-    elif echo "$aplay_out" | grep -qi "dac\b"; then
-        dtoverlay="hifiberry-dac"
-    fi
-
-    log "Detected HiFiBerry overlay: $dtoverlay"
-
-    # Disable onboard audio
+    # Disable onboard audio (idempotent: only appends if not already off)
     if ! grep -q "^dtparam=audio=off" "$config_txt"; then
-        echo "dtparam=audio=off" | sudo tee -a "$config_txt" > /dev/null
+        sudo sed -i 's/^dtparam=audio=on/dtparam=audio=off/' "$config_txt"
+        if ! grep -q "^dtparam=audio=off" "$config_txt"; then
+            echo "dtparam=audio=off" | sudo tee -a "$config_txt" > /dev/null
+        fi
         log "Disabled onboard audio"
     fi
 
-    # Remove old hifiberry overlays, add correct one
+    # Replace any existing hifiberry overlay with the server's overlay
     sudo sed -i '/^dtoverlay=hifiberry/d' "$config_txt"
     echo "dtoverlay=$dtoverlay" | sudo tee -a "$config_txt" > /dev/null
     log_success "HiFiBerry overlay set to $dtoverlay in $config_txt"
