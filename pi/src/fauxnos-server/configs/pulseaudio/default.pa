@@ -18,20 +18,28 @@ load-module module-null-sink sink_name=snapsink sink_properties="device.descript
 # --- Analog Input Loopback ---
 # Pipes your analog input directly to the 'analogsink' virtual sink.
 # Removed the aggressive latency_msec=1. PulseAudio will now use system defaults.
-load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallback" sink=analogsink latency_msec=20
+#
+# sink_input_properties=media.role=fauxnos-analog-input gives this loopback
+# its own stream-restore key so its volume is independent from the others.
+# Without unique roles, all loopbacks share "media.role:abstract" and PA's
+# stream-restore syncs their volumes — change one, all change.
+load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallback" sink=analogsink latency_msec=20 sink_input_properties=media.role=fauxnos-analog-input
 
 # --- LADSPA Equalizer Sink ---
 # This creates a new sink called 'equalizer' that applies the LADSPA plugin.
 # It *masters* the actual hardware output (alsa_output.platform-soc_sound.stereo-fallback).
 # load-module module-ladspa-sink sink_name=equalizer sink_master=alsa_output.platform-soc_sound.stereo-fallback plugin=mbeq_1197 label=mbeq control=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 
-# --- Direct Routing to Master ---
-# These lines take the *monitor output* of your virtual sinks and loop them
-# directly into the hardware output, bypassing the equalizer.
+# --- Direct Routing to Master (per-source calibration loopbacks) ---
+# These lines take the *monitor output* of each virtual sink and loop it
+# into the hardware output. Each gets a unique sink_input_properties.media.role
+# so PA's stream-restore tracks their volumes INDEPENDENTLY — that's how we
+# get per-source calibration (Spotify+AirPlay vs Analog vs System) without
+# changing the user-controlled stage. See docs/VOLUME.md.
 # load-module module-loopback source=spotifysink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
-load-module module-loopback source=systemsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
-load-module module-loopback source=analogsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
-load-module module-loopback source=snapsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
+load-module module-loopback source=systemsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-systemsink-out
+load-module module-loopback source=analogsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-analogsink-out
+load-module module-loopback source=snapsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-snapsink-out
 
 # --- Application Routing ---
 # Automatically route specific applications to their designated sinks
