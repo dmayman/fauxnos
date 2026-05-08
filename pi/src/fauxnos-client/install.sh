@@ -406,6 +406,37 @@ print_completion_message() {
 }
 
 # Main installation flow
+setup_pulseaudio_user_services() {
+    log_section "Switching from PipeWire to PulseAudio"
+
+    # Bookworm ships with PipeWire as the default audio server. Its
+    # pulse-compatibility shim (pipewire-pulse) takes ownership of the
+    # /run/user/$UID/pulse/native socket, so even though pulseaudio is
+    # installed and "enabled", it can never actually run. PipeWire also
+    # silently ignores ~/.config/pulse/default.pa, so our virtual sinks
+    # (snapsink, analogsink, systemsink) never get loaded — fauxnos_client
+    # then errors with "Failed to get sink information: No such entity".
+    #
+    # Mask the PipeWire user units so PulseAudio can take the socket on
+    # next start. setup-client.py later copies our default.pa, and
+    # PulseAudio is started on demand by its socket.
+    log "Stopping and masking PipeWire user services..."
+    systemctl --user stop \
+        pipewire-pulse.service pipewire-pulse.socket \
+        pipewire.service pipewire.socket \
+        wireplumber.service 2>/dev/null || true
+    systemctl --user mask \
+        pipewire.service pipewire.socket \
+        pipewire-pulse.service pipewire-pulse.socket \
+        wireplumber.service 2>/dev/null || true
+
+    log "Enabling PulseAudio user service..."
+    systemctl --user unmask pulseaudio.service pulseaudio.socket 2>/dev/null || true
+    systemctl --user enable pulseaudio.service pulseaudio.socket 2>/dev/null || true
+
+    log_success "PulseAudio user services configured"
+}
+
 main() {
     log_section "Fauxnos Client Installation Starting"
     log "Installation log: $LOG_FILE"
@@ -414,6 +445,7 @@ main() {
     check_prerequisites
     install_system_dependencies
     configure_system
+    setup_pulseaudio_user_services
     download_client_code
 
     # Attempt registration (may fail if server not available)

@@ -460,6 +460,30 @@ AVAHI_XML
 setup_pulseaudio() {
     log_section "Setting Up PulseAudio"
 
+    # Bookworm ships with PipeWire as the default audio server. Its
+    # pulse-compatibility shim (pipewire-pulse) takes ownership of the
+    # /run/user/$UID/pulse/native socket, so even though pulseaudio is
+    # installed and "enabled", it can never actually run. PipeWire also
+    # silently ignores ~/.config/pulse/default.pa, so our virtual sinks
+    # (snapsink, analogsink, systemsink) never get loaded — fauxnos_client
+    # then errors with "Failed to get sink information: No such entity".
+    #
+    # We need real PulseAudio. Mask the PipeWire user units, ensure
+    # pulseaudio is unmasked + enabled, and start it.
+    log "Disabling PipeWire user services (we need real PulseAudio)..."
+    systemctl --user stop \
+        pipewire-pulse.service pipewire-pulse.socket \
+        pipewire.service pipewire.socket \
+        wireplumber.service 2>/dev/null || true
+    systemctl --user mask \
+        pipewire.service pipewire.socket \
+        pipewire-pulse.service pipewire-pulse.socket \
+        wireplumber.service 2>/dev/null || true
+
+    log "Enabling PulseAudio user service..."
+    systemctl --user unmask pulseaudio.service pulseaudio.socket 2>/dev/null || true
+    systemctl --user enable pulseaudio.service pulseaudio.socket 2>/dev/null || true
+
     mkdir -p "$HOME/.config/pulse"
 
     local pa_source="$INSTALL_DIR/configs/pulseaudio/default.pa"
@@ -468,6 +492,16 @@ setup_pulseaudio() {
         log_success "PulseAudio config deployed from $pa_source"
     else
         log_warning "PulseAudio config not found at $pa_source, using default"
+    fi
+
+    # Start PulseAudio now (so the rest of the install can talk to it)
+    systemctl --user start pulseaudio.socket pulseaudio.service 2>/dev/null || true
+    sleep 1
+    if pactl info 2>/dev/null | grep -q "^Server Name: pulseaudio$"; then
+        log_success "PulseAudio is the active audio server"
+        log "Loaded sinks: $(pactl list short sinks 2>/dev/null | awk '{print $2}' | tr '\n' ' ')"
+    else
+        log_warning "PulseAudio did not start cleanly; check 'systemctl --user status pulseaudio'"
     fi
 }
 
