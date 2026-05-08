@@ -390,22 +390,52 @@ class FauxnosAPIServer:
             return None
 
     def handle_update_client(self, client_id: str):
-        """Handle PUT /api/clients/<client_id>"""
+        """Handle PUT /api/clients/<client_id>
+
+        Accepts any subset of:
+          - name: string  → rename client
+          - has_adc: bool → mark client as having an analog input. The UI
+            gates whether the "Analog In" built-in source row appears in
+            the SourcesPanel on this flag. The actual source must also
+            exist in the device's local client_config.yaml for switching
+            and calibration to work end-to-end (install.sh sets that up
+            automatically when the hifiberry-dacplusadc dt-overlay is
+            detected).
+        """
         try:
             data = request.get_json()
             if not data:
                 return jsonify({"error": "No JSON data provided"}), 400
 
-            new_name = data.get('name')
-            if not new_name:
-                return jsonify({"error": "name is required"}), 400
+            updated_fields = {}
 
-            if self.config_manager.rename_client(client_id, new_name):
-                self.config_manager.save_server_config()
-                self.log(f"Client {client_id} renamed to '{new_name}'", "SUCCESS")
-                return jsonify({"status": "updated", "name": new_name})
-            else:
-                return jsonify({"error": f"Client {client_id} not found"}), 404
+            # Optional rename
+            if 'name' in data:
+                new_name = data.get('name')
+                if not new_name or not isinstance(new_name, str) or not new_name.strip():
+                    return jsonify({"error": "name must be a non-empty string"}), 400
+                if not self.config_manager.rename_client(client_id, new_name.strip()):
+                    return jsonify({"error": f"Client {client_id} not found"}), 404
+                updated_fields["name"] = new_name.strip()
+
+            # Optional has_adc toggle — written directly to the raw client
+            # entry in server_config.json (config_manager has no typed
+            # helper for it, but the raw dict is the source of truth).
+            if 'has_adc' in data:
+                has_adc = bool(data.get('has_adc'))
+                raw = self._get_client_raw(client_id)
+                if raw is None:
+                    return jsonify({"error": f"Client {client_id} not found"}), 404
+                raw["has_adc"] = has_adc
+                updated_fields["has_adc"] = has_adc
+
+            if not updated_fields:
+                return jsonify({"error": "No supported fields provided (name, has_adc)"}), 400
+
+            self.config_manager.save_server_config()
+            for k, v in updated_fields.items():
+                self.log(f"Client {client_id} {k} → {v}", "SUCCESS")
+            return jsonify({"status": "updated", **updated_fields})
 
         except Exception as e:
             self.log(f"Client update error: {e}", "ERROR")
@@ -440,6 +470,77 @@ class FauxnosAPIServer:
                 return client.get("sources", [])
         return None
 
+    # Default built-in sources synthesized when a client has no explicit
+    # `sources` array in server_config.json (e.g. when it was registered
+    # via the install.sh CLI path rather than the API /register endpoint,
+    # which IS what populates them). Mirrors the BUILTIN_DEFS / ANALOG_DEF
+    # defs in web-ui/src/components/SourcesPanel.jsx so the UI sees the
+    # same set of built-ins regardless of registration path.
+    _DEFAULT_BUILTIN_SOURCES = [
+        {"id": "spotify", "label": "Spotify", "type": "internal",
+         "category": "default", "sink": "snapsink",
+         "starting_volume": 50, "volume_controller": "snapcast"},
+        {"id": "airplay", "label": "AirPlay", "type": "internal",
+         "category": "default", "sink": "snapsink",
+         "starting_volume": 50, "volume_controller": "snapcast"},
+    ]
+    _DEFAULT_ANALOG_SOURCE = {
+        "id": "analog", "label": "Analog In", "type": "internal",
+        "category": "default", "sink": "analogsink",
+        "starting_volume": 50, "volume_controller": "self",
+    }
+
+    def _effective_client_sources(self, client_id: str) -> list:
+        """Return the sources we expose to the UI for `client_id`.
+
+        We always include the built-in defaults (spotify, airplay, plus
+        analog if has_adc=true) and merge the explicit `sources` array
+        from server_config.json on top. Explicit entries override
+        synthesized ones by id (so a user can store external_switch
+        config on a built-in without losing it). Custom sources from
+        explicit are appended after the built-ins.
+
+        Why merge rather than fall back wholesale: if a user added a
+        single custom source via POST /api/clients/<id>/sources to a
+        freshly-registered client (whose explicit array was empty),
+        the built-in defaults would otherwise vanish from the dropdown
+        because the array is no longer empty. Merging keeps them
+        present until the user explicitly changes them via PUT.
+
+        This is purely a read-side projection — nothing is written back
+        to server_config.json. The YAML on the device remains the
+        single source of truth for what the daemon actually owns.
+        """
+        raw = self._get_client_raw(client_id)
+        if raw is None:
+            return []
+        explicit = list(raw.get("sources") or [])
+        explicit_by_id = {s.get("id"): s for s in explicit if s.get("id")}
+
+        # Start with synthesized built-ins, in canonical order
+        synthesized = list(self._DEFAULT_BUILTIN_SOURCES)
+        if raw.get("has_adc"):
+            synthesized.append(dict(self._DEFAULT_ANALOG_SOURCE))
+
+        merged = []
+        seen_ids = set()
+        for default_src in synthesized:
+            sid = default_src["id"]
+            if sid in explicit_by_id:
+                merged.append(explicit_by_id[sid])
+            else:
+                merged.append(dict(default_src))
+            seen_ids.add(sid)
+
+        # Append any custom (non-built-in) sources from explicit, in order
+        for s in explicit:
+            sid = s.get("id")
+            if sid and sid not in seen_ids:
+                merged.append(s)
+                seen_ids.add(sid)
+
+        return merged
+
     def _set_client_sources(self, client_id: str, sources: list) -> bool:
         """Set sources for a client in server_config."""
         for client in self.config_manager.server_config.get("clients", []):
@@ -452,10 +553,12 @@ class FauxnosAPIServer:
     def handle_get_sources(self, client_id: str):
         """Handle GET /api/clients/<client_id>/sources"""
         try:
-            sources = self._get_client_sources(client_id)
-            if sources is None:
+            raw = self._get_client_raw(client_id)
+            if raw is None:
                 return jsonify({"error": f"Client {client_id} not found"}), 404
-            raw = self._get_client_raw(client_id) or {}
+            # Use effective (merged built-ins + explicit) so the SourcesPanel
+            # and the GroupCard dropdown agree on what sources exist.
+            sources = self._effective_client_sources(client_id)
             return jsonify({"client_id": client_id, "sources": sources, "has_adc": raw.get("has_adc", False)})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -578,9 +681,12 @@ class FauxnosAPIServer:
                 else:
                     group["available_streams"] = stream_list
 
-                # Include home client's configured sources
-                if home_cid and home_cid in raw_map:
-                    group["sources"] = raw_map[home_cid].get("sources", [])
+                # Include home client's configured sources. Falls back to
+                # synthesized built-ins (spotify/airplay/+analog) when the
+                # client has no explicit sources array, so the dropdown
+                # always reflects what the SourcesPanel shows.
+                if home_cid:
+                    group["sources"] = self._effective_client_sources(home_cid)
                 else:
                     group["sources"] = []
 
