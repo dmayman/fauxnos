@@ -138,6 +138,14 @@ configure_system() {
     sudo systemctl enable ssh
     sudo systemctl start ssh
 
+    # Disable the apt-installed system snapclient.service. It runs as the
+    # _snapclient user with MAC-based hostID and registers itself with the
+    # snapserver as a phantom second client, in addition to our per-client
+    # user service (snapclient-fauxnosNNN). Disable + stop it so only our
+    # user-level snapclient connects.
+    log "Disabling system snapclient.service (we use the user-level service)..."
+    sudo systemctl disable --now snapclient.service 2>/dev/null || true
+
     # Enable user service lingering for automatic startup
     log "Enabling user service lingering for automatic startup..."
     sudo loginctl enable-linger "$USER"
@@ -247,6 +255,7 @@ download_client_code() {
         "modules/__init__.py"
         "modules/config_manager.py"
         "modules/logger.py"
+        "modules/mqtt_client.py"
         "modules/pulse_controller.py"
         "modules/snapcast_controller.py"
         "modules/source_manager.py"
