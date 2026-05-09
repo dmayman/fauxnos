@@ -676,7 +676,11 @@ ctl.!default {
         self.log(f"Sources configured: {len(config.get('sources', []))}")
 
 
-        if not self.test_mode and not self.dry_run:
+        # install.sh owns the final reboot. When run standalone, callers can
+        # either reboot themselves or pass --no-reboot to skip. Default keeps
+        # backwards-compat for direct invocations of setup-client.py.
+        if (not self.test_mode and not self.dry_run
+                and not getattr(self, 'no_reboot', False)):
             self.log("Rebooting in 10 seconds to apply changes... (Ctrl+C to cancel)")
             try:
                 time.sleep(10)
@@ -806,6 +810,8 @@ Examples:
                        help='Device display name (skips interactive prompt)')
     parser.add_argument('--server-host', default='',
                        help='Fauxnos server hostname (overrides FAUXNOS_SERVER_HOST env var)')
+    parser.add_argument('--no-reboot', action='store_true',
+                       help='Do not reboot at end of setup (caller is responsible)')
 
     args = parser.parse_args()
 
@@ -825,6 +831,7 @@ Examples:
     )
     setup.force_hostname = args.force_hostname
     setup.display_name = args.display_name
+    setup.no_reboot = args.no_reboot
     if args.server_host:
         setup.server_hostname = args.server_host
 

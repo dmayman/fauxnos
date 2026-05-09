@@ -128,7 +128,12 @@ class FauxnosServer:
         self.log("Starting API server...")
 
         def run_api():
-            self.api_server.run(host='0.0.0.0', port=8080, debug=False)
+            # Bind dual-stack: '::' with the Pi's default net.ipv6.bindv6only=0
+            # accepts both IPv4 and IPv6 on a single socket. Networks where
+            # IPv4 client-isolation blocks intra-LAN traffic (e.g. residential
+            # wifi APs that drop IPv4 client→client) still let IPv6 through,
+            # and modern browsers prefer IPv6 when both are advertised.
+            self.api_server.run(host='::', port=8080, debug=False)
 
         self.api_thread = threading.Thread(target=run_api, daemon=True)
         self.api_thread.start()

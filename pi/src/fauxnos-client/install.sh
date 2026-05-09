@@ -187,14 +187,30 @@ configure_system() {
         log_error "Could not find config.txt file"
     fi
 
-    # Set temporary hostname
-    local mac_suffix
-    mac_suffix=$(cat /sys/class/net/*/address | head -1 | sed 's/://g' | tail -c 5)
+    # Set temporary hostname using the first non-loopback MAC. The previous
+    # `cat /sys/class/net/*/address | head -1` matched lo first (all-zero
+    # MAC), producing a useless temp hostname like `fauxnos-temp-0000` and a
+    # `sudo: unable to resolve host fauxnos-temp-0000` warning. setup-client.py
+    # renames to fauxnosNNN later anyway, but we want this name to actually
+    # identify the device while it's installing.
+    local mac_suffix=""
+    for iface_addr in /sys/class/net/*/address; do
+        local iface=$(basename "$(dirname "$iface_addr")")
+        [ "$iface" = "lo" ] && continue
+        local mac=$(cat "$iface_addr" 2>/dev/null)
+        [ -z "$mac" ] || [ "$mac" = "00:00:00:00:00:00" ] && continue
+        mac_suffix=$(echo "$mac" | sed 's/://g' | tail -c 5)
+        break
+    done
+    [ -z "$mac_suffix" ] && mac_suffix="$$"  # fall back to PID
     local temp_hostname="${TEMP_HOSTNAME_PREFIX}-${mac_suffix}"
 
     log "Setting temporary hostname to: $temp_hostname"
     sudo hostnamectl set-hostname "$temp_hostname"
     sudo sed -i "s/127.0.1.1.*/127.0.1.1\t$temp_hostname/" /etc/hosts
+    # Add the new name to /etc/hosts so sudo doesn't warn about unresolvable
+    # host on subsequent commands in this same install run.
+    grep -q "127.0.1.1.*$temp_hostname" /etc/hosts || echo "127.0.1.1 $temp_hostname" | sudo tee -a /etc/hosts > /dev/null
 
     log_success "System configuration completed"
 }
@@ -309,8 +325,11 @@ register_client() {
     log "This will discover the fauxnos-server and register this device"
 
     # Run the client setup
-    # Pass display name non-interactively if provided via env var
-    local setup_args="--setup"
+    # Pass display name non-interactively if provided via env var.
+    # --no-reboot: install.sh owns the final reboot. Without this flag
+    # setup-client.py would reboot first, killing install.sh's own countdown
+    # and validation steps.
+    local setup_args="--setup --no-reboot"
     if [ -n "$DISPLAY_NAME" ]; then
         setup_args="$setup_args --display-name $DISPLAY_NAME"
     fi
