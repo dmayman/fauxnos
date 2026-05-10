@@ -433,9 +433,21 @@ class InstallRunner:
             self._append_tail(f"Server install key missing at {self.ssh_key_path}; run install.sh first")
             return None
 
+        # Re-flashing a Pi gives it a brand-new host key under the same name
+        # (`fauxnos-client.local`). If the server's known_hosts already has the
+        # previous flash's key, paramiko raises BadHostKeyException and the
+        # whole install dies at the connect step. Strip stale entries for the
+        # target hostname (and its current IP, if resolvable) before connecting,
+        # then let AutoAddPolicy persist the fresh key for next time.
+        self._clear_stale_host_keys(self.target_host)
+
         client = paramiko.SSHClient()
-        client.load_system_host_keys()
-        # The fresh Pi will have a brand-new host key — accept on first contact.
+        # Re-load known_hosts AFTER cleaning so AutoAddPolicy can append the
+        # fresh key back to it during connect().
+        try:
+            client.load_system_host_keys()
+        except Exception:
+            pass
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         try:
             client.connect(
@@ -457,6 +469,35 @@ class InstallRunner:
             except Exception:
                 pass
             return None
+
+    def _clear_stale_host_keys(self, host: str):
+        """Remove any existing known_hosts entries for `host` (and its IP).
+        ssh-keygen -R is the canonical way; falling back to silent no-op if it
+        isn't installed (vanishingly unlikely on a Pi running install.sh)."""
+        import shutil
+        import subprocess
+        if not shutil.which("ssh-keygen"):
+            return
+        targets = [host]
+        try:
+            ip = socket.gethostbyname(host)
+            if ip and ip != host:
+                targets.append(ip)
+        except OSError:
+            pass
+        for t in targets:
+            try:
+                subprocess.run(
+                    ["ssh-keygen", "-R", t],
+                    capture_output=True,
+                    timeout=10,
+                    check=False,
+                )
+            except Exception as e:
+                # Non-fatal — worst case AutoAddPolicy will still add the key,
+                # but a stale conflicting key would already have triggered a
+                # BadHostKeyException by then. Log so we know.
+                self._append_tail(f"ssh-keygen -R {t} failed: {e}")
 
     def _stream_install(self, ssh) -> tuple[int, bool]:
         """Run the client install one-liner; returns (exit_code, reboot_seen).
