@@ -51,6 +51,7 @@ class FauxnosAPIServer:
             server_host="fauxnos000.local",
             client_status_fn=self._list_clients_for_runner,
             snapcast_status_fn=self._get_snapcast_client_status,
+            on_install_succeeded=self._cleanup_after_install,
         )
         self.setup_routes()
 
@@ -140,6 +141,10 @@ class FauxnosAPIServer:
         @app.route('/api/groups/source', methods=['POST'])
         def set_group_source():
             return self.handle_set_group_source()
+
+        @app.route('/api/snapcast/cleanup-orphans', methods=['POST'])
+        def cleanup_snapcast_orphans():
+            return self.handle_cleanup_orphans()
 
         # ── Status ────────────────────────────────────────────────────────────
 
@@ -427,6 +432,38 @@ class FauxnosAPIServer:
         except Exception:
             return None
 
+    def _snapcast_delete_client(self, snapcast_id: str) -> bool:
+        """Delete a client from snapserver's persistent state.
+
+        Snapserver remembers every client that has ever connected — disconnect
+        only flips connected=false, the registration (group, volume, last-seen)
+        sticks around forever in ~/.config/snapserver/server.json. This sends
+        Server.DeleteClient which is the only way to actually remove it.
+        Returns True on RPC success.
+        """
+        rpc = self._snapcast_rpc("Server.DeleteClient", {"id": snapcast_id})
+        return bool(rpc and "result" in rpc)
+
+    def _get_snapcast_clients_full(self) -> list:
+        """Return [{id, connected, host_mac, host_name, group_id}, …] for every
+        client snapserver knows about. Used by orphan-cleanup and the extended
+        DELETE /api/clients/<id> path which need to match by MAC as well as id."""
+        out = []
+        rpc = self._snapcast_rpc("Server.GetStatus")
+        if not rpc or "result" not in rpc:
+            return out
+        for group in rpc["result"].get("server", {}).get("groups", []):
+            for c in group.get("clients", []):
+                host = c.get("host", {}) or {}
+                out.append({
+                    "id": c.get("id", ""),
+                    "connected": bool(c.get("connected", False)),
+                    "host_mac": (host.get("mac") or "").lower(),
+                    "host_name": host.get("name", ""),
+                    "group_id": group.get("id", ""),
+                })
+        return out
+
     def handle_update_client(self, client_id: str):
         """Handle PUT /api/clients/<client_id>
 
@@ -480,14 +517,38 @@ class FauxnosAPIServer:
             return jsonify({"error": "Internal server error"}), 500
 
     def handle_delete_client(self, client_id: str):
-        """Handle DELETE /api/clients/<client_id>"""
+        """Handle DELETE /api/clients/<client_id>.
+
+        Removes the device from server_config.json AND scrubs snapserver's
+        record so the offline card disappears from Groups for good. Matches
+        snapcast clients by id OR by MAC — orphan registrations from before
+        a hostname rename keep the MAC as their snapcast id, so id-only
+        matching would miss them. Snapcast deletes are best-effort and
+        don't fail the request; the device-config delete is authoritative.
+        """
         try:
-            if self.config_manager.remove_client(client_id):
-                self.config_manager.save_server_config()
-                self.log(f"Client {client_id} removed", "SUCCESS")
-                return jsonify({"status": "deleted"})
-            else:
+            # Capture the MAC before deletion so we can match snapcast orphans.
+            target_mac = ""
+            for c in self.config_manager.server_config.get("clients", []):
+                if c.get("id") == client_id:
+                    target_mac = (c.get("mac") or "").lower()
+                    break
+
+            if not self.config_manager.remove_client(client_id):
                 return jsonify({"error": f"Client {client_id} not found"}), 404
+            self.config_manager.save_server_config()
+
+            deleted_snapcast = []
+            try:
+                for sc in self._get_snapcast_clients_full():
+                    if sc["id"] == client_id or (target_mac and sc["host_mac"] == target_mac):
+                        if self._snapcast_delete_client(sc["id"]):
+                            deleted_snapcast.append(sc["id"])
+            except Exception as sc_err:
+                self.log(f"Snapcast cleanup for {client_id} failed: {sc_err}", "WARNING")
+
+            self.log(f"Client {client_id} removed (snapcast cleared: {deleted_snapcast})", "SUCCESS")
+            return jsonify({"status": "deleted", "snapcast_deleted": deleted_snapcast})
         except Exception as e:
             self.log(f"Client deletion error: {e}", "ERROR")
             return jsonify({"error": "Internal server error"}), 500
@@ -681,7 +742,17 @@ class FauxnosAPIServer:
     # ── Snapcast group handlers ────────────────────────────────────────────────
 
     def handle_get_groups(self):
-        """Handle GET /api/groups — proxy to snapcast, enriched with home/stream info"""
+        """Handle GET /api/groups — proxy to snapcast, enriched with home/stream info.
+
+        Filters offline snapclients from each group's `clients` array, and
+        drops any group that empties out as a result. The server-side filter
+        is the "groups come and go as devices come online/offline" rule:
+        when a Pi powers off its card vanishes from Groups, but its persistent
+        config (sources, has_adc, custom external_switch APIs) lives in
+        server_config.json — untouched here — so the device pops back into
+        Groups intact when its snapclient reconnects. snapserver retains the
+        offline registration too, preserving group memberships and volumes.
+        """
         try:
             rpc = self._snapcast_rpc("Server.GetStatus")
             if not rpc or "result" not in rpc:
@@ -690,6 +761,14 @@ class FauxnosAPIServer:
             server_data = rpc["result"].get("server", {})
             groups = server_data.get("groups", [])
             streams = server_data.get("streams", [])
+
+            # Hide offline snapclients (Layer A). Drop empty groups.
+            visible_groups = []
+            for g in groups:
+                g["clients"] = [c for c in g.get("clients", []) if c.get("connected")]
+                if g["clients"]:
+                    visible_groups.append(g)
+            groups = visible_groups
 
             # Build home_group → client_id map from raw server config
             raw_clients = self.config_manager.server_config.get("clients", [])
@@ -819,6 +898,60 @@ class FauxnosAPIServer:
             return jsonify({"status": "ok", "results": results})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    def handle_cleanup_orphans(self):
+        """Handle POST /api/snapcast/cleanup-orphans.
+
+        Walks snapserver's client registry and deletes any client whose `id`
+        is NOT a registered fauxnos device (i.e. not in
+        server_config.json's clients[].id). Common cause of orphans: during
+        a fresh install the snapclient registers with snapserver while the
+        Pi is still under its Pi-Imager hostname (`fauxnos-client`) — the
+        registration uses the MAC as its id and lingers after the rename to
+        `fauxnos001`. Idempotent. Registered-but-disconnected clients are
+        intentionally left alone so volume/group memberships persist across
+        power-cycles.
+        """
+        registered = {
+            (c.get("id") or "")
+            for c in self.config_manager.server_config.get("clients", [])
+        }
+        registered.discard("")
+        snapcast_clients = self._get_snapcast_clients_full()
+        deleted = []
+        failed = []
+        for sc in snapcast_clients:
+            if sc["id"] in registered:
+                continue
+            if self._snapcast_delete_client(sc["id"]):
+                deleted.append({
+                    "id": sc["id"],
+                    "host_name": sc["host_name"],
+                    "host_mac": sc["host_mac"],
+                })
+            else:
+                failed.append({"id": sc["id"], "host_name": sc["host_name"]})
+        self.log(
+            f"Cleanup orphans: deleted={len(deleted)} failed={len(failed)} "
+            f"registered={len(registered)} total_snapcast={len(snapcast_clients)}",
+            "INFO",
+        )
+        return jsonify({
+            "deleted": deleted,
+            "failed": failed,
+            "registered_count": len(registered),
+        })
+
+    def _cleanup_after_install(self, client_id: Optional[str]):
+        """Hook called by InstallRunner after a successful install. Delegates
+        to handle_cleanup_orphans so the install-time snapclient registration
+        (under the pre-rename hostname) gets evicted automatically. Failures
+        are non-fatal — the install itself already succeeded by this point."""
+        try:
+            self.handle_cleanup_orphans()
+            self.log(f"Auto-cleanup completed after install of {client_id}", "INFO")
+        except Exception as e:
+            self.log(f"Auto-cleanup after install failed: {e}", "WARNING")
 
     def handle_join_group(self):
         """Handle POST /api/groups/join — {client_id, target_client_id}"""

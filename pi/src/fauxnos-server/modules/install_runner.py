@@ -158,6 +158,7 @@ class InstallRunner:
         server_host: str = "fauxnos000.local",
         client_status_fn: Optional[Callable[[], dict]] = None,
         snapcast_status_fn: Optional[Callable[[], dict]] = None,
+        on_install_succeeded: Optional[Callable[[Optional[str]], None]] = None,
     ):
         self.install_id = uuid.uuid4().hex
         self.target_host = target_host
@@ -169,6 +170,10 @@ class InstallRunner:
         # snapcast plumbing. `client_status_fn` returns {client_id: connected}.
         self._snapcast_status_fn = snapcast_status_fn or (lambda: {})
         self._list_clients_fn = client_status_fn or (lambda: [])
+        # Fired once with the new client_id after the verify step succeeds.
+        # Used by api_server to auto-evict orphan snapcast registrations
+        # (see _cleanup_after_install). Best-effort; failures are swallowed.
+        self._on_install_succeeded = on_install_succeeded
 
         self.status: str = "queued"  # queued|running|succeeded|failed|cancelled
         self.client_id: Optional[str] = None
@@ -401,6 +406,11 @@ class InstallRunner:
                     if status != "succeeded" and not s.note:
                         s.note = error or "Aborted"
         self._emit("done", self.snapshot())
+        if status == "succeeded" and self._on_install_succeeded:
+            try:
+                self._on_install_succeeded(self.client_id)
+            except Exception as e:
+                logger.warning("on_install_succeeded callback raised: %s", e)
         if self._ssh_client is not None:
             try:
                 self._ssh_client.close()
@@ -691,10 +701,12 @@ class InstallManager:
         server_host: str = "fauxnos000.local",
         client_status_fn: Optional[Callable[[], dict]] = None,
         snapcast_status_fn: Optional[Callable[[], dict]] = None,
+        on_install_succeeded: Optional[Callable[[Optional[str]], None]] = None,
     ):
         self.server_host = server_host
         self._client_status_fn = client_status_fn
         self._snapcast_status_fn = snapcast_status_fn
+        self._on_install_succeeded = on_install_succeeded
         self._runner: Optional[InstallRunner] = None
         self._last_runner: Optional[InstallRunner] = None
         self._lock = threading.RLock()
@@ -709,6 +721,7 @@ class InstallManager:
                 server_host=self.server_host,
                 client_status_fn=self._client_status_fn,
                 snapcast_status_fn=self._snapcast_status_fn,
+                on_install_succeeded=self._on_install_succeeded,
             )
             self._runner = runner
             self._last_runner = runner

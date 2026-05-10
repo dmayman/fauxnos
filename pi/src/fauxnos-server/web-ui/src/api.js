@@ -10,6 +10,18 @@ export async function apiFetch(path, options = {}) {
 }
 
 /**
+ * Trigger a snapcast orphan cleanup.
+ *
+ * Walks snapserver's client registry on the server and deletes any client
+ * whose id isn't a registered fauxnos device — typically the install-time
+ * orphan that snapclient leaves under its pre-rename hostname/MAC. Returns
+ * `{deleted: [...], failed: [...], registered_count}`. Idempotent.
+ */
+export async function cleanupSnapcastOrphans() {
+  return apiFetch('/api/snapcast/cleanup-orphans', { method: 'POST' })
+}
+
+/**
  * Subscribe to /api/install/stream (SSE).
  *
  * The server emits four event types:
