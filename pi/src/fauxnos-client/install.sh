@@ -349,14 +349,20 @@ validate_installation() {
 
     local errors=0
 
-    # Check if config exists
-    if [ -f "$INSTALL_DIR/config.json" ]; then
+    # The actual client config is YAML, written by setup-client.py to
+    # ~/.config/fauxnos/client_config.yaml. The old check looked at
+    # $INSTALL_DIR/config.json which has never existed in this codebase
+    # (stale path from before the YAML migration); leaving it in here
+    # caused validate to false-positive and `set -e` to abort the install
+    # before the auto-reboot. See install_idempotency_bugs.md.
+    local config_file="$HOME/.config/fauxnos/client_config.yaml"
+    if [ -f "$config_file" ]; then
         log_success "Client configuration found"
         local client_id
-        client_id=$(jq -r '.client_id' "$INSTALL_DIR/config.json" 2>/dev/null || echo "unknown")
-        log "Client ID: $client_id"
+        client_id=$(sed -n 's/^client_id:[[:space:]]*//p' "$config_file" | head -1)
+        log "Client ID: ${client_id:-unknown}"
     else
-        log_error "Client configuration missing"
+        log_error "Client configuration missing at $config_file"
         ((errors++))
     fi
 
@@ -406,13 +412,15 @@ print_completion_message() {
 
     echo -e "\n${GREEN}${BOLD}🎉 Fauxnos Client Installation Successful!${NC}\n"
 
-    local client_id
-    if [ -f "$INSTALL_DIR/config.json" ]; then
-        client_id=$(jq -r '.client_id // "unknown"' "$INSTALL_DIR/config.json" 2>/dev/null)
-        local display_name
-        display_name=$(jq -r '.display_name // "Unknown"' "$INSTALL_DIR/config.json" 2>/dev/null)
-        echo -e "${BLUE}Client ID:${NC} $client_id"
-        echo -e "${BLUE}Display Name:${NC} $display_name"
+    local config_file="$HOME/.config/fauxnos/client_config.yaml"
+    local client_id display_name
+    if [ -f "$config_file" ]; then
+        client_id=$(sed -n 's/^client_id:[[:space:]]*//p' "$config_file" | head -1)
+        # display_name appears twice in the rendered YAML (top-level + under
+        # device:); the top-level one wins because we read the first match.
+        display_name=$(sed -n 's/^display_name:[[:space:]]*//p' "$config_file" | head -1)
+        echo -e "${BLUE}Client ID:${NC} ${client_id:-unknown}"
+        echo -e "${BLUE}Display Name:${NC} ${display_name:-Unknown}"
     fi
 
     echo -e "\n${YELLOW}Next Steps:${NC}"
