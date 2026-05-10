@@ -23,6 +23,14 @@ from typing import Optional
 
 from .config_manager import ConfigManager, ClientConfig
 from .install_runner import InstallManager, InstallAlreadyRunning, DEFAULT_KEY_PATH
+from .dac_overlays import (
+    ALLOWED_OVERLAYS,
+    DAC_OVERLAYS,
+    DEFAULT_OVERLAY,
+    SERVER_OVERLAY,
+    is_allowed as _dac_is_allowed,
+    remote_apply as _dac_remote_apply,
+)
 
 # Path to the web UI static files (relative to this module's location)
 _SERVER_DIR = Path(__file__).parent.parent
@@ -89,6 +97,17 @@ class FauxnosAPIServer:
         @app.route('/api/clients', methods=['GET'])
         def list_clients():
             return self.handle_list_clients()
+
+        @app.route('/api/clients/<client_id>/dac_overlay/apply', methods=['POST'])
+        def apply_dac_overlay(client_id):
+            return self.handle_apply_dac_overlay(client_id)
+
+        @app.route('/api/dac_overlays', methods=['GET'])
+        def list_dac_overlays():
+            return jsonify({
+                "overlays": [{"id": oid, "label": lbl} for oid, lbl in DAC_OVERLAYS],
+                "default": DEFAULT_OVERLAY,
+            })
 
         @app.route('/api/clients/<client_id>', methods=['PUT'])
         def update_client(client_id):
@@ -371,6 +390,16 @@ class FauxnosAPIServer:
                         "zeroconf_port": client.zeroconf_port,
                         "connected": snapcast_status.get(client.id, False),
                         "has_adc": raw_map.get(client.id, {}).get("has_adc", False),
+                        # dac_overlay: server is locked to SERVER_OVERLAY.
+                        # Clients default to DEFAULT_OVERLAY when nothing has
+                        # been written yet (pre-existing clients from before
+                        # this field was added). UI shows the dropdown as
+                        # disabled for fauxnos000.
+                        "dac_overlay": (
+                            SERVER_OVERLAY if client.id == "fauxnos000"
+                            else (raw_map.get(client.id, {}).get("dac_overlay") or DEFAULT_OVERLAY)
+                        ),
+                        "dac_overlay_locked": client.id == "fauxnos000",
                     }
                     for client in clients
                 ]
@@ -504,8 +533,29 @@ class FauxnosAPIServer:
                 raw["has_adc"] = has_adc
                 updated_fields["has_adc"] = has_adc
 
+            # Optional dac_overlay update — saves only; the install path
+            # picks it up next time install.sh runs against this device.
+            # Use POST /api/clients/<id>/dac_overlay/apply to push the
+            # change live (rewrite config.txt + reboot). The server's own
+            # overlay is locked at SERVER_OVERLAY because the analog-input
+            # source detection in the server install keys off it.
+            if 'dac_overlay' in data:
+                if client_id == "fauxnos000":
+                    return jsonify({"error": "server overlay is locked"}), 400
+                overlay = (data.get('dac_overlay') or "").strip()
+                if not _dac_is_allowed(overlay):
+                    return jsonify({
+                        "error": f"unknown dac_overlay '{overlay}'",
+                        "allowed": sorted(ALLOWED_OVERLAYS),
+                    }), 400
+                raw = self._get_client_raw(client_id)
+                if raw is None:
+                    return jsonify({"error": f"Client {client_id} not found"}), 404
+                raw["dac_overlay"] = overlay
+                updated_fields["dac_overlay"] = overlay
+
             if not updated_fields:
-                return jsonify({"error": "No supported fields provided (name, has_adc)"}), 400
+                return jsonify({"error": "No supported fields provided (name, has_adc, dac_overlay)"}), 400
 
             self.config_manager.save_server_config()
             for k, v in updated_fields.items():
@@ -515,6 +565,62 @@ class FauxnosAPIServer:
         except Exception as e:
             self.log(f"Client update error: {e}", "ERROR")
             return jsonify({"error": "Internal server error"}), 500
+
+    def handle_apply_dac_overlay(self, client_id: str):
+        """Handle POST /api/clients/<client_id>/dac_overlay/apply.
+
+        SSHes into the client at <client_id>.local using the server's
+        install key, rewrites /boot/firmware/config.txt to use the
+        currently-saved dac_overlay value, and schedules a reboot. Returns
+        as soon as the reboot is scheduled (~2s out) — the device will be
+        offline for 30-60s on a Pi Zero 2 W.
+
+        Body is optional. If `{"dac_overlay": "<id>"}` is provided, that
+        value is saved first (same validation as PUT) and then applied
+        atomically. Otherwise the currently-saved value is applied. The
+        server's own overlay is locked.
+        """
+        try:
+            if client_id == "fauxnos000":
+                return jsonify({"error": "server overlay is locked"}), 400
+
+            raw = self._get_client_raw(client_id)
+            if raw is None:
+                return jsonify({"error": f"Client {client_id} not found"}), 404
+
+            data = request.get_json(silent=True) or {}
+            if 'dac_overlay' in data:
+                overlay = (data.get('dac_overlay') or "").strip()
+                if not _dac_is_allowed(overlay):
+                    return jsonify({
+                        "error": f"unknown dac_overlay '{overlay}'",
+                        "allowed": sorted(ALLOWED_OVERLAYS),
+                    }), 400
+                raw["dac_overlay"] = overlay
+                self.config_manager.save_server_config()
+            else:
+                overlay = raw.get("dac_overlay") or DEFAULT_OVERLAY
+
+            target_host = f"{client_id}.local"
+            self.log(f"Applying dac_overlay={overlay} to {target_host}", "INFO")
+            ok, msg = _dac_remote_apply(target_host, overlay)
+            if not ok:
+                self.log(f"Apply dac_overlay failed: {msg}", "ERROR")
+                return jsonify({"error": msg}), 502
+            self.log(f"Apply dac_overlay ok: {msg}", "SUCCESS")
+            return jsonify({
+                "status": "applied",
+                "client_id": client_id,
+                "dac_overlay": overlay,
+                "target_host": target_host,
+                "message": msg,
+                # Hint for the UI's reboot-watch state. Pi Zero 2 W is the
+                # slowest target; bigger Pis come back faster.
+                "expected_reboot_seconds": 60,
+            })
+        except Exception as e:
+            self.log(f"Apply dac_overlay error: {e}", "ERROR")
+            return jsonify({"error": f"Internal server error: {e}"}), 500
 
     def handle_delete_client(self, client_id: str):
         """Handle DELETE /api/clients/<client_id>.
@@ -1074,14 +1180,24 @@ class FauxnosAPIServer:
         # Sanitize display_name (shell safety)
         display_name = display_name.replace('"', '').replace("'", '').replace(';', '')[:64]
 
-        script = self._generate_firstrun_sh(display_name)
+        # Optional ?dac_overlay= override. Brand-new clients aren't yet in
+        # server_config.json so we can't look up a per-device value here —
+        # the caller has to pass one if they want non-default. Validated
+        # against the allowlist so a bad query string can't smuggle an
+        # arbitrary string into config.txt.
+        requested_overlay = (request.args.get("dac_overlay") or "").strip()
+        if requested_overlay and not _dac_is_allowed(requested_overlay):
+            return jsonify({"error": f"unknown dac_overlay '{requested_overlay}'"}), 400
+        dac_overlay = requested_overlay or DEFAULT_OVERLAY
+
+        script = self._generate_firstrun_sh(display_name, dac_overlay)
         return Response(
             script,
             mimetype="text/plain",
             headers={"Content-Disposition": "attachment; filename=firstrun.sh"}
         )
 
-    def _generate_firstrun_sh(self, display_name: str = "") -> str:
+    def _generate_firstrun_sh(self, display_name: str = "", dac_overlay: str = "") -> str:
         return f"""#!/bin/bash
 # Fauxnos Client Bootstrap - Generated by fauxnos-server
 # Place this file in /boot/firmware/ on your Raspberry Pi SD card.
@@ -1093,6 +1209,7 @@ class FauxnosAPIServer:
 
 FAUXNOS_SERVER_HOST="fauxnos000.local"
 DISPLAY_NAME="{display_name}"
+FAUXNOS_DAC_OVERLAY="{dac_overlay or DEFAULT_OVERLAY}"
 
 # Wait for network and mDNS resolution (up to 120 seconds)
 echo "[fauxnos] Waiting for network..."
@@ -1106,8 +1223,9 @@ for i in $(seq 1 24); do
 done
 
 # Download and run install script from server
-export FAUXNOS_SERVER_HOST DISPLAY_NAME
+export FAUXNOS_SERVER_HOST DISPLAY_NAME FAUXNOS_DAC_OVERLAY
 echo "[fauxnos] Starting install from http://${{FAUXNOS_SERVER_HOST}}:8080/api/install/client.sh"
+echo "[fauxnos] DAC overlay: ${{FAUXNOS_DAC_OVERLAY}}"
 curl -sSL "http://${{FAUXNOS_SERVER_HOST}}:8080/api/install/client.sh" | bash
 
 # Self-delete
