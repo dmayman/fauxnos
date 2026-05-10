@@ -155,17 +155,32 @@ configure_system() {
     sudo usermod -a -G audio "$USER"
     sudo usermod -a -G pulse-access "$USER"
 
-    # Configure HiFiBerry DAC+ audio
-    log "Configuring HiFiBerry DAC+ audio..."
+    # Configure DAC dt-overlay
+    # FAUXNOS_DAC_OVERLAY is injected by firstrun.sh (which the server
+    # generates with a per-install default — see modules/dac_overlays.py
+    # DEFAULT_OVERLAY). If unset (legacy direct invocations), default to
+    # allo-boss-dac-pcm512x-audio: it drives both genuine Allo Boss and
+    # INNO-MAKER PCM5122 hats with the full PCM512x mixer enabled.
+    # Users with a HiFiBerry can switch via the Devices tab after install
+    # (Apply button rewrites this exact line and reboots).
+    local overlay="${FAUXNOS_DAC_OVERLAY:-allo-boss-dac-pcm512x-audio}"
+    case "$overlay" in
+        hifiberry-dac|hifiberry-dacplus|hifiberry-dacplusadc|allo-boss-dac-pcm512x-audio|iqaudio-dacplus) ;;
+        *)
+            log_error "Unknown FAUXNOS_DAC_OVERLAY: '$overlay'"
+            log_error "Allowed: hifiberry-dac, hifiberry-dacplus, hifiberry-dacplusadc, allo-boss-dac-pcm512x-audio, iqaudio-dacplus"
+            exit 1
+            ;;
+    esac
+
+    log "Configuring DAC overlay: $overlay"
     local config_txt="/boot/firmware/config.txt"
     local legacy_config_txt="/boot/config.txt"
 
     # Check which config file exists (newer Pi OS uses /boot/firmware/)
     if [ -f "$config_txt" ]; then
-        # Use /boot/firmware/config.txt (newer Pi OS)
         config_txt="/boot/firmware/config.txt"
     elif [ -f "$legacy_config_txt" ]; then
-        # Fallback to /boot/config.txt (older Pi OS)
         config_txt="$legacy_config_txt"
     fi
 
@@ -176,13 +191,13 @@ configure_system() {
             log "Disabled onboard audio"
         fi
 
-        # Enable HiFiBerry DAC+ overlay
-        if ! grep -q "^dtoverlay=hifiberry-dac" "$config_txt"; then
-            echo "dtoverlay=hifiberry-dac" | sudo tee -a "$config_txt" > /dev/null
-            log "Enabled HiFiBerry DAC overlay"
-        fi
+        # Strip every overlay we manage so re-running install with a
+        # different overlay choice doesn't leave stragglers behind, then
+        # write the chosen one. Idempotent.
+        sudo sed -i '/^dtoverlay=hifiberry/d; /^dtoverlay=allo-/d; /^dtoverlay=iqaudio-/d' "$config_txt"
+        echo "dtoverlay=$overlay" | sudo tee -a "$config_txt" > /dev/null
 
-        log_success "HiFiBerry DAC+ configured in $config_txt"
+        log_success "DAC overlay set to '$overlay' in $config_txt"
     else
         log_error "Could not find config.txt file"
     fi
