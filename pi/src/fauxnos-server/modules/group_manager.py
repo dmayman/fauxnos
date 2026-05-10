@@ -42,14 +42,31 @@ class SnapcastGroupManager:
             request_data = json.dumps(request) + "\n"
             sock.send(request_data.encode())
 
-            # Receive response
-            response_data = sock.recv(4096).decode()
+            # Receive response. snapserver frames each message with a trailing
+            # "\n" — read until we see one, not just the first 4 KB. Server.GetStatus
+            # easily exceeds 4 KB once a couple of clients + streams are
+            # registered, and a single recv(4096) would truncate the JSON
+            # mid-token. That truncation was silently breaking every group
+            # operation downstream (find_client_group → "not in any group" →
+            # home_group never saved) so the maintenance loop / on-connect
+            # callbacks were essentially no-ops.
+            chunks: list[bytes] = []
+            while True:
+                chunk = sock.recv(8192)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                if b"\n" in chunk:
+                    break
             sock.close()
 
-            if response_data:
-                response = json.loads(response_data.strip())
-                return response
-            return None
+            response_data = b"".join(chunks).decode()
+            if not response_data:
+                return None
+            # Take only the first complete frame; ignore any trailing
+            # notifications snapserver may have piggy-backed.
+            first_line = response_data.split("\n", 1)[0]
+            return json.loads(first_line)
 
         except Exception as e:
             print(f"❌ Failed to send snapcast command {method}: {e}")
