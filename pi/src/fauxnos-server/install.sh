@@ -280,12 +280,14 @@ download_server_code() {
         "modules/group_manager.py"
         "modules/client_monitor.py"
         "modules/volume_manager.py"
+        "modules/install_runner.py"
     )
 
+    # The web UI is React + Vite. index.html references hashed asset files
+    # (web/assets/index-XXXXXX.{js,css}) that change every build, so we only
+    # list index.html here and parse it for asset paths after download.
     local web_files=(
         "web/index.html"
-        "web/app.js"
-        "web/style.css"
     )
 
     local test_files=(
@@ -328,6 +330,29 @@ download_server_code() {
             log_warning "Failed to download: $file (may not exist yet)"
         fi
     done
+
+    # Pull the hashed React assets that web/index.html references. Vite emits
+    # filenames like web/assets/index-DDCOYkvc.js that change every build, so
+    # we extract them from the just-downloaded index.html instead of hard-
+    # coding. If index.html is missing (download failed), this is a no-op.
+    if [ -f "web/index.html" ]; then
+        mkdir -p web/assets
+        local asset_paths
+        asset_paths=$(grep -oE '/assets/[A-Za-z0-9_.-]+\.(js|css)' web/index.html 2>/dev/null | sort -u || true)
+        if [ -n "$asset_paths" ]; then
+            for asset_path in $asset_paths; do
+                local asset_file="web${asset_path}"  # e.g. web/assets/index-DDCOYkvc.js
+                local asset_url="${REPO_URL}/pi/src/fauxnos-server/${asset_file}"
+                if curl -fsSL "$asset_url" -o "${asset_file}" 2>/dev/null; then
+                    log "Downloaded: ${asset_file}"
+                else
+                    log_warning "Failed to download: ${asset_file}"
+                fi
+            done
+        else
+            log_warning "No /assets/* references found in web/index.html — UI may be broken"
+        fi
+    fi
 
     # Also download client install.sh so API can serve it
     mkdir -p "../fauxnos-client"
