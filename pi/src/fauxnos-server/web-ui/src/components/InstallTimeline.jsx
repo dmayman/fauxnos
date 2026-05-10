@@ -8,7 +8,7 @@ import { apiFetch, subscribeInstallStream } from '../api'
  * events into local state. Hydrates from /api/install/status first so a
  * mid-install reload re-renders the in-progress timeline immediately.
  */
-export default function InstallTimeline({ onDone }) {
+export default function InstallTimeline({ onDone, onRetry }) {
   const [snapshot, setSnapshot] = useState(null)
   const [showLog, setShowLog] = useState(false)
   const [, forceTick] = useState(0)
@@ -55,6 +55,13 @@ export default function InstallTimeline({ onDone }) {
 
   const terminal = snapshot.status === 'succeeded' || snapshot.status === 'failed' || snapshot.status === 'cancelled'
 
+  // A failed step can carry a `fallback_kind` marker the runner attached when
+  // the failure has a known one-shot fix. The only one today is
+  // "auth_key_missing" (server's install key isn't in the Pi's
+  // authorized_keys). Surface it inline so the user can recover without
+  // bouncing back through PreInstallView.
+  const fallbackStep = snapshot.steps.find((s) => s.fallback_kind)
+
   return (
     <div>
       <div className="timeline">
@@ -76,6 +83,13 @@ export default function InstallTimeline({ onDone }) {
       )}
       {snapshot.status === 'cancelled' && (
         <div className="timeline-banner failure">Install cancelled</div>
+      )}
+
+      {fallbackStep && fallbackStep.fallback_kind === 'auth_key_missing' && (
+        <AuthKeyMissingFallback
+          targetHost={snapshot.target_host}
+          onRetry={onRetry}
+        />
       )}
 
       <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
@@ -127,6 +141,62 @@ function TimelineStep({ step, active }) {
         {tailLine && <div className="timeline-tail">{tailLine}</div>}
       </div>
       <div className="timeline-duration">{duration}</div>
+    </div>
+  )
+}
+
+/**
+ * Inline recovery panel for the "server's install key isn't authorized on the
+ * target Pi" failure. Renders the exact two-step Mac command (with the user's
+ * target_host baked in) plus a Retry button that re-POSTs /api/install/start
+ * via the parent's onRetry callback.
+ */
+function AuthKeyMissingFallback({ targetHost, onRetry }) {
+  const [copied, setCopied] = useState(false)
+  // The wizard is served by the same Flask process that hosts
+  // /api/install/server-pubkey, so window.location.host already points at the
+  // right server:port for the curl call.
+  const serverOrigin = window.location.host
+  const command = [
+    `# 1. Drop the stale host key from your Mac's known_hosts (harmless if absent)`,
+    `ssh-keygen -R ${targetHost}`,
+    ``,
+    `# 2. Append the server's install pubkey to the fresh Pi's authorized_keys`,
+    `curl -sS http://${serverOrigin}/api/install/server-pubkey | \\`,
+    `  ssh -o StrictHostKeyChecking=accept-new user@${targetHost} \\`,
+    `  'mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat - >> ~/.ssh/authorized_keys && sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'`,
+  ].join('\n')
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(command)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      window.prompt('Copy this command:', command)
+    }
+  }
+
+  return (
+    <div className="card" style={{ marginTop: 12 }}>
+      <h4 style={{ marginTop: 0 }}>Authorize the server's key from your workstation</h4>
+      <p style={{ marginTop: 4, fontSize: 13, lineHeight: 1.5 }}>
+        The server reached <code>{targetHost}</code> but its install key isn't in{' '}
+        <code>~/.ssh/authorized_keys</code> on the Pi (Pi Imager may only have kept your
+        personal key). Run this on the workstation that can already SSH to the Pi, then
+        click Retry:
+      </p>
+      <div className="pubkey-block">
+        <pre>{command}</pre>
+        <button className={`pubkey-copy ${copied ? 'copied' : ''}`} onClick={copy}>
+          {copied ? '✓ Copied' : '📋 Copy'}
+        </button>
+      </div>
+      {onRetry && (
+        <button className="btn-primary" onClick={onRetry} style={{ marginTop: 8 }}>
+          Retry SSH
+        </button>
+      )}
     </div>
   )
 }

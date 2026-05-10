@@ -90,6 +90,25 @@ export default function AddDeviceTab({ onDeviceAdded }) {
     setResetTick((n) => n + 1)
   }
 
+  // Re-run the install with the same display_name + target_host we already
+  // have in state — used by the InstallTimeline's auth-failure recovery
+  // panel after the user manually authorizes the server's key on the Pi.
+  // Keeps the wizard on the timeline view instead of bouncing back to
+  // PreInstallView (where the user would have to re-type the device name).
+  const retry = async () => {
+    setSubmitError('')
+    try {
+      await apiFetch('/api/install/start', {
+        method: 'POST',
+        body: JSON.stringify({ display_name: displayName.trim(), target_host: targetHost.trim() }),
+      })
+      setCompleted(null)
+      setResetTick((n) => n + 1)
+    } catch (e) {
+      setSubmitError(String(e.message || e))
+    }
+  }
+
   return (
     <div>
       <div className="panel-header"><h2>Add Device</h2></div>
@@ -110,7 +129,7 @@ export default function AddDeviceTab({ onDeviceAdded }) {
       {(running || completed) && (
         <div className="card">
           <h3>{completed?.status === 'succeeded' ? 'Install complete' : 'Installing'}</h3>
-          <InstallTimeline key={resetTick} onDone={onDone} />
+          <InstallTimeline key={resetTick} onDone={onDone} onRetry={retry} />
           {completed && (
             <button className="btn-secondary" onClick={reset} style={{ marginTop: 12 }}>
               {completed.status === 'succeeded' ? 'Install another' : 'Try again'}

@@ -120,6 +120,11 @@ class StepState:
     ended_at: Optional[float] = None
     log_tail: deque = field(default_factory=lambda: deque(maxlen=LOG_TAIL_MAXLEN))
     note: Optional[str] = None  # short human note (e.g. why stalled, what failed)
+    # Marker the UI checks to render a recovery panel for known-recoverable
+    # failures. Currently only "auth_key_missing" is used (set when paramiko
+    # raises AuthenticationException — i.e. the target Pi is reachable but the
+    # server's install key isn't in its authorized_keys).
+    fallback_kind: Optional[str] = None
 
     def snapshot(self) -> dict:
         return {
@@ -134,6 +139,7 @@ class StepState:
             ),
             "log_tail": list(self.log_tail),
             "note": self.note,
+            "fallback_kind": self.fallback_kind,
         }
 
 
@@ -192,6 +198,10 @@ class InstallRunner:
         self._thread: Optional[threading.Thread] = None
         self._ssh_client = None
         self._last_stdout_at: float = 0.0
+        # Set by _ssh_connect when paramiko raises AuthenticationException, so
+        # _run can tag the failed `connect` step with a recovery-fallback marker
+        # the UI listens for.
+        self._auth_failed: bool = False
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -272,23 +282,37 @@ class InstallRunner:
         with self._lock:
             for i, s in enumerate(self.steps):
                 if s.id == step_id:
-                    # Auto-succeed any earlier active steps.
+                    # Track which steps actually changed so we can broadcast
+                    # an event for each. Otherwise the SSE stream only carries
+                    # the new active step and the UI keeps the earlier ones
+                    # rendered as `active` (with a ticking-up duration) even
+                    # though we've already moved past them server-side.
+                    changed: list[StepState] = []
                     if s.status not in ("active",):
                         s.status = "active"
                         s.started_at = s.started_at or time.time()
                         s.ended_at = None
+                        changed.append(s)
                     for j in range(i):
                         prev = self.steps[j]
                         if prev.status in ("pending",):
                             prev.status = "skipped"
                             prev.started_at = prev.started_at or time.time()
                             prev.ended_at = time.time()
+                            changed.append(prev)
                         elif prev.status == "active":
                             prev.status = "succeeded"
                             prev.ended_at = time.time()
+                            changed.append(prev)
                     self._current_step_idx = i
                     self._last_stdout_at = time.time()
-                    self._emit("step", s.snapshot())
+                    # Always emit at least one event so a re-entry of the same
+                    # active step still pulses (subscribers can rely on
+                    # `step` events as a heartbeat for the current step).
+                    if not changed:
+                        changed = [s]
+                    for st in changed:
+                        self._emit("step", st.snapshot())
                     return
 
     def _succeed_step(self, step_id: str):
@@ -299,13 +323,15 @@ class InstallRunner:
                 s.ended_at = time.time()
                 self._emit("step", s.snapshot())
 
-    def _fail_step(self, step_id: str, note: str):
+    def _fail_step(self, step_id: str, note: str, fallback_kind: Optional[str] = None):
         with self._lock:
             s = self._step_by_id(step_id)
             if s and s.status not in ("succeeded", "failed"):
                 s.status = "failed"
                 s.note = note
                 s.ended_at = time.time()
+                if fallback_kind:
+                    s.fallback_kind = fallback_kind
                 self._emit("step", s.snapshot())
 
     def _append_tail(self, line: str):
@@ -355,6 +381,14 @@ class InstallRunner:
             self._enter_step("connect")
             ssh = self._ssh_connect()
             if ssh is None:
+                if self._auth_failed:
+                    note = (
+                        "Authentication failed — the server's install key isn't "
+                        "authorized on the target Pi yet. Add it from your "
+                        "workstation, then Retry."
+                    )
+                    self._fail_step("connect", note, fallback_kind="auth_key_missing")
+                    return self._finish("failed", "SSH authentication failed")
                 self._fail_step("connect", "SSH connection failed")
                 return self._finish("failed", "SSH connection failed")
             self._ssh_client = ssh
@@ -472,6 +506,19 @@ class InstallRunner:
             )
             self._append_tail(f"SSH connected as {self.ssh_user}@{self.target_host}")
             return client
+        except paramiko.AuthenticationException:
+            # The Pi is reachable (network + sshd OK) but the server's install
+            # key isn't in its authorized_keys. Pi Imager sometimes drops the
+            # second key in the "Allow public-key authentication only" field,
+            # so the user's personal key lands but ours doesn't. Surface this
+            # distinctly so the UI can render a one-shot Mac-side recovery.
+            self._append_tail("SSH connect failed: Authentication failed.")
+            self._auth_failed = True
+            try:
+                client.close()
+            except Exception:
+                pass
+            return None
         except Exception as e:
             self._append_tail(f"SSH connect failed: {e}")
             try:
