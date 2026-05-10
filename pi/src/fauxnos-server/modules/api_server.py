@@ -1049,15 +1049,56 @@ class FauxnosAPIServer:
         })
 
     def _cleanup_after_install(self, client_id: Optional[str]):
-        """Hook called by InstallRunner after a successful install. Delegates
-        to handle_cleanup_orphans so the install-time snapclient registration
-        (under the pre-rename hostname) gets evicted automatically. Failures
-        are non-fatal — the install itself already succeeded by this point."""
+        """Hook called by InstallRunner after a successful install.
+
+        Two things happen here:
+          1) handle_cleanup_orphans evicts the install-time snapclient
+             registration that lingers under the pre-rename hostname.
+          2) ensure_client_home_assignment_with_mapping saves a home_group
+             for the freshly-installed client. The verify step has just
+             confirmed the snapclient reconnected post-reboot, so this is
+             the first moment the client is actually present in
+             snapserver's group roster — closing the race where register
+             writes server_config.json BEFORE snapclient connects (which
+             left home_group=None and broke the Settings gear icon with a
+             404 on /api/clients/null/sources).
+
+        Both are best-effort; failures are non-fatal because the install
+        itself already succeeded.
+        """
         try:
             self.handle_cleanup_orphans()
             self.log(f"Auto-cleanup completed after install of {client_id}", "INFO")
         except Exception as e:
             self.log(f"Auto-cleanup after install failed: {e}", "WARNING")
+
+        if not client_id:
+            return
+        try:
+            client_config = None
+            for c in self.config_manager.server_config.get("clients", []):
+                if c.get("id") == client_id:
+                    client_config = c
+                    break
+            if not client_config:
+                self.log(f"Auto-assign skipped: {client_id} not in server_config", "WARNING")
+                return
+            home_source = client_config.get("home_source")
+            if not home_source:
+                self.log(f"Auto-assign skipped: {client_id} has no home_source", "WARNING")
+                return
+            from .group_manager import SnapcastGroupManager
+            gm = SnapcastGroupManager(config_manager=self.config_manager)
+            if gm.ensure_client_home_assignment_with_mapping(
+                config_id=client_id,
+                snapcast_id=client_id,
+                preferred_source=home_source,
+            ):
+                self.log(f"Auto-assigned home_group for {client_id} after install", "SUCCESS")
+            else:
+                self.log(f"Auto-assign returned False for {client_id}", "WARNING")
+        except Exception as e:
+            self.log(f"Auto-assign after install failed: {e}", "WARNING")
 
     def handle_join_group(self):
         """Handle POST /api/groups/join — {client_id, target_client_id}"""

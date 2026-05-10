@@ -65,17 +65,25 @@ class FauxnosServer:
         self.setup_client_callbacks()
 
     def log(self, message: str, level: str = "INFO"):
-        """Centralized logging"""
-        if self.verbose or level in ["ERROR", "WARNING"]:
-            colors = {
-                "INFO": "\033[1;36m",    # Bright Cyan
-                "SUCCESS": "\033[0;32m", # Green
-                "WARNING": "\033[1;33m", # Yellow
-                "ERROR": "\033[0;31m",   # Red
-            }
-            reset = "\033[0m"
-            prefix = "🔧" if level == "INFO" else "✓" if level == "SUCCESS" else "⚠" if level == "WARNING" else "✗"
-            print(f"{colors.get(level, '')}{prefix} [SERVER] {message}{reset}")
+        """Centralized logging — always prints, regardless of self.verbose.
+
+        Previously gated on `self.verbose or level in ["ERROR", "WARNING"]`,
+        which silently swallowed every INFO/SUCCESS message including the
+        maintenance loop's "Running periodic group assignment check…"
+        heartbeat. That made the loop indistinguishable from a stuck thread
+        when diagnosing issues from journalctl. Verbose can still be used
+        elsewhere for debug-only output; this top-level log line is too
+        important to suppress.
+        """
+        colors = {
+            "INFO": "\033[1;36m",    # Bright Cyan
+            "SUCCESS": "\033[0;32m", # Green
+            "WARNING": "\033[1;33m", # Yellow
+            "ERROR": "\033[0;31m",   # Red
+        }
+        reset = "\033[0m"
+        prefix = "🔧" if level == "INFO" else "✓" if level == "SUCCESS" else "⚠" if level == "WARNING" else "✗"
+        print(f"{colors.get(level, '')}{prefix} [SERVER] {message}{reset}")
 
     def setup_client_callbacks(self):
         """Setup client event callbacks for group assignment"""
@@ -171,6 +179,49 @@ class FauxnosServer:
         else:
             self.log("❌ Failed to start client monitoring", "ERROR")
 
+    def sweep_existing_clients(self):
+        """Back-fill on_client_connect for clients already connected at startup.
+
+        SnapcastClientMonitor only forwards future Client.OnConnect
+        notifications, so any client whose snapclient connected before our
+        monitor subscribed (e.g. across a server restart, or right after a
+        fresh install where the post-reboot connect raced the monitor
+        startup) never has its home_group auto-saved. That manifests as a
+        404 from the Settings panel ("/api/clients/null/sources") because
+        /api/groups can't reverse-map the group to a client.
+
+        This sweep asks snapserver for the current roster once at startup
+        and synthesises a connect event for each currently-connected
+        client. The downstream on_client_connect callback is idempotent —
+        ensure_client_home_assignment_with_mapping skips clients that
+        already have a home_group saved.
+        """
+        if not self.client_monitor.on_client_connect:
+            return
+        try:
+            # Use the group_manager's RPC helper so we benefit from the
+            # newline-framed read fix; a direct socket.recv(4096) here would
+            # re-introduce the truncation bug Server.GetStatus already trips.
+            gm = SnapcastGroupManager(config_manager=self.config_manager)
+            status = gm.get_server_status()
+            if not status or "result" not in status:
+                self.log("Startup sweep: snapserver returned no status", "WARNING")
+                return
+            groups = status["result"].get("server", {}).get("groups", [])
+            dispatched = 0
+            for g in groups:
+                for c in g.get("clients", []):
+                    if not c.get("connected"):
+                        continue
+                    dispatched += 1
+                    try:
+                        self.client_monitor.on_client_connect(c)
+                    except Exception as e:
+                        self.log(f"Startup sweep: on_client_connect raised for {c.get('id')}: {e}", "WARNING")
+            self.log(f"Startup sweep: dispatched on_client_connect for {dispatched} already-connected client(s)", "SUCCESS")
+        except Exception as e:
+            self.log(f"Startup sweep failed: {e}", "WARNING")
+
     def start_volume_management(self):
         """Start volume management (WebSocket listeners)"""
         self.log("Starting volume management...")
@@ -211,6 +262,11 @@ class FauxnosServer:
         # Start client monitoring (skip in test mode)
         if not self.test_mode:
             self.start_client_monitoring()
+            # Immediately back-fill on_client_connect for the clients that
+            # were already connected when we started subscribing. Must come
+            # AFTER start_client_monitoring so the callback is wired, but it
+            # doesn't depend on the JSON-RPC notification socket itself.
+            self.sweep_existing_clients()
 
         # Start volume management (skip in test mode)
         if not self.test_mode:
