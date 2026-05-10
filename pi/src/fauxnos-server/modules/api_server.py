@@ -13,13 +13,16 @@ import argparse
 import subprocess
 import socket
 import os
+import queue as queue_mod
+import time
 import requests as http_requests
 from pathlib import Path
 from datetime import datetime, timezone
-from flask import Flask, request, jsonify, Response, send_from_directory, abort
+from flask import Flask, request, jsonify, Response, send_from_directory, abort, stream_with_context
 from typing import Optional
 
 from .config_manager import ConfigManager, ClientConfig
+from .install_runner import InstallManager, InstallAlreadyRunning, DEFAULT_KEY_PATH
 
 # Path to the web UI static files (relative to this module's location)
 _SERVER_DIR = Path(__file__).parent.parent
@@ -31,11 +34,24 @@ CLIENT_DIR = CLIENT_INSTALL_SCRIPT.parent
 app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path='/static')
 
 
+def _sse_event(event_type: str, data) -> str:
+    """Format an SSE event the way the spec wants: blank line terminator."""
+    return f"event: {event_type}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
 class FauxnosAPIServer:
     def __init__(self, config_manager: Optional[ConfigManager] = None, test_mode: bool = False, verbose: bool = False):
         self.test_mode = test_mode
         self.verbose = verbose
         self.config_manager = config_manager or ConfigManager(test_mode=test_mode)
+        # Singleton InstallManager — drives the Add Device wizard. The runner
+        # injections let it call back into our snapcast/client status without
+        # re-implementing the JSON-RPC plumbing.
+        self.install_manager = InstallManager(
+            server_host="fauxnos000.local",
+            client_status_fn=self._list_clients_for_runner,
+            snapcast_status_fn=self._get_snapcast_client_status,
+        )
         self.setup_routes()
 
     def log(self, message: str, level: str = "INFO"):
@@ -148,6 +164,28 @@ class FauxnosAPIServer:
         @app.route('/api/install/files/client/<path:filepath>')
         def serve_client_file(filepath):
             return self.handle_serve_client_file(filepath)
+
+        # ── Server-driven install (Add Device wizard) ─────────────────────────
+
+        @app.route('/api/install/server-pubkey', methods=['GET'])
+        def get_server_pubkey():
+            return self.handle_get_server_pubkey()
+
+        @app.route('/api/install/start', methods=['POST'])
+        def start_install():
+            return self.handle_start_install()
+
+        @app.route('/api/install/status', methods=['GET'])
+        def install_status():
+            return self.handle_install_status()
+
+        @app.route('/api/install/stream', methods=['GET'])
+        def install_stream():
+            return self.handle_install_stream()
+
+        @app.route('/api/install/cancel', methods=['POST'])
+        def cancel_install():
+            return self.handle_cancel_install()
 
     # ── Web UI handler ─────────────────────────────────────────────────────────
 
@@ -983,6 +1021,136 @@ rm -- "$0"
             abort(404)
 
         return send_from_directory(str(CLIENT_DIR), filepath)
+
+    # ── Server-driven install handlers ─────────────────────────────────────────
+
+    def _list_clients_for_runner(self) -> list:
+        """Adapter for InstallRunner.client_status_fn — returns a minimal list
+        of {client_id, connected} dicts so the runner can detect a brand-new
+        client appearing in the roster after reboot without depending on the
+        full Flask request context."""
+        try:
+            clients = self.config_manager.get_all_clients()
+            connected_map = self._get_snapcast_client_status()
+            return [
+                {"client_id": c.id, "connected": connected_map.get(c.id, False)}
+                for c in clients
+            ]
+        except Exception:
+            return []
+
+    def handle_get_server_pubkey(self):
+        """Handle GET /api/install/server-pubkey — text/plain Ed25519 public key.
+
+        The user pastes this into Pi Imager when flashing a new client (along
+        with their personal key). install.sh writes the keypair on first run.
+        """
+        pub_path = Path(str(DEFAULT_KEY_PATH) + ".pub")
+        try:
+            text = pub_path.read_text()
+        except FileNotFoundError:
+            return Response(
+                f"# Server install key not found at {pub_path}.\n"
+                f"# Run install.sh on this server (or its setup_install_keypair step) to generate it.\n",
+                mimetype="text/plain",
+                status=404,
+            )
+        except OSError as e:
+            return Response(f"# Error reading key: {e}\n", mimetype="text/plain", status=500)
+        return Response(text, mimetype="text/plain")
+
+    def handle_start_install(self):
+        """Handle POST /api/install/start — kick off a wizard install.
+
+        Body: { display_name: str, target_host?: str (default fauxnos-client.local) }
+        Returns 200 {install_id, …} on success, 409 if another install is running.
+        """
+        data = request.get_json(silent=True) or {}
+        display_name = (data.get("display_name") or "").strip()[:64]
+        target_host = (data.get("target_host") or "fauxnos-client.local").strip()
+        if not display_name:
+            return jsonify({"error": "display_name is required"}), 400
+        try:
+            runner = self.install_manager.start(target_host=target_host, display_name=display_name)
+            self.log(f"Install started: {runner.install_id} → {target_host} ({display_name})", "SUCCESS")
+            return jsonify(runner.snapshot()), 200
+        except InstallAlreadyRunning as e:
+            return jsonify({
+                "error": "already_running",
+                **e.runner.snapshot(),
+            }), 409
+        except Exception as e:
+            self.log(f"Install start failed: {e}", "ERROR")
+            return jsonify({"error": str(e)}), 500
+
+    def handle_install_status(self):
+        """Handle GET /api/install/status — snapshot of the current or last install."""
+        runner = self.install_manager.current_or_last()
+        if runner is None:
+            return jsonify({"status": "idle"})
+        return jsonify(runner.snapshot())
+
+    def handle_install_stream(self):
+        """Handle GET /api/install/stream — SSE stream of install events.
+
+        Events:
+          - snapshot: full state (sent first to a new subscriber)
+          - step: a step's state changed
+          - tail: a new stdout line was captured
+          - done: the install finished (final snapshot)
+        Plus a `:keepalive` comment every 15s to defeat proxies.
+        """
+        runner = self.install_manager.current_or_last()
+        if runner is None:
+            # Nothing to stream yet — return an empty SSE stream that idles
+            # until a runner starts. We still want a 200 + heartbeat so the
+            # browser EventSource stays open.
+            def empty_stream():
+                while True:
+                    yield ": keepalive\n\n"
+                    time.sleep(15)
+            return Response(stream_with_context(empty_stream()),
+                            mimetype="text/event-stream",
+                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+        sub = runner.subscribe()
+        terminal = runner.status in ("succeeded", "failed", "cancelled")
+
+        def gen(rnr=runner, q=sub, already_done=terminal):
+            try:
+                if already_done:
+                    # Replay the final state then close — the UI uses this to
+                    # rehydrate after a refresh on a finished install.
+                    yield _sse_event("done", rnr.snapshot())
+                    return
+                last_keepalive = time.time()
+                while True:
+                    try:
+                        ev = q.get(timeout=15)
+                    except queue_mod.Empty:
+                        yield ": keepalive\n\n"
+                        last_keepalive = time.time()
+                        continue
+                    yield _sse_event(ev["type"], ev["data"])
+                    if ev["type"] == "done":
+                        return
+                    if time.time() - last_keepalive > 15:
+                        yield ": keepalive\n\n"
+                        last_keepalive = time.time()
+            finally:
+                rnr.unsubscribe(q)
+
+        return Response(stream_with_context(gen()),
+                        mimetype="text/event-stream",
+                        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    def handle_cancel_install(self):
+        """Handle POST /api/install/cancel — cancel the active install (best-effort)."""
+        runner = self.install_manager.current()
+        if runner is None:
+            return jsonify({"status": "idle"})
+        runner.cancel()
+        return jsonify({"status": "cancelling", "install_id": runner.install_id})
 
     # ── MQTT mode listener ─────────────────────────────────────────────────────
 

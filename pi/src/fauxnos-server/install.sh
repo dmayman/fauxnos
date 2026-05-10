@@ -142,7 +142,7 @@ install_system_dependencies() {
     fi
 
     log "Installing Python packages..."
-    pip3 install --user flask flask-cors requests websockets paho-mqtt --break-system-packages
+    pip3 install --user flask flask-cors requests websockets paho-mqtt paramiko --break-system-packages
 
     log_success "System dependencies installed"
 }
@@ -342,6 +342,36 @@ download_server_code() {
     chmod +x fauxnos-server.py 2>/dev/null || true
 
     log_success "Server code downloaded to: $INSTALL_DIR"
+}
+
+# ─── Step 5b: Server SSH identity for client install runner ──────────────────
+#
+# The Add Device wizard (web UI) drives client installs by SSHing into a
+# freshly-flashed Pi as `user@fauxnos-client.local` and running install.sh
+# end-to-end. That requires a key the server itself owns — the user pastes
+# this .pub into Pi Imager's "Allow public-key authentication only" field
+# alongside their personal 1Password key. Idempotent: skip if already there.
+setup_install_keypair() {
+    log_section "Setting Up Server SSH Identity"
+    local ssh_dir="$HOME/.ssh"
+    local key="$ssh_dir/id_ed25519_fauxnos"
+
+    mkdir -p "$ssh_dir"
+    chmod 700 "$ssh_dir"
+    touch "$ssh_dir/known_hosts"
+    chmod 600 "$ssh_dir/known_hosts"
+
+    if [ -f "$key" ] && [ -f "$key.pub" ]; then
+        log "Server install keypair already exists at $key"
+    else
+        log "Generating Ed25519 install keypair (no passphrase)..."
+        ssh-keygen -t ed25519 -N "" -C "fauxnos-server@$(hostname)" -f "$key" >/dev/null
+        log_success "Generated $key"
+    fi
+    chmod 600 "$key"
+    chmod 644 "$key.pub"
+    log "Server public key (paste into Pi Imager when flashing a client):"
+    cat "$key.pub" | tee -a "$LOG_FILE"
 }
 
 # ─── Step 6: System configuration ─────────────────────────────────────────────
@@ -932,6 +962,7 @@ main() {
     install_system_dependencies
     install_go_librespot
     download_server_code
+    setup_install_keypair
     configure_system
     setup_pulseaudio
     initialize_server_config
