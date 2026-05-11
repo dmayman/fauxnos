@@ -69,6 +69,8 @@ class FauxnosClient:
             ir_enable_callback=self.ir_listener.set_enabled,
             ir_clear_callback=self.ir_listener.clear_command,
             ir_state_getter=self.ir_listener.state_manager.get_ir,
+            ir_learn_start_callback=self.ir_listener.start_learning,
+            ir_learn_cancel_callback=self.ir_listener.cancel_learning,
         )
 
         # Flag for graceful shutdown

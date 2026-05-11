@@ -61,6 +61,14 @@ class FauxnosAPIServer:
             snapcast_status_fn=self._get_snapcast_client_status,
             on_install_succeeded=self._cleanup_after_install,
         )
+        # IR learn pub/sub: per-client list of SSE subscriber queues
+        # + last-seen event payload (delivered as a snapshot when a new
+        # subscriber connects so a late tab catches an in-flight learn).
+        # Keyed by client_id. Guarded by _ir_learn_lock.
+        import threading as _threading
+        self._ir_learn_subscribers: dict = {}
+        self._ir_learn_last_event: dict = {}
+        self._ir_learn_lock = _threading.Lock()
         self.setup_routes()
 
     def log(self, message: str, level: str = "INFO"):
@@ -124,6 +132,18 @@ class FauxnosAPIServer:
         @app.route('/api/clients/<client_id>/ir', methods=['PUT'])
         def put_client_ir(client_id):
             return self.handle_put_client_ir(client_id)
+
+        @app.route('/api/clients/<client_id>/ir/learn', methods=['POST'])
+        def start_client_ir_learn(client_id):
+            return self.handle_start_client_ir_learn(client_id)
+
+        @app.route('/api/clients/<client_id>/ir/learn/cancel', methods=['POST'])
+        def cancel_client_ir_learn(client_id):
+            return self.handle_cancel_client_ir_learn(client_id)
+
+        @app.route('/api/clients/<client_id>/ir/stream', methods=['GET'])
+        def stream_client_ir(client_id):
+            return self.handle_stream_client_ir(client_id)
 
         @app.route('/api/clients/<client_id>', methods=['PUT'])
         def update_client(client_id):
@@ -748,6 +768,135 @@ class FauxnosAPIServer:
         except Exception as e:
             self.log(f"MQTT publish error on {topic}: {e}", "ERROR")
             return False
+
+    def handle_start_client_ir_learn(self, client_id: str):
+        """POST /api/clients/<id>/ir/learn.
+
+        Body: {"command_id": "<id>", "timeout_s": <number>}.
+        timeout_s defaults to 15 if omitted, clamped to [1, 60].
+
+        Publishes set/clients/<id>/ir/learn/start over MQTT. The client
+        echoes the started/captured/timeout/cancelled lifecycle via
+        status/clients/<id>/ir/learn_event, which our MQTT listener
+        catches and broadcasts to /ir/stream subscribers.
+
+        202 if accepted (the client is the authority on whether it can
+        actually enter learn mode — e.g. listener might be disabled, in
+        which case it'll publish a 'rejected' learn_event back).
+        """
+        if self._get_client_raw(client_id) is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+        data = request.get_json(silent=True) or {}
+        command_id = data.get('command_id')
+        if command_id not in self.IR_COMMAND_IDS:
+            return jsonify({
+                "error": f"unknown command_id '{command_id}'",
+                "allowed": list(self.IR_COMMAND_IDS),
+            }), 400
+        try:
+            timeout_s = float(data.get('timeout_s', 15.0))
+        except (TypeError, ValueError):
+            return jsonify({"error": "timeout_s must be a number"}), 400
+        timeout_s = max(1.0, min(60.0, timeout_s))
+
+        payload = json.dumps({
+            'command_id': command_id,
+            'timeout_s': timeout_s,
+        })
+        ok = self._publish_mqtt(
+            f"set/clients/{client_id}/ir/learn/start", payload
+        )
+        if not ok:
+            return jsonify({"error": "MQTT broker unreachable"}), 502
+        return jsonify({
+            'status': 'accepted',
+            'client_id': client_id,
+            'command_id': command_id,
+            'timeout_s': timeout_s,
+        }), 202
+
+    def handle_cancel_client_ir_learn(self, client_id: str):
+        """POST /api/clients/<id>/ir/learn/cancel — abort any in-flight learn."""
+        if self._get_client_raw(client_id) is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+        ok = self._publish_mqtt(
+            f"set/clients/{client_id}/ir/learn/cancel", ""
+        )
+        if not ok:
+            return jsonify({"error": "MQTT broker unreachable"}), 502
+        return jsonify({'status': 'cancel_published', 'client_id': client_id}), 202
+
+    def handle_stream_client_ir(self, client_id: str):
+        """GET /api/clients/<id>/ir/stream — SSE of learn_event payloads.
+
+        Pattern matches install_runner's subscriber model. The new tab
+        gets the last-seen event as a snapshot so a learn in progress
+        is visible immediately. Heartbeats every 15s keep proxies happy.
+        """
+        if self._get_client_raw(client_id) is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+        q = self._ir_learn_subscribe(client_id)
+
+        @stream_with_context
+        def gen():
+            try:
+                last_heartbeat = time.time()
+                while True:
+                    # Wait up to 5s for an event; emit heartbeat at 15s.
+                    try:
+                        ev = q.get(timeout=5.0)
+                        yield _sse_event(ev['type'], ev['data'])
+                    except queue_mod.Empty:
+                        pass
+                    now = time.time()
+                    if now - last_heartbeat >= 15.0:
+                        yield ": heartbeat\n\n"
+                        last_heartbeat = now
+            finally:
+                self._ir_learn_unsubscribe(client_id, q)
+
+        return Response(gen(), mimetype='text/event-stream', headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        })
+
+    def _ir_learn_subscribe(self, client_id: str):
+        """Register a new SSE subscriber queue; deliver the last event as snapshot."""
+        q = queue_mod.Queue(maxsize=200)
+        with self._ir_learn_lock:
+            self._ir_learn_subscribers.setdefault(client_id, []).append(q)
+            last = self._ir_learn_last_event.get(client_id)
+        if last is not None:
+            try:
+                q.put_nowait({'type': 'snapshot', 'data': last})
+            except queue_mod.Full:
+                pass
+        return q
+
+    def _ir_learn_unsubscribe(self, client_id: str, q):
+        with self._ir_learn_lock:
+            subs = self._ir_learn_subscribers.get(client_id)
+            if subs and q in subs:
+                subs.remove(q)
+            if subs is not None and not subs:
+                self._ir_learn_subscribers.pop(client_id, None)
+
+    def _ir_learn_emit(self, client_id: str, payload: dict):
+        """Cache + broadcast a learn_event to all subscribers for this client."""
+        with self._ir_learn_lock:
+            self._ir_learn_last_event[client_id] = payload
+            subs = list(self._ir_learn_subscribers.get(client_id, []))
+        event = {'type': 'learn_event', 'data': payload}
+        for q in subs:
+            try:
+                q.put_nowait(event)
+            except queue_mod.Full:
+                # Slow consumer — drop oldest so the live stream keeps up.
+                try:
+                    q.get_nowait()
+                    q.put_nowait(event)
+                except Exception:
+                    pass
 
     def _ingest_client_ir_state(self, client_id: str, ir_block: dict):
         """Write the client's ir state into server_config (mirror update).
@@ -1618,16 +1767,19 @@ rm -- "$0"
                 # Existing: track each client's active source.
                 client.subscribe("status/clients/+/mode")
                 # IR mirroring: hello carries the full ir block on
-                # (re)connect; ir/state is fired on every change.
+                # (re)connect; ir/state is fired on every change;
+                # learn_event is the per-learn lifecycle stream.
                 client.subscribe("status/clients/+/hello")
                 client.subscribe("status/clients/+/ir/state")
+                client.subscribe("status/clients/+/ir/learn_event")
                 # Nudge every client to re-hello so the server's mirror
                 # is fresh after a server restart. Clients handle this
                 # in mqtt_client.py via the "get/clients/all/status"
                 # subscription.
                 client.publish("get/clients/all/status", "")
                 self.log(
-                    "MQTT listener connected, subscribed to mode/hello/ir-state"
+                    "MQTT listener connected, subscribed to "
+                    "mode/hello/ir-state/ir-learn_event"
                 )
 
         def on_message(client, userdata, msg):
@@ -1661,6 +1813,15 @@ rm -- "$0"
                     return
                 if isinstance(ir, dict):
                     self._ingest_client_ir_state(client_id, ir)
+                return
+
+            if action == "ir" and sub_action == "learn_event":
+                try:
+                    ev = json.loads(msg.payload.decode() or "{}")
+                except Exception:
+                    return
+                if isinstance(ev, dict) and ev.get('event'):
+                    self._ir_learn_emit(client_id, ev)
                 return
 
         mqtt_client = mqtt_lib.Client()

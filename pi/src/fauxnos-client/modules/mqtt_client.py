@@ -43,6 +43,8 @@ class MQTTClient:
                  ir_enable_callback: Optional[Callable[[bool], None]] = None,
                  ir_clear_callback: Optional[Callable[[str], None]] = None,
                  ir_state_getter: Optional[Callable[[], dict]] = None,
+                 ir_learn_start_callback: Optional[Callable[[str, float], bool]] = None,
+                 ir_learn_cancel_callback: Optional[Callable[[], bool]] = None,
                  broker_host: Optional[str] = None,
                  broker_port: int = 1883):
         """
@@ -58,11 +60,17 @@ class MQTTClient:
             ir_enable_callback: (bool) → None. Toggle the IR feature flag.
                 Wired to IRListener.set_enabled.
             ir_clear_callback: (command_id) → None. Forget a single command's
-                mapping. Wired to IRListener.clear_command. Learning is a
-                separate topic family (phase 4).
+                mapping. Wired to IRListener.clear_command.
             ir_state_getter: () → {"enabled","mappings"} dict. Used to
                 populate hello + status/ir/state payloads. Wired to
                 IRListener.state_manager.get_ir() in the daemon.
+            ir_learn_start_callback: (command_id, timeout_s) → bool. Enter
+                learn mode for the given command. Wired to
+                IRListener.start_learning. Returns False if a learn is
+                already in flight.
+            ir_learn_cancel_callback: () → bool. Cancel an in-flight learn.
+                Wired to IRListener.cancel_learning. Returns False if no
+                learn was active.
             broker_host: MQTT broker hostname (defaults to server_host from config)
             broker_port: MQTT broker port
         """
@@ -83,6 +91,8 @@ class MQTTClient:
         self.ir_enable_callback = ir_enable_callback
         self.ir_clear_callback = ir_clear_callback
         self.ir_state_getter = ir_state_getter
+        self.ir_learn_start_callback = ir_learn_start_callback
+        self.ir_learn_cancel_callback = ir_learn_cancel_callback
 
         # MQTT client setup
         self.client = mqtt.Client(client_id=f"fauxnos-{self.device_id}")
@@ -127,11 +137,12 @@ class MQTTClient:
             f"set/clients/{self.device_id}/mode",
             # Calibration is per-source (5-part topic), so use a + wildcard.
             f"set/clients/{self.device_id}/calibration/+",
-            # IR (hardware remote): enabled toggle + per-command clear.
-            # Learning commands (start/cancel) come in phase 4 and use
-            # additional sub-topics under .../ir/learn/+.
+            # IR (hardware remote): enabled toggle, per-command clear,
+            # and learn-mode lifecycle.
             f"set/clients/{self.device_id}/ir/enabled",
             f"set/clients/{self.device_id}/ir/clear/+",
+            f"set/clients/{self.device_id}/ir/learn/start",
+            f"set/clients/{self.device_id}/ir/learn/cancel",
             f"get/clients/{self.device_id}/volume",
             f"get/clients/{self.device_id}/status",
             f"get/clients/{self.device_id}/activity",
@@ -167,10 +178,16 @@ class MQTTClient:
             # 6-part topics (extra trailing identifier) are handled
             # before the generic _handle_command interface, which only
             # carries a single sub_action slot.
-            if (command_type == "set" and action == "ir"
-                    and sub_action == "clear" and tail):
-                self._handle_ir_clear(tail)
-                return
+            if command_type == "set" and action == "ir":
+                if sub_action == "clear" and tail:
+                    self._handle_ir_clear(tail)
+                    return
+                if sub_action == "learn" and tail == "start":
+                    self._handle_ir_learn_start(payload)
+                    return
+                if sub_action == "learn" and tail == "cancel":
+                    self._handle_ir_learn_cancel()
+                    return
 
             self._handle_command(command_type, action, payload, sub_action)
 
@@ -292,6 +309,50 @@ class MQTTClient:
         logger.info(f"MQTT ir/clear command: {command_id}")
         self.ir_clear_callback(command_id)
         self.publish_ir_state()
+
+    def _handle_ir_learn_start(self, payload: str):
+        """
+        Handle set/clients/<id>/ir/learn/start.
+
+        Payload is JSON: {"command_id": "<id>", "timeout_s": <number>}.
+        timeout_s defaults to 15 if omitted. The IRListener publishes
+        the resulting lifecycle event ('started' / 'captured' / etc.)
+        via the on_learn_event bridge in fauxnos_client.py.
+        """
+        if self.ir_learn_start_callback is None:
+            logger.warning("MQTT ir/learn/start but no callback wired")
+            return
+        try:
+            data = json.loads(payload or "{}")
+        except Exception:
+            logger.error(f"MQTT ir/learn/start: bad JSON payload: {payload!r}")
+            return
+        command_id = data.get("command_id")
+        if not command_id:
+            logger.error("MQTT ir/learn/start: missing command_id")
+            return
+        timeout_s = float(data.get("timeout_s", 15.0))
+        logger.info(f"MQTT ir/learn/start: {command_id} (timeout {timeout_s:.0f}s)")
+        ok = self.ir_learn_start_callback(command_id, timeout_s)
+        if not ok:
+            # IRListener already logs; surface to the bus too so the UI
+            # can recover (e.g. another learn was in flight).
+            self.client.publish(
+                f"status/clients/{self.device_id}/ir/learn_event",
+                json.dumps({
+                    "event": "rejected",
+                    "command_id": command_id,
+                    "reason": "listener_busy_or_disabled",
+                }),
+            )
+
+    def _handle_ir_learn_cancel(self):
+        """Handle set/clients/<id>/ir/learn/cancel — abort any in-flight learn."""
+        if self.ir_learn_cancel_callback is None:
+            logger.warning("MQTT ir/learn/cancel but no callback wired")
+            return
+        logger.info("MQTT ir/learn/cancel")
+        self.ir_learn_cancel_callback()
 
     def _send_hello(self):
         """Announce this device on MQTT"""
