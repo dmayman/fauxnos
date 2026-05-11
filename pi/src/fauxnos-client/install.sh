@@ -119,7 +119,9 @@ install_system_dependencies() {
         python3 \
         python3-pip \
         python3-venv \
-        python3-requests
+        python3-requests \
+        ir-keytable \
+        python3-evdev
 
     log "Installing Python packages..."
     pip3 install --user requests pyyaml --break-system-packages
@@ -228,6 +230,84 @@ configure_system() {
     grep -q "127.0.1.1.*$temp_hostname" /etc/hosts || echo "127.0.1.1 $temp_hostname" | sudo tee -a /etc/hosts > /dev/null
 
     log_success "System configuration completed"
+}
+
+# Configure GPIO IR receiver
+#
+# Sets up the kernel side of the optional hardware-remote feature so the
+# userspace listener (modules/ir_listener.py) has something to read from.
+# The userspace mapping is per-device state — flipping ir.enabled in the
+# web UI activates/deactivates the listener without touching anything
+# here. We always install the overlay + decoder service: cost is one
+# kernel module + a few KB of resident driver state, and it means a Pi
+# can pick up IR with no extra install steps later.
+#
+# Wiring (VS1838B → 40-pin header):
+#   VS1838B VCC → pin 1  (3.3V)
+#   VS1838B GND → pin 6  (GND)
+#   VS1838B OUT → pin 11 (GPIO17)
+#
+# 3.3V (not 5V) keeps the receiver's OUT line in spec for the Pi's GPIO,
+# which is NOT 5V-tolerant. GPIO17 is the gpio-ir overlay default and is
+# free on every audio HAT we ship (HiFiBerry DAC+ADC + Allo Boss both
+# use I2S on GPIO 18–21 + I2C on GPIO 2/3).
+configure_ir_receiver() {
+    log_section "Configuring IR Receiver"
+
+    local config_txt
+    if [ -f "/boot/firmware/config.txt" ]; then
+        config_txt="/boot/firmware/config.txt"
+    elif [ -f "/boot/config.txt" ]; then
+        config_txt="/boot/config.txt"
+    else
+        log_warning "Could not find config.txt — skipping IR overlay setup"
+        return 0
+    fi
+
+    # Idempotent: drop any prior gpio-ir line (so re-runs with a future
+    # different pin replace cleanly) and re-add. Pin 17 is the rc-core
+    # default; the userspace listener doesn't currently expose pin
+    # selection in the UI.
+    sudo sed -i '/^dtoverlay=gpio-ir/d' "$config_txt"
+    echo "dtoverlay=gpio-ir,gpio_pin=17" | sudo tee -a "$config_txt" > /dev/null
+    log "Added: dtoverlay=gpio-ir,gpio_pin=17 → $config_txt"
+
+    # ir-keytable enables individual protocol decoders on the rc-core
+    # receiver at runtime. Without this, /dev/lirc0 exists but
+    # /dev/input/eventN never emits scancodes because no protocol module
+    # is loaded for the receiver's allowed_protocols mask. Run as a
+    # system oneshot at boot: needs root (writes /sys/class/rc/rc0/*),
+    # runs once, idempotent across reboots. The list covers the IR
+    # encodings used by every universal remote we'd realistically meet
+    # (Sony/JVC/RC-5/RC-6/NEC + the long-tail).
+    log "Installing fauxnos-ir-decoders.service (boot-time protocol enabler)..."
+    sudo tee /etc/systemd/system/fauxnos-ir-decoders.service > /dev/null <<'EOF'
+[Unit]
+Description=Fauxnos: enable IR protocol decoders on rc0
+# /dev/lirc0 + /sys/class/rc/rc0/ appear once the gpio-ir overlay's
+# probe completes. systemd-udev-settle would be the bullet-proof gate
+# but it's deprecated; instead we just retry inside ExecStart.
+After=systemd-modules-load.service
+ConditionPathExists=/sys/class/rc/rc0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Retry briefly in case rc0 isn't quite ready yet at first call.
+ExecStart=/bin/sh -c 'for i in 1 2 3 4 5; do /usr/bin/ir-keytable -p nec,rc-5,rc-6,jvc,sony,sanyo,sharp,xmp,imon -s rc0 && exit 0; sleep 1; done; exit 1'
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable fauxnos-ir-decoders.service > /dev/null 2>&1 || true
+    # Best-effort start now; on first install the overlay isn't loaded
+    # yet so rc0 won't exist — ConditionPathExists short-circuits and
+    # the unit will run cleanly after the post-install reboot.
+    sudo systemctl start fauxnos-ir-decoders.service 2>/dev/null || true
+
+    log_success "IR receiver configured (active after reboot)"
 }
 
 # Download fauxnos-client code
@@ -496,6 +576,7 @@ main() {
     check_prerequisites
     install_system_dependencies
     configure_system
+    configure_ir_receiver
     setup_pulseaudio_user_services
     download_client_code
 
