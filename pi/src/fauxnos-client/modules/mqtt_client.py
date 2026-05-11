@@ -40,6 +40,9 @@ class MQTTClient:
                  mode_callback: Callable[[str], bool],
                  calibration_callback: Optional[Callable[[str, int], bool]] = None,
                  calibration_getter: Optional[Callable[[str], int]] = None,
+                 ir_enable_callback: Optional[Callable[[bool], None]] = None,
+                 ir_clear_callback: Optional[Callable[[str], None]] = None,
+                 ir_state_getter: Optional[Callable[[], dict]] = None,
                  broker_host: Optional[str] = None,
                  broker_port: int = 1883):
         """
@@ -52,6 +55,14 @@ class MQTTClient:
             calibration_callback: (source_id, value) → SourceManager.set_calibration().
                 Called when 'set/clients/<id>/calibration/<source>' arrives. Optional.
             calibration_getter: (source_id) → int. Used to populate hello/status.
+            ir_enable_callback: (bool) → None. Toggle the IR feature flag.
+                Wired to IRListener.set_enabled.
+            ir_clear_callback: (command_id) → None. Forget a single command's
+                mapping. Wired to IRListener.clear_command. Learning is a
+                separate topic family (phase 4).
+            ir_state_getter: () → {"enabled","mappings"} dict. Used to
+                populate hello + status/ir/state payloads. Wired to
+                IRListener.state_manager.get_ir() in the daemon.
             broker_host: MQTT broker hostname (defaults to server_host from config)
             broker_port: MQTT broker port
         """
@@ -69,6 +80,9 @@ class MQTTClient:
         self.mode_callback = mode_callback
         self.calibration_callback = calibration_callback
         self.calibration_getter = calibration_getter
+        self.ir_enable_callback = ir_enable_callback
+        self.ir_clear_callback = ir_clear_callback
+        self.ir_state_getter = ir_state_getter
 
         # MQTT client setup
         self.client = mqtt.Client(client_id=f"fauxnos-{self.device_id}")
@@ -113,10 +127,16 @@ class MQTTClient:
             f"set/clients/{self.device_id}/mode",
             # Calibration is per-source (5-part topic), so use a + wildcard.
             f"set/clients/{self.device_id}/calibration/+",
+            # IR (hardware remote): enabled toggle + per-command clear.
+            # Learning commands (start/cancel) come in phase 4 and use
+            # additional sub-topics under .../ir/learn/+.
+            f"set/clients/{self.device_id}/ir/enabled",
+            f"set/clients/{self.device_id}/ir/clear/+",
             f"get/clients/{self.device_id}/volume",
             f"get/clients/{self.device_id}/status",
             f"get/clients/{self.device_id}/activity",
             f"get/clients/{self.device_id}/calibration",
+            f"get/clients/{self.device_id}/ir",
             "get/clients/all/status",
         ]
         for topic in topics:
@@ -133,15 +153,26 @@ class MQTTClient:
             self._send_hello()
             return
 
-        # Parse topic: {command_type}/clients/{device_id}/{action}[/{sub_action}]
+        # Parse topic: {command_type}/clients/{device_id}/{action}[/{sub_action}[/{cmd_id}]]
         parts = topic.split('/')
         if len(parts) >= 4:
             command_type = parts[0]
             device_id = parts[2]
             action = parts[3]
             sub_action = parts[4] if len(parts) >= 5 else None
-            if device_id == self.device_id:
-                self._handle_command(command_type, action, payload, sub_action)
+            tail = parts[5] if len(parts) >= 6 else None
+            if device_id != self.device_id:
+                return
+
+            # 6-part topics (extra trailing identifier) are handled
+            # before the generic _handle_command interface, which only
+            # carries a single sub_action slot.
+            if (command_type == "set" and action == "ir"
+                    and sub_action == "clear" and tail):
+                self._handle_ir_clear(tail)
+                return
+
+            self._handle_command(command_type, action, payload, sub_action)
 
     def _handle_command(
         self,
@@ -193,6 +224,16 @@ class MQTTClient:
                             # everything we know.
                             self.publish_calibrations()
 
+                elif action == "ir" and sub_action == "enabled":
+                    # set/clients/<id>/ir/enabled payload: "true"/"false"
+                    if self.ir_enable_callback is None:
+                        logger.warning("MQTT ir/enabled command but no callback wired")
+                    else:
+                        enabled = payload.strip().lower() in ("true", "1", "yes", "on")
+                        logger.info(f"MQTT ir/enabled command: {enabled}")
+                        self.ir_enable_callback(enabled)
+                        self.publish_ir_state()
+
             elif command_type == "get":
                 if action == "volume":
                     self.publish_volume()
@@ -203,6 +244,8 @@ class MQTTClient:
                     self.publish_activity()
                 elif action == "calibration":
                     self.publish_calibrations()
+                elif action == "ir":
+                    self.publish_ir_state()
 
         except ValueError as e:
             logger.error(f"Error parsing command payload: {e}")
@@ -241,6 +284,15 @@ class MQTTClient:
             self.client.loop_stop()
             self.client.disconnect()
 
+    def _handle_ir_clear(self, command_id: str):
+        """Handle set/clients/<id>/ir/clear/<command_id> — forget one mapping."""
+        if self.ir_clear_callback is None:
+            logger.warning(f"MQTT ir/clear/{command_id} but no callback wired")
+            return
+        logger.info(f"MQTT ir/clear command: {command_id}")
+        self.ir_clear_callback(command_id)
+        self.publish_ir_state()
+
     def _send_hello(self):
         """Announce this device on MQTT"""
         hello_payload = {
@@ -248,10 +300,32 @@ class MQTTClient:
             "name": self.display_name,
             "sources": self.sources_list,
             "pa_calibrations": self._collect_calibrations(),
+            "ir": self._collect_ir_state(),
         }
         topic = f"status/clients/{self.device_id}/hello"
         self.client.publish(topic, json.dumps(hello_payload))
         logger.debug(f"Sent hello: {self.display_name}")
+
+    def _collect_ir_state(self) -> dict:
+        """Snapshot of the on-device ir block for hello + status payloads."""
+        if self.ir_state_getter is None:
+            return {'enabled': False, 'mappings': {}}
+        try:
+            ir = self.ir_state_getter() or {}
+            return {
+                'enabled': bool(ir.get('enabled', False)),
+                'mappings': dict(ir.get('mappings') or {}),
+            }
+        except Exception as e:
+            logger.error(f"ir_state_getter raised: {e}")
+            return {'enabled': False, 'mappings': {}}
+
+    def publish_ir_state(self):
+        """Publish status/clients/<id>/ir/state with the full ir block."""
+        if not self.connected:
+            return
+        payload = json.dumps(self._collect_ir_state())
+        self.client.publish(f"status/clients/{self.device_id}/ir/state", payload)
 
     def _collect_calibrations(self) -> dict:
         """Build a {source_id: calibration} map for hello + status payloads."""

@@ -109,6 +109,22 @@ class FauxnosAPIServer:
                 "default": DEFAULT_OVERLAY,
             })
 
+        # ── IR remote (per-client hardware remote) ────────────────────────────
+        # GET returns the server's cached mirror of the client's ir state.
+        # PUT accepts {"enabled": bool} and/or {"clear": "command_id"} and
+        # publishes the corresponding MQTT command to the client; the
+        # client applies + echoes back via status/clients/<id>/ir/state,
+        # which our MQTT listener catches and writes into server_config.
+        # Learn endpoints live in phase 4 under .../ir/learn.
+
+        @app.route('/api/clients/<client_id>/ir', methods=['GET'])
+        def get_client_ir(client_id):
+            return self.handle_get_client_ir(client_id)
+
+        @app.route('/api/clients/<client_id>/ir', methods=['PUT'])
+        def put_client_ir(client_id):
+            return self.handle_put_client_ir(client_id)
+
         @app.route('/api/clients/<client_id>', methods=['PUT'])
         def update_client(client_id):
             return self.handle_update_client(client_id)
@@ -621,6 +637,146 @@ class FauxnosAPIServer:
         except Exception as e:
             self.log(f"Apply dac_overlay error: {e}", "ERROR")
             return jsonify({"error": f"Internal server error: {e}"}), 500
+
+    # ── IR remote handlers ────────────────────────────────────────────────────
+
+    # Canonical command IDs for the hardware-remote feature. Must match
+    # COMMAND_IDS in client/modules/ir_listener.py.
+    IR_COMMAND_IDS = (
+        'volume_up', 'volume_down', 'mute', 'source_cycle',
+        'play_pause', 'next', 'previous',
+    )
+
+    @staticmethod
+    def _empty_ir_block() -> dict:
+        return {'enabled': False, 'mappings': {}}
+
+    def handle_get_client_ir(self, client_id: str):
+        """GET /api/clients/<id>/ir — return server's cached mirror.
+
+        The client (modules/ir_listener.py) owns the source of truth in
+        client_state.json; the server's mirror is updated on every
+        status/clients/<id>/ir/state MQTT message AND on every hello.
+        Returns the empty block if we haven't seen this client yet.
+        """
+        raw = self._get_client_raw(client_id)
+        if raw is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+        ir = raw.get('ir') or self._empty_ir_block()
+        return jsonify({
+            'client_id': client_id,
+            'ir': {
+                'enabled': bool(ir.get('enabled', False)),
+                'mappings': dict(ir.get('mappings') or {}),
+            },
+        })
+
+    def handle_put_client_ir(self, client_id: str):
+        """PUT /api/clients/<id>/ir — toggle enabled or clear a mapping.
+
+        Body (any combination):
+          {"enabled": true|false}        → publishes set/.../ir/enabled
+          {"clear": "<command_id>"}      → publishes set/.../ir/clear/<cmd>
+
+        Both effects are fire-and-forget over MQTT: the client applies
+        the change and echoes back via status/clients/<id>/ir/state,
+        which the MQTT listener catches and writes into server_config.
+        We return the (possibly-stale) current mirror so the UI can do
+        an optimistic update.
+
+        Learning is handled by a separate endpoint in phase 4.
+        """
+        raw = self._get_client_raw(client_id)
+        if raw is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+
+        data = request.get_json(silent=True) or {}
+        published = []
+
+        if 'enabled' in data:
+            enabled = bool(data['enabled'])
+            ok = self._publish_mqtt(
+                f"set/clients/{client_id}/ir/enabled",
+                "true" if enabled else "false",
+            )
+            if not ok:
+                return jsonify({"error": "MQTT broker unreachable"}), 502
+            published.append('enabled')
+
+        if 'clear' in data:
+            command_id = data['clear']
+            if command_id not in self.IR_COMMAND_IDS:
+                return jsonify({
+                    "error": f"unknown command_id '{command_id}'",
+                    "allowed": list(self.IR_COMMAND_IDS),
+                }), 400
+            ok = self._publish_mqtt(
+                f"set/clients/{client_id}/ir/clear/{command_id}",
+                "",
+            )
+            if not ok:
+                return jsonify({"error": "MQTT broker unreachable"}), 502
+            published.append(f'clear:{command_id}')
+
+        if not published:
+            return jsonify({
+                "error": "No supported fields provided (enabled, clear)",
+            }), 400
+
+        # Return current mirror; the client's echo will update it shortly.
+        return jsonify({
+            'client_id': client_id,
+            'published': published,
+            'ir': raw.get('ir') or self._empty_ir_block(),
+        })
+
+    def _publish_mqtt(self, topic: str, payload: str) -> bool:
+        """Publish a one-shot MQTT message via the server's listener client.
+
+        Returns False if the broker connection isn't up. We piggyback on
+        the listener client (started by start_mqtt_listener) so we don't
+        need a second client just to publish.
+        """
+        client = getattr(self, '_mqtt_client', None)
+        if client is None:
+            self.log("MQTT publish skipped: no listener client", "WARNING")
+            return False
+        try:
+            result = client.publish(topic, payload)
+            # paho returns MQTTMessageInfo; rc=0 means queued for send.
+            return getattr(result, 'rc', 1) == 0
+        except Exception as e:
+            self.log(f"MQTT publish error on {topic}: {e}", "ERROR")
+            return False
+
+    def _ingest_client_ir_state(self, client_id: str, ir_block: dict):
+        """Write the client's ir state into server_config (mirror update).
+
+        Called from the MQTT listener for both status/.../ir/state and
+        hello payloads. Idempotent — skips the disk write if the value
+        is unchanged (hello fires often during startup).
+        """
+        raw = self._get_client_raw(client_id)
+        if raw is None:
+            return
+        new_ir = {
+            'enabled': bool(ir_block.get('enabled', False)),
+            'mappings': dict(ir_block.get('mappings') or {}),
+        }
+        old_ir = raw.get('ir')
+        if old_ir == new_ir:
+            return
+        raw['ir'] = new_ir
+        try:
+            self.config_manager.save_server_config()
+            self.log(
+                f"ir mirror updated for {client_id}: "
+                f"enabled={new_ir['enabled']}, "
+                f"mappings={sum(1 for v in new_ir['mappings'].values() if v)} set",
+                "INFO",
+            )
+        except Exception as e:
+            self.log(f"Failed to persist ir mirror for {client_id}: {e}", "ERROR")
 
     def handle_delete_client(self, client_id: str):
         """Handle DELETE /api/clients/<client_id>.
@@ -1459,18 +1615,53 @@ rm -- "$0"
 
         def on_connect(client, userdata, flags, rc):
             if rc == 0:
+                # Existing: track each client's active source.
                 client.subscribe("status/clients/+/mode")
-                self.log("MQTT listener connected, subscribed to mode status")
+                # IR mirroring: hello carries the full ir block on
+                # (re)connect; ir/state is fired on every change.
+                client.subscribe("status/clients/+/hello")
+                client.subscribe("status/clients/+/ir/state")
+                # Nudge every client to re-hello so the server's mirror
+                # is fresh after a server restart. Clients handle this
+                # in mqtt_client.py via the "get/clients/all/status"
+                # subscription.
+                client.publish("get/clients/all/status", "")
+                self.log(
+                    "MQTT listener connected, subscribed to mode/hello/ir-state"
+                )
 
         def on_message(client, userdata, msg):
             parts = msg.topic.split("/")
             if len(parts) < 4:
                 return
             client_id = parts[2]
-            source_id = msg.payload.decode().strip()
-            if not source_id:
+            action = parts[3]
+            sub_action = parts[4] if len(parts) >= 5 else None
+
+            if action == "mode":
+                source_id = msg.payload.decode().strip()
+                if source_id:
+                    self._trigger_external_for_source(client_id, source_id)
                 return
-            self._trigger_external_for_source(client_id, source_id)
+
+            if action == "hello":
+                try:
+                    hello = json.loads(msg.payload.decode() or "{}")
+                except Exception:
+                    return
+                ir = hello.get("ir")
+                if isinstance(ir, dict):
+                    self._ingest_client_ir_state(client_id, ir)
+                return
+
+            if action == "ir" and sub_action == "state":
+                try:
+                    ir = json.loads(msg.payload.decode() or "{}")
+                except Exception:
+                    return
+                if isinstance(ir, dict):
+                    self._ingest_client_ir_state(client_id, ir)
+                return
 
         mqtt_client = mqtt_lib.Client()
         mqtt_client.on_connect = on_connect

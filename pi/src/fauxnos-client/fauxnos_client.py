@@ -6,6 +6,7 @@ Manages local audio sources with smart volume routing
 """
 
 import argparse
+import json
 import logging
 import signal
 import sys
@@ -45,6 +46,19 @@ class FauxnosClient:
         # Initialize source manager
         self.source_manager = SourceManager(self.config_manager)
 
+        # IR listener (hardware-remote support). Constructed BEFORE the
+        # MQTT client so we can hand its enable/clear/state-getter to
+        # the MQTT layer's IR callbacks. The on_learn_event hook fires
+        # when learning mode transitions; we forward those to MQTT so
+        # the server can mirror state to any open browser tab. (Learn
+        # itself is triggered via phase 4's set/clients/<id>/ir/learn
+        # topic family.)
+        self.ir_listener = IRListener(
+            state_manager=self.source_manager.state_manager,
+            command_handlers=self._build_ir_handlers(),
+            on_learn_event=self._on_ir_learn_event,
+        )
+
         # Initialize MQTT client (connects to broker, routes commands through SourceManager)
         self.mqtt_client = MQTTClient(
             config_manager=self.config_manager,
@@ -52,17 +66,9 @@ class FauxnosClient:
             mode_callback=self.source_manager.switch_source,
             calibration_callback=self.source_manager.set_calibration,
             calibration_getter=self.source_manager.get_calibration,
-        )
-
-        # Initialize IR listener (hardware-remote support). Wires the
-        # seven canonical commands to local handlers — volume/source
-        # go through SourceManager directly (no MQTT round-trip), and
-        # transport controls are stubs for now (filled in by phase 3
-        # when we add playerctl + shairport DBUS glue).
-        self.ir_listener = IRListener(
-            state_manager=self.source_manager.state_manager,
-            command_handlers=self._build_ir_handlers(),
-            on_learn_event=None,  # phase 3 wires this to MQTT
+            ir_enable_callback=self.ir_listener.set_enabled,
+            ir_clear_callback=self.ir_listener.clear_command,
+            ir_state_getter=self.ir_listener.state_manager.get_ir,
         )
 
         # Flag for graceful shutdown
@@ -155,6 +161,26 @@ class FauxnosClient:
         nxt = sources[(idx + 1) % len(sources)]
         if self.source_manager.switch_source(nxt):
             self.mqtt_client.update_mode(nxt)
+
+    def _on_ir_learn_event(self, event: str, payload: dict):
+        """
+        Bridge IRListener lifecycle events to MQTT so the server can
+        mirror state to any open browser tab. Events: started / captured
+        / timeout / cancelled. See modules/ir_listener.py for payload shapes.
+        On 'captured' we also republish the full state since the mapping
+        changed; the others are just lifecycle telemetry.
+        """
+        try:
+            topic = f"status/clients/{self.config_manager.device_config.name}/ir/learn_event"
+            self.mqtt_client.client.publish(
+                topic,
+                json.dumps({'event': event, **payload}),
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to publish ir learn event {event}: {e}")
+        if event == 'captured':
+            # The mapping just changed — make the new state visible.
+            self.mqtt_client.publish_ir_state()
 
     def run_daemon(self):
         """Run in daemon mode (background service)"""
