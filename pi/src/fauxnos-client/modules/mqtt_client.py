@@ -45,6 +45,7 @@ class MQTTClient:
                  ir_state_getter: Optional[Callable[[], dict]] = None,
                  ir_learn_start_callback: Optional[Callable[[str, float], bool]] = None,
                  ir_learn_cancel_callback: Optional[Callable[[], bool]] = None,
+                 ir_feedback_volume_callback: Optional[Callable[[int], None]] = None,
                  broker_host: Optional[str] = None,
                  broker_port: int = 1883):
         """
@@ -93,6 +94,7 @@ class MQTTClient:
         self.ir_state_getter = ir_state_getter
         self.ir_learn_start_callback = ir_learn_start_callback
         self.ir_learn_cancel_callback = ir_learn_cancel_callback
+        self.ir_feedback_volume_callback = ir_feedback_volume_callback
 
         # MQTT client setup
         self.client = mqtt.Client(client_id=f"fauxnos-{self.device_id}")
@@ -143,6 +145,7 @@ class MQTTClient:
             f"set/clients/{self.device_id}/ir/clear/+",
             f"set/clients/{self.device_id}/ir/learn/start",
             f"set/clients/{self.device_id}/ir/learn/cancel",
+            f"set/clients/{self.device_id}/ir/feedback_volume",
             f"get/clients/{self.device_id}/volume",
             f"get/clients/{self.device_id}/status",
             f"get/clients/{self.device_id}/activity",
@@ -249,6 +252,29 @@ class MQTTClient:
                         enabled = payload.strip().lower() in ("true", "1", "yes", "on")
                         logger.info(f"MQTT ir/enabled command: {enabled}")
                         self.ir_enable_callback(enabled)
+                        self.publish_ir_state()
+
+                elif action == "ir" and sub_action == "feedback_volume":
+                    # set/clients/<id>/ir/feedback_volume payload: "0".."100"
+                    if self.ir_feedback_volume_callback is None:
+                        logger.warning(
+                            "MQTT ir/feedback_volume command but no callback wired"
+                        )
+                    else:
+                        try:
+                            vol = int(payload)
+                        except ValueError:
+                            logger.error(
+                                f"Invalid ir/feedback_volume payload: {payload!r}"
+                            )
+                            return
+                        if not (0 <= vol <= 100):
+                            logger.error(
+                                f"ir/feedback_volume out of range: {vol}"
+                            )
+                            return
+                        logger.info(f"MQTT ir/feedback_volume command: {vol}")
+                        self.ir_feedback_volume_callback(vol)
                         self.publish_ir_state()
 
             elif command_type == "get":

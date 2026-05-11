@@ -667,9 +667,18 @@ class FauxnosAPIServer:
         'play_pause', 'next', 'previous',
     )
 
-    @staticmethod
-    def _empty_ir_block() -> dict:
-        return {'enabled': False, 'mappings': {}}
+    # Default for the per-notch feedback playback level. Must match
+    # client's StateManager.IR_FEEDBACK_VOLUME_DEFAULT so first-paint
+    # in the UI shows the same value the client will use on first play.
+    IR_FEEDBACK_VOLUME_DEFAULT = 30
+
+    @classmethod
+    def _empty_ir_block(cls) -> dict:
+        return {
+            'enabled': False,
+            'mappings': {},
+            'feedback_volume': cls.IR_FEEDBACK_VOLUME_DEFAULT,
+        }
 
     def handle_get_client_ir(self, client_id: str):
         """GET /api/clients/<id>/ir — return server's cached mirror.
@@ -688,6 +697,9 @@ class FauxnosAPIServer:
             'ir': {
                 'enabled': bool(ir.get('enabled', False)),
                 'mappings': dict(ir.get('mappings') or {}),
+                'feedback_volume': int(
+                    ir.get('feedback_volume', self.IR_FEEDBACK_VOLUME_DEFAULT)
+                ),
             },
         })
 
@@ -737,6 +749,22 @@ class FauxnosAPIServer:
             if not ok:
                 return jsonify({"error": "MQTT broker unreachable"}), 502
             published.append(f'clear:{command_id}')
+
+        if 'feedback_volume' in data:
+            try:
+                vol = int(data['feedback_volume'])
+            except (TypeError, ValueError):
+                return jsonify({"error": "feedback_volume must be an integer"}), 400
+            if not (0 <= vol <= 100):
+                return jsonify({
+                    "error": f"feedback_volume out of range: {vol}",
+                }), 400
+            ok = self._publish_mqtt(
+                f"set/clients/{client_id}/ir/feedback_volume", str(vol)
+            )
+            if not ok:
+                return jsonify({"error": "MQTT broker unreachable"}), 502
+            published.append(f'feedback_volume:{vol}')
 
         if not published:
             return jsonify({
@@ -911,6 +939,9 @@ class FauxnosAPIServer:
         new_ir = {
             'enabled': bool(ir_block.get('enabled', False)),
             'mappings': dict(ir_block.get('mappings') or {}),
+            'feedback_volume': int(
+                ir_block.get('feedback_volume', self.IR_FEEDBACK_VOLUME_DEFAULT)
+            ),
         }
         old_ir = raw.get('ir')
         if old_ir == new_ir:

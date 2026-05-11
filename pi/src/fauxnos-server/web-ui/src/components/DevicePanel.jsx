@@ -821,8 +821,13 @@ function RemoteControlSection({ client }) {
   const [enabled, setEnabled] = useState(false)
   const [mappings, setMappings] = useState({})
   const [learningCommand, setLearningCommand] = useState(null)
+  const [feedbackVolume, setFeedbackVolume] = useState(30)
   const [loading, setLoading] = useState(true)
   const [errorMsg, setErrorMsg] = useState(null)
+  // Debounce ref for the feedback-volume slider — only commit (PUT) the
+  // last value after 200ms of no movement, so dragging doesn't spam
+  // preview-sound playbacks on the device.
+  const feedbackDebounceRef = useRef(null)
 
   // Initial load — gives us the persisted mappings even if the SSE
   // stream hasn't delivered a snapshot yet (no learn ever happened).
@@ -834,6 +839,9 @@ function RemoteControlSection({ client }) {
         const ir = j?.ir || {}
         setEnabled(!!ir.enabled)
         setMappings(ir.mappings || {})
+        if (typeof ir.feedback_volume === 'number') {
+          setFeedbackVolume(ir.feedback_volume)
+        }
       })
       .catch(e => { if (!cancelled) setErrorMsg(e.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
@@ -918,6 +926,20 @@ function RemoteControlSection({ client }) {
     }
   }, [client.client_id])
 
+  const onFeedbackVolumeChange = useCallback((newVal) => {
+    setFeedbackVolume(newVal)  // optimistic visual
+    // Debounce the PUT so a slider drag doesn't fire dozens of preview
+    // sounds. After 200ms of no movement, send the settled value and
+    // the device plays one preview at the new level.
+    if (feedbackDebounceRef.current) clearTimeout(feedbackDebounceRef.current)
+    feedbackDebounceRef.current = setTimeout(() => {
+      apiFetch(`/api/clients/${client.client_id}/ir`, {
+        method: 'PUT',
+        body: JSON.stringify({ feedback_volume: newVal }),
+      }).catch(e => setErrorMsg(`Feedback volume failed: ${e.message}`))
+    }, 200)
+  }, [client.client_id])
+
   return (
     <div className="fx-advanced-section">
       <label className="fx-ir-toggle">
@@ -936,20 +958,43 @@ function RemoteControlSection({ client }) {
         </p>
       )}
       {enabled && (
-        <div className="fx-ir-rows">
-          {IR_COMMANDS.map(c => (
-            <IrCommandRow
-              key={c.id}
-              label={c.label}
-              mapping={mappings[c.id]}
-              learning={learningCommand === c.id}
-              disabled={learningCommand !== null && learningCommand !== c.id}
-              onLearn={() => startLearn(c.id)}
-              onCancel={cancelLearn}
-              onClear={() => clearCommand(c.id)}
-            />
-          ))}
-        </div>
+        <>
+          <div className="fx-source-setting" style={{ marginTop: 'var(--fx-2)' }}>
+            <span className="fx-source-setting-label">
+              Feedback volume <span className="fx-mute" style={{ fontVariantNumeric: 'tabular-nums' }}>{feedbackVolume}%</span>
+            </span>
+            <div className="fx-volume accent fx-volume-compact">
+              <div className="fx-volume-track">
+                <div className="fx-volume-fill" style={{ width: `${feedbackVolume}%` }} />
+                <div className="fx-volume-thumb" style={{ left: `${feedbackVolume}%` }} />
+                <input
+                  className="fx-volume-input"
+                  type="range"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={feedbackVolume}
+                  onChange={e => onFeedbackVolumeChange(parseInt(e.target.value, 10))}
+                  aria-label="Feedback volume"
+                />
+              </div>
+            </div>
+          </div>
+          <div className="fx-ir-rows">
+            {IR_COMMANDS.map(c => (
+              <IrCommandRow
+                key={c.id}
+                label={c.label}
+                mapping={mappings[c.id]}
+                learning={learningCommand === c.id}
+                disabled={learningCommand !== null && learningCommand !== c.id}
+                onLearn={() => startLearn(c.id)}
+                onCancel={cancelLearn}
+                onClear={() => clearCommand(c.id)}
+              />
+            ))}
+          </div>
+        </>
       )}
       {errorMsg && (
         <div className="fx-small" style={{ marginTop: 'var(--fx-2)', color: 'var(--fx-err)' }}>

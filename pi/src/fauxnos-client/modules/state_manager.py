@@ -146,6 +146,12 @@ class StateManager:
     #   }
     # mappings entries are either None (unlearned) or a 2-key dict.
 
+    # Default feedback volume for the IR remote's per-notch sounds.
+    # Tuned 2026-05-10 after the unattenuated 100% on fauxnos000 was
+    # painfully loud. Each surface (paplay --volume) scales linearly,
+    # so 30% is roughly -10 dB from full scale.
+    IR_FEEDBACK_VOLUME_DEFAULT = 30
+
     def get_ir(self) -> Dict:
         """Return the full ir block, with empty defaults if absent."""
         state = self.load_state()
@@ -153,13 +159,35 @@ class StateManager:
         return {
             'enabled': bool(ir.get('enabled', False)),
             'mappings': dict(ir.get('mappings') or {}),
+            'feedback_volume': self._clamp_vol(
+                ir.get('feedback_volume', self.IR_FEEDBACK_VOLUME_DEFAULT)
+            ),
         }
+
+    @staticmethod
+    def _clamp_vol(v) -> int:
+        try:
+            return max(0, min(100, int(v)))
+        except (TypeError, ValueError):
+            return StateManager.IR_FEEDBACK_VOLUME_DEFAULT
 
     def set_ir_enabled(self, enabled: bool) -> bool:
         """Toggle the IR feature flag, preserving the mapping table."""
         state = self.load_state()
         ir = state.get('ir') or {'enabled': False, 'mappings': {}}
         ir['enabled'] = bool(enabled)
+        return self.save_state(
+            current_source=state.get('current_source'),
+            source_volumes=state.get('source_volumes', {}),
+            pa_calibrations=state.get('pa_calibrations', {}),
+            ir=ir,
+        )
+
+    def set_ir_feedback_volume(self, volume_pct: int) -> bool:
+        """Persist the per-notch sound playback volume (0-100)."""
+        state = self.load_state()
+        ir = state.get('ir') or {'enabled': False, 'mappings': {}}
+        ir['feedback_volume'] = self._clamp_vol(volume_pct)
         return self.save_state(
             current_source=state.get('current_source'),
             source_volumes=state.get('source_volumes', {}),

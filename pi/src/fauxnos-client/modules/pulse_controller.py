@@ -265,6 +265,58 @@ class PulseAudioController:
             self.logger.error(f"set_loopback_calibration error: {e}")
             return False
 
+    def play_sound(
+        self,
+        file_path,
+        sink_name: str = 'systemsink',
+        volume_pct: int = 100,
+    ) -> bool:
+        """
+        Play a WAV file on a PA sink, non-blocking.
+
+        Args:
+            file_path: Path to a .wav (16-bit PCM is most reliable). Either
+                a pathlib.Path or a str.
+            sink_name: Sink to play onto. Defaults to 'systemsink' — the
+                fauxnos convention for UI/feedback sounds.
+            volume_pct: Playback attenuation 0-100. Maps to paplay's
+                --volume arg (0-65536, where 65536 is "normal" / unchanged).
+                Lets callers scale individual playbacks independently of
+                the sink's own volume — useful for the IR remote feedback
+                where we want per-notch sounds quieter than music.
+
+        Returns:
+            True if paplay was successfully spawned (we don't wait for
+            completion — fire-and-forget so rapid IR presses can overlap).
+            False if the file doesn't exist or paplay couldn't launch.
+        """
+        from pathlib import Path
+        p = Path(file_path)
+        if not p.is_file():
+            self.logger.debug(f"play_sound: missing file {p}")
+            return False
+        vol = max(0, min(100, int(volume_pct)))
+        # paplay --volume scale: 65536 = unchanged. Linear scaling here
+        # is fine for short feedback clicks; "perceptual" curves matter
+        # more for sustained music playback.
+        paplay_vol = int(round(vol * 65536 / 100))
+        cmd = ['paplay', '--device', sink_name, f'--volume={paplay_vol}', str(p)]
+        try:
+            subprocess.Popen(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return True
+        except FileNotFoundError:
+            self.logger.warning("play_sound: paplay not on PATH")
+            return False
+        except Exception as e:
+            self.logger.warning(f"play_sound: spawn failed for {p}: {e}")
+            return False
+
     def list_sinks(self) -> list:
         """
         List all available PulseAudio sinks
