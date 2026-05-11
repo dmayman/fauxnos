@@ -1008,32 +1008,26 @@ body {
 }
 
 /* ── Header ────────────────────────────────────────────────────────────────── */
+/* Lives inside .fx-main so it inherits the same max-width and horizontal
+   padding as the groups below — it occupies the exact slot the old "Groups"
+   title used. No background or sticky chrome; it scrolls with content.
+   The brand indents past the drag-handle gutter so the wordmark aligns
+   with the LEFT edge of the group cards (gutter 24px + row gap 4px = 28px).
+   Pill stays flush with the right edge of the cards. */
 .fx-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--fx-3);
-  padding: var(--fx-3) var(--fx-5);
-  background: color-mix(in srgb, var(--fx-bg) 75%, transparent);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--fx-line);
-  position: sticky;
-  top: 0;
-  z-index: 100;
-}
-@media (max-width: 600px) {
-  .fx-header { padding: var(--fx-3) var(--fx-4); }
-}
-.fx-header-brand {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--fx-2);
+  margin-bottom: var(--fx-4);
+  padding-left: calc(24px + var(--fx-1));
 }
 .fx-header-wordmark {
-  font-size: var(--fx-text-md);
+  margin: 0;
+  font-size: var(--fx-text-xl);
+  line-height: var(--fx-lh-xl);
   font-weight: 600;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   color: var(--fx-text);
 }
 .fx-header-pill { padding: 0 var(--fx-3); }
@@ -1080,56 +1074,128 @@ body {
   text-overflow: ellipsis;
 }
 
-.fx-group-card .fx-segmented { margin-bottom: var(--fx-3); }
 .fx-group-vol {
   padding: var(--fx-1) 0;
+}
+
+/* ── Source buttons in the group head ─────────────────────────────────────
+   Right-aligned trio (or more) in the same row as the group title. Active
+   button is filled accent, inactive ones are subtle surface-2 chips — clear
+   hierarchy without a boxed segmented control. */
+.fx-group-head { gap: var(--fx-2); }
+.fx-group-name { flex: 1; min-width: 0; }
+.fx-source-buttons {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fx-1);
+  flex-shrink: 0;
+}
+.fx-source-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 var(--fx-3) 0 var(--fx-2);
+  border-radius: var(--fx-r-sm);
+  border: 1px solid var(--fx-line);
+  background: var(--fx-surface-2);
+  color: var(--fx-text-2);
+  font-family: inherit;
+  font-size: var(--fx-text-xs);
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+  transition:
+    background var(--fx-dur) var(--fx-ease),
+    color var(--fx-dur) var(--fx-ease),
+    border-color var(--fx-dur) var(--fx-ease),
+    box-shadow var(--fx-dur) var(--fx-ease);
+}
+.fx-source-btn:hover {
+  color: var(--fx-text);
+  border-color: var(--fx-line-strong);
+}
+.fx-source-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
+}
+.fx-source-btn.active {
+  background: var(--fx-accent);
+  color: var(--fx-on-accent);
+  border-color: var(--fx-accent);
+  font-weight: 600;
+}
+.fx-source-btn.active:hover { background: var(--fx-accent-hover); border-color: var(--fx-accent-hover); }
+.fx-source-btn:disabled { opacity: 0.55; cursor: default; }
+.fx-source-btn > svg { flex-shrink: 0; opacity: 0.85; }
+.fx-source-btn.active > svg { opacity: 1; }
+.fx-source-btn-label { min-width: 0; }
+
+/* Collapse labels on narrow screens — icons alone keep three sources readable. */
+@media (max-width: 520px) {
+  .fx-source-btn { padding: 0 var(--fx-2); }
+  .fx-source-btn-label { display: none; }
 }
 
 .fx-group-members {
   display: flex;
   flex-direction: column;
 }
+/* Three columns: drag handle · name (with hover-X) · slider. The slider's
+   right edge aligns with the master slider above because there's no trailing
+   action column robbing space. Name column is ~75% of its previous max. */
 .fx-group-member {
   display: grid;
-  grid-template-columns: 18px 1fr 28px;
+  grid-template-columns: 18px minmax(60px, 105px) 1fr;
   align-items: center;
-  gap: var(--fx-2);
+  gap: var(--fx-3);
   padding: var(--fx-2) 0;
 }
 .fx-group-member-handle { display: flex; align-items: center; justify-content: center; }
 .fx-group-member-name {
-  display: grid;
-  grid-template-columns: minmax(80px, 130px) 1fr;
+  display: flex;
   align-items: center;
-  gap: var(--fx-2);
+  gap: var(--fx-1);
   min-width: 0;
 }
-.fx-group-member-name > .fx-dot {
-  margin-right: var(--fx-1);
-}
 .fx-group-member-label {
+  flex: 1;
+  min-width: 0;
   font-size: var(--fx-text-sm);
   color: var(--fx-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.fx-group-member-x {
   display: inline-flex;
   align-items: center;
-  gap: var(--fx-2);
-}
-.fx-group-member-slider {
-  min-width: 0;
-}
-.fx-group-member-actions {
-  display: flex;
   justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--fx-r-pill);
+  border: 0;
+  background: transparent;
+  color: var(--fx-text-3);
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--fx-dur) var(--fx-ease), color var(--fx-dur) var(--fx-ease), background var(--fx-dur) var(--fx-ease);
 }
+.fx-group-member:hover .fx-group-member-x,
+.fx-group-member-x:focus-visible { opacity: 1; }
+.fx-group-member-x:hover {
+  color: var(--fx-err);
+  background: var(--fx-err-soft);
+}
+.fx-group-member-slider { min-width: 0; }
 
-/* On narrow screens, drop the name into its own row above the slider so the
-   slider has full width. */
+/* On narrow screens, drop the name onto its own row above the slider so
+   the slider has full width. */
 @media (max-width: 600px) {
   .fx-group-member {
-    grid-template-columns: 18px 1fr 28px;
+    grid-template-columns: 18px 1fr;
     grid-template-rows: auto auto;
   }
   .fx-group-member-name {
@@ -1141,7 +1207,6 @@ body {
     grid-row: 2;
   }
   .fx-group-member-handle { grid-row: 1 / span 2; }
-  .fx-group-member-actions { grid-row: 1 / span 2; }
 }
 
 /* ── Empty state ───────────────────────────────────────────────────────────── */
@@ -1193,7 +1258,7 @@ body {
 }
 .fx-device-cell {
   display: grid;
-  grid-template-columns: 10px 1fr auto 14px;
+  grid-template-columns: 1fr auto 14px;
   align-items: center;
   gap: var(--fx-3);
   padding: var(--fx-2) var(--fx-3);
@@ -1225,10 +1290,6 @@ body {
   font-size: 11px;
   color: var(--fx-text-3);
 }
-.fx-device-cell-status {
-  font-size: var(--fx-text-xs);
-  color: var(--fx-text-3);
-}
 .fx-device-cell-chevron { color: var(--fx-text-3); }
 
 /* ── Device panel ─────────────────────────────────────────────────────────── */
@@ -1236,10 +1297,12 @@ body {
 .fx-device-panel-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: var(--fx-2);
-  margin-bottom: var(--fx-3);
+  margin-bottom: var(--fx-4);
 }
+/* AddDeviceTab side-panel reuses this header markup; it shouldn't pick up
+   any padding/border tweaks that target the rich device-panel head. */
+.fx-add-device-panel .fx-device-panel-head { margin-bottom: var(--fx-3); }
 .fx-device-name-edit {
   background: none;
   border: 1px solid transparent;
@@ -1250,11 +1313,15 @@ body {
   letter-spacing: -0.01em;
   cursor: pointer;
   padding: 2px var(--fx-2);
+  /* Negative margin compensates for the input's own horizontal padding so
+     the rendered name left-aligns with the section content below. */
+  margin-left: calc(-1 * var(--fx-2));
   border-radius: var(--fx-r-sm);
   width: 100%;
   min-width: 0;
   flex: 1;
 }
+.fx-add-device-panel .fx-device-name-edit { margin-left: 0; }
 .fx-device-name-edit:hover { background: var(--fx-surface-2); }
 .fx-device-name-edit.editing {
   background: var(--fx-surface-2);
@@ -1264,42 +1331,72 @@ body {
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
 
-.fx-device-info {
-  display: flex;
-  align-items: center;
-  gap: var(--fx-3);
-  padding: 0 var(--fx-2) var(--fx-4);
-  margin-bottom: var(--fx-3);
-  border-bottom: 1px solid var(--fx-line);
-}
-.fx-device-id {
-  font-family: var(--fx-mono);
-  font-size: 12px;
-  color: var(--fx-text);
-  background: var(--fx-surface-2);
-  padding: 2px var(--fx-2);
-  border-radius: var(--fx-r-sm);
-}
-
 .fx-device-panel-footer {
   margin-top: var(--fx-5);
-  padding-top: var(--fx-4);
-  border-top: 1px solid var(--fx-line);
+}
+
+/* Device panel never wears horizontal rules — section identity comes from
+   the labeled card pattern, not divider lines. */
+.fx-device-panel .fx-section-label {
+  border-bottom: 0;
+  padding-bottom: 0;
+  margin-bottom: var(--fx-2);
+}
+.fx-device-panel .fx-panel-card + .fx-section-label { margin-top: var(--fx-5); }
+
+/* Card surface used by Sources + Advanced bodies. Stroke-only, no fill;
+   rows inside fill on hover with an inset rounded corner that keeps the
+   stroke visible around the edge. */
+.fx-panel-card {
+  border: 1px solid var(--fx-line);
+  border-radius: var(--fx-r-lg);
+  background: transparent;
+  padding: var(--fx-1);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fx-panel-card .fx-advanced-body { /* nested advanced wrapper — flatten padding */
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.fx-advanced-section {
+  padding: var(--fx-3);
+}
+.fx-advanced-title {
+  font-size: var(--fx-text-base);
+  font-weight: 500;
+  color: var(--fx-text);
+  margin-bottom: var(--fx-1);
+}
+.fx-overlay-code {
+  display: block;
+  font-size: 11px;
+  color: var(--fx-text-3);
+  margin-top: var(--fx-2);
+  user-select: all;
 }
 
 /* ── Source rows in device panel ──────────────────────────────────────────── */
-.fx-source-list {
-  display: flex;
-  flex-direction: column;
+.fx-source-list { /* fx-panel-card supplies layout/border */ }
+/* Each row + its inline form sits in a fx-source-item so hover and "expanded"
+   share the row-level highlight. */
+.fx-source-item {
+  border-radius: calc(var(--fx-r-lg) - var(--fx-1));
+  transition: background var(--fx-dur) var(--fx-ease);
 }
+.fx-source-item:hover,
+.fx-source-item.expanded { background: var(--fx-surface-2); }
+
 .fx-source-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--fx-3);
-  padding: var(--fx-3) 0;
+  padding: var(--fx-2) var(--fx-3);
 }
-.fx-source-row + .fx-source-row { border-top: 1px solid var(--fx-line); }
 .fx-source-info {
   display: flex;
   flex-direction: column;
@@ -1307,21 +1404,40 @@ body {
   min-width: 0;
 }
 .fx-source-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fx-2);
   font-size: var(--fx-text-base);
   font-weight: 500;
   color: var(--fx-text);
+  min-width: 0;
 }
+.fx-source-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--fx-r-sm);
+  background: var(--fx-surface-2);
+  color: var(--fx-text-2);
+  flex-shrink: 0;
+}
+.fx-source-item:hover .fx-source-icon,
+.fx-source-item.expanded .fx-source-icon { background: var(--fx-surface-3); }
 .fx-source-actions {
   display: flex;
   align-items: center;
   gap: var(--fx-1);
   flex-shrink: 0;
-  /* Reveal-on-hover keeps the row visually quiet at rest. */
-  opacity: 0.6;
+  /* Hidden at rest, revealed when the row or its form is interacted with.
+     The 'expanded' marker keeps controls on while the config form is open. */
+  opacity: 0;
   transition: opacity var(--fx-dur) var(--fx-ease);
 }
-.fx-source-row:hover .fx-source-actions,
-.fx-source-actions:focus-within { opacity: 1; }
+.fx-source-item:hover .fx-source-actions,
+.fx-source-item.expanded .fx-source-actions,
+.fx-source-item:focus-within .fx-source-actions { opacity: 1; }
 
 .fx-source-api-hint {
   font-size: var(--fx-text-xs);
@@ -1332,12 +1448,40 @@ body {
   white-space: nowrap;
 }
 
+/* Inline config form that drops in below an expanded source row. No border
+   — the row+form share the .expanded background, padding handles separation. */
 .fx-source-form {
   display: flex;
   flex-direction: column;
+  gap: var(--fx-1);
+  padding: 0 var(--fx-3) var(--fx-3);
+}
+
+/* Uniform setting row: left-aligned base-text label, right-aligned control.
+   Used by Volume calibration + the external-API toggle so they read as
+   peers in the same visual rhythm. */
+.fx-source-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--fx-3);
-  padding: var(--fx-3) 0 var(--fx-4);
-  border-top: 1px solid var(--fx-line);
+  padding: var(--fx-2) 0;
+  min-height: 36px;
+}
+label.fx-source-setting { cursor: pointer; }
+.fx-source-setting-label {
+  font-size: var(--fx-text-base);
+  font-weight: 400;
+  color: var(--fx-text);
+}
+
+/* Compact slider used only inside .fx-source-setting — fixed-width, no value
+   label or icon so the row stays balanced regardless of percentage. */
+.fx-volume.fx-volume-compact {
+  width: 160px;
+  max-width: 50%;
+  flex: 0 0 auto;
+  gap: 0;
 }
 
 /* ── Add built-in dropdown ────────────────────────────────────────────────── */
@@ -1371,60 +1515,28 @@ body {
 }
 .fx-add-builtin-item:hover { background: var(--fx-surface-2); }
 .fx-add-builtin-item > svg { color: var(--fx-text-3); }
-
-/* ── Add custom source disclosure ─────────────────────────────────────────── */
-.fx-add-source {
-  margin-top: var(--fx-3);
-}
-.fx-add-source-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--fx-2);
-  background: none;
+.fx-add-builtin-divider {
+  height: 1px;
   border: 0;
-  color: var(--fx-accent);
-  font: inherit;
-  font-size: var(--fx-text-sm);
-  font-weight: 500;
-  cursor: pointer;
-  padding: var(--fx-1) 0;
+  background: var(--fx-line);
+  margin: var(--fx-1) 0;
 }
-.fx-add-source-toggle:hover { color: var(--fx-accent-hover); }
+
+/* ── Add custom source form (lives inside the sources panel card) ────────── */
 .fx-add-source-form {
-  margin-top: var(--fx-3);
   padding: var(--fx-3);
   background: var(--fx-surface-2);
-  border-radius: var(--fx-r-sm);
-  gap: var(--fx-3);
-}
-
-/* ── Advanced settings disclosure ─────────────────────────────────────────── */
-.fx-advanced {
-  margin-top: var(--fx-5);
-  padding-top: var(--fx-4);
-  border-top: 1px solid var(--fx-line);
-}
-.fx-advanced-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--fx-2);
-  background: none;
+  border-radius: calc(var(--fx-r-lg) - var(--fx-1));
   border: 0;
-  color: var(--fx-text-2);
-  font: inherit;
-  font-size: var(--fx-text-sm);
-  font-weight: 500;
-  cursor: pointer;
-  padding: var(--fx-1) 0;
-  transition: color var(--fx-dur) var(--fx-ease);
+  gap: var(--fx-3);
+  margin: 0;
 }
-.fx-advanced-toggle:hover { color: var(--fx-text); }
-.fx-advanced-body {
-  margin-top: var(--fx-3);
-  padding: var(--fx-3);
-  background: var(--fx-surface-2);
-  border-radius: var(--fx-r-sm);
-}
+.fx-add-source-form .fx-h3 { color: var(--fx-text); }
+
+/* ── Advanced settings ───────────────────────────────────────────────────── */
+/* Header is just .fx-section-label with a chevron toggle on the right —
+   matches the Sources header so they feel like peer sections. Body sits in
+   a fx-panel-card. Specific overrides live alongside the card styles above. */
 
 /* ── Add device wizard ────────────────────────────────────────────────────── */
 .fx-add-device {

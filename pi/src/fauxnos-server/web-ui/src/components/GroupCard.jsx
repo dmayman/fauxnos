@@ -1,30 +1,47 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Settings2, GripVertical, X } from 'lucide-react'
+import { Settings2, GripVertical, X, Music, Airplay, AudioLines, Plug } from 'lucide-react'
 import VolumeSlider from './VolumeSlider'
 
-function SourceToggleGroup({ sources, currentStream, activeMode, groupId, homeClientId, onSwitchSource }) {
+/**
+ * Icon for a source row/button. Built-ins map to recognizable glyphs;
+ * everything else (custom external sources) gets a neutral Plug icon.
+ */
+function SourceIcon({ source, size = 14 }) {
+  const id = source?.id
+  const Icon =
+    id === 'spotify' ? Music :
+    id === 'airplay' ? Airplay :
+    id === 'analog'  ? AudioLines :
+    Plug
+  return <Icon size={size} aria-hidden />
+}
+
+/**
+ * Right-aligned source pickers that sit in the same row as the group
+ * title. Active source renders as a filled primary button, the others
+ * as quiet neutral buttons — enough hierarchy to read the active one at
+ * a glance without screaming.
+ */
+function SourceButtons({ sources, currentStream, activeMode, groupId, homeClientId, onSwitchSource }) {
   // Prefer MQTT mode (tracks actual active source), fall back to snapcast stream.
-  // We replace the leading `source_fauxnos<N>_` prefix to get the bare source id
-  // — matches the value the toggle buttons fire and lets MQTT echoes light up
-  // the correct button before our optimistic update lands.
+  // Replace the leading `source_fauxnos<N>_` prefix to get the bare source id
+  // — matches the value the buttons fire so MQTT echoes light up the right one.
   const currentSourceId = activeMode
     || (currentStream ? currentStream.replace(/^source_fauxnos\d+_/, '') : null)
 
-  // Empty source list (transient on first render) — render a single
-  // disabled button echoing the current source id so the card doesn't
-  // jump in height once /api/groups resolves.
   if (sources.length === 0) {
     return (
-      <div className="fx-segmented">
-        <button className="fx-segmented-btn active" disabled>
-          {currentSourceId || '—'}
+      <div className="fx-source-buttons">
+        <button type="button" className="fx-source-btn active" disabled>
+          <SourceIcon source={{ id: currentSourceId }} />
+          <span>{currentSourceId || '—'}</span>
         </button>
       </div>
     )
   }
 
   return (
-    <div className="fx-segmented" role="radiogroup">
+    <div className="fx-source-buttons" role="radiogroup">
       {sources.map(s => {
         const isActive = currentSourceId === s.id
         return (
@@ -33,11 +50,12 @@ function SourceToggleGroup({ sources, currentStream, activeMode, groupId, homeCl
             type="button"
             role="radio"
             aria-checked={isActive}
-            className={`fx-segmented-btn${isActive ? ' active' : ''}`}
+            className={`fx-source-btn${isActive ? ' active' : ''}`}
             onClick={() => onSwitchSource(groupId, homeClientId, s.id)}
             title={s.label || s.id}
           >
-            {s.label || s.id}
+            <SourceIcon source={s} />
+            <span className="fx-source-btn-label">{s.label || s.id}</span>
           </button>
         )
       })}
@@ -73,24 +91,21 @@ function DeviceRow({ client, isHome, nameMap, mqtt, onReturnHome, onDragStart, o
         ) : null}
       </span>
       <span className="fx-group-member-name">
-        <span className={`fx-dot ${client.connected ? 'ok' : ''}`} />
         <span className="fx-group-member-label">{name}</span>
-      </span>
-      <div className="fx-group-member-slider">
-        <VolumeSlider clientId={client.id} value={vol} mqtt={mqtt} hideIcon ariaLabel={`${name} volume`} />
-      </div>
-      <span className="fx-group-member-actions">
-        {!isHome ? (
+        {!isHome && (
           <button
-            className="fx-icon-btn sm danger"
+            className="fx-group-member-x"
             onClick={() => onReturnHome(client.id)}
             title="Remove from group"
             aria-label="Remove from group"
           >
-            <X size={14} />
+            <X size={12} />
           </button>
-        ) : null}
+        )}
       </span>
+      <div className="fx-group-member-slider">
+        <VolumeSlider clientId={client.id} value={vol} mqtt={mqtt} hideIcon ariaLabel={`${name} volume`} />
+      </div>
     </div>
   )
 }
@@ -161,6 +176,14 @@ export default function GroupCard({
       >
         <div className="fx-group-head">
           <span className="fx-group-name">{groupName}</span>
+          <SourceButtons
+            sources={group.sources || []}
+            currentStream={group.stream_id}
+            activeMode={mqtt.modes[homeClientId]}
+            groupId={group.id}
+            homeClientId={homeClientId}
+            onSwitchSource={onSwitchSource}
+          />
           <button
             className="fx-icon-btn"
             onClick={() => onOpenDevice(homeClientId)}
@@ -170,15 +193,6 @@ export default function GroupCard({
             <Settings2 size={16} />
           </button>
         </div>
-
-        <SourceToggleGroup
-          sources={group.sources || []}
-          currentStream={group.stream_id}
-          activeMode={mqtt.modes[homeClientId]}
-          groupId={group.id}
-          homeClientId={homeClientId}
-          onSwitchSource={onSwitchSource}
-        />
 
         {!isMulti && (
           <div className="fx-group-vol">

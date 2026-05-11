@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   X, Settings2, Plus, ChevronDown, ChevronRight, Check, Trash2,
+  Music, Airplay, AudioLines, Plug,
 } from 'lucide-react'
 import VolumeSlider from './VolumeSlider'
 import { apiFetch } from '../api'
@@ -25,18 +26,28 @@ const BUILTIN_DEFS = [
 ]
 
 /**
+ * Maps a source id (or category for non-default sources) to a recognizable
+ * glyph. Used in source row labels and the + menu to give each option a
+ * visual anchor.
+ */
+function SourceIcon({ source, size = 16 }) {
+  const id = source?.id
+  const Icon =
+    id === 'spotify' ? Music :
+    id === 'airplay' ? Airplay :
+    id === 'analog'  ? AudioLines :
+    Plug
+  return <Icon size={size} aria-hidden />
+}
+
+/**
  * Combined device side panel — status, sources, advanced settings, remove.
  *
- * Replaces the old SourcesPanel + DevicesTab split. Same side-panel chrome
- * as before; same gear-icon entrypoint from a group card; new entrypoint
- * from the top-right Devices popover.
- *
- * Section order intentionally mirrors how often you'd touch each:
- *   1. Header — editable name (most common: rename)
- *   2. Info — ID, status
- *   3. Built-in + Custom sources (config + calibration)
- *   4. Advanced — DAC overlay (rare, scary)
- *   5. Remove (very rare, terminal)
+ * Section flow:
+ *   1. Header — editable name + Connected chip + close
+ *   2. Sources (built-in + custom, single list, + menu adds either kind)
+ *   3. Advanced — DAC overlay (rare, scary)
+ *   4. Remove (very rare, terminal)
  */
 export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
   const [sources, setSources] = useState([])
@@ -44,7 +55,8 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [overlays, setOverlays] = useState(FALLBACK_DAC_OVERLAYS)
-  const [showAddBuiltIn, setShowAddBuiltIn] = useState(false)
+  const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const [addingCustom, setAddingCustom] = useState(false)
   const addMenuRef = useRef(null)
 
   // Sync local has_adc state when the prop changes (e.g. after refresh).
@@ -85,15 +97,15 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
     return () => { cancelled = true }
   }, [])
 
-  // Close the "+ built-in" menu on any outside click.
+  // Close the + menu on any outside click.
   useEffect(() => {
-    if (!showAddBuiltIn) return undefined
+    if (!addMenuOpen) return undefined
     const handler = (e) => {
-      if (!addMenuRef.current?.contains(e.target)) setShowAddBuiltIn(false)
+      if (!addMenuRef.current?.contains(e.target)) setAddMenuOpen(false)
     }
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
-  }, [showAddBuiltIn])
+  }, [addMenuOpen])
 
   const defaultSources = sources.filter(s => s.category === 'default')
   const customSources = sources.filter(s => s.category !== 'default')
@@ -108,7 +120,7 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
       starting_volume: 50, volume_controller: def.vc,
     })
 
-  // Built-ins not yet added — drives the + menu items.
+  // Built-ins not yet added — drives the + menu's built-in entries.
   const addableBuiltIns = BUILTIN_DEFS.filter(def => {
     if (def.alwaysOn) return false
     if (def.gatedBy === 'has_adc') return !hasAdc
@@ -133,9 +145,14 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
   }, [hasAdc, client.client_id, onRefresh])
 
   const handleAddBuiltIn = useCallback((def) => {
-    setShowAddBuiltIn(false)
+    setAddMenuOpen(false)
     if (def.gatedBy === 'has_adc') setHasAdcRemote(true)
   }, [setHasAdcRemote])
+
+  const handleAddCustom = useCallback(() => {
+    setAddMenuOpen(false)
+    setAddingCustom(true)
+  }, [])
 
   const handleRemoveBuiltIn = useCallback((sourceId) => {
     // Only analog is removable today — it's the only gated built-in.
@@ -152,8 +169,6 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
         onRefresh={onRefresh}
       />
 
-      <DeviceInfoRow client={client} />
-
       {loading && (
         <div className="fx-row fx-mute" style={{ padding: 'var(--fx-3) 0' }}>
           <span className="fx-spinner" /> Loading sources…
@@ -166,18 +181,17 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
       {!loading && !error && (
         <>
           <div className="fx-section-label">
-            <span>Built-in sources</span>
+            <span>Sources</span>
             <div className="fx-add-builtin-wrap" ref={addMenuRef}>
               <button
                 className="fx-icon-btn sm"
-                onClick={() => addableBuiltIns.length > 0 && setShowAddBuiltIn(v => !v)}
-                disabled={addableBuiltIns.length === 0}
-                title={addableBuiltIns.length === 0 ? 'All built-in sources added' : 'Add a built-in source'}
-                aria-label="Add built-in source"
+                onClick={() => setAddMenuOpen(v => !v)}
+                title="Add a source"
+                aria-label="Add source"
               >
                 <Plus size={14} />
               </button>
-              {showAddBuiltIn && addableBuiltIns.length > 0 && (
+              {addMenuOpen && (
                 <div className="fx-popover fx-add-builtin-menu">
                   {addableBuiltIns.map(def => (
                     <button
@@ -185,14 +199,23 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
                       className="fx-add-builtin-item"
                       onClick={() => handleAddBuiltIn(def)}
                     >
-                      <Plus size={12} /> {def.label}
+                      <SourceIcon source={def} size={14} />
+                      <span>{def.label}</span>
                     </button>
                   ))}
+                  {addableBuiltIns.length > 0 && <hr className="fx-add-builtin-divider" />}
+                  <button
+                    className="fx-add-builtin-item"
+                    onClick={handleAddCustom}
+                  >
+                    <Plug size={14} aria-hidden />
+                    <span>Custom source…</span>
+                  </button>
                 </div>
               )}
             </div>
           </div>
-          <div className="fx-source-list">
+          <div className="fx-panel-card fx-source-list">
             {visibleBuiltIns.map(s => (
               <BuiltInSourceRow
                 key={s.id}
@@ -204,17 +227,6 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
                 onUpdate={loadSources}
               />
             ))}
-          </div>
-
-          <div className="fx-section-label">
-            <span>Custom sources</span>
-          </div>
-          <div className="fx-source-list">
-            {customSources.length === 0 && (
-              <p className="fx-small fx-mute" style={{ padding: 'var(--fx-2) 0' }}>
-                No custom sources configured.
-              </p>
-            )}
             {customSources.map(s => (
               <CustomSourceRow
                 key={s.id}
@@ -224,9 +236,14 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
                 onUpdate={loadSources}
               />
             ))}
+            {addingCustom && (
+              <AddCustomSourceForm
+                clientId={client.client_id}
+                onAdded={() => { setAddingCustom(false); loadSources() }}
+                onCancel={() => setAddingCustom(false)}
+              />
+            )}
           </div>
-
-          <AddCustomSourceForm clientId={client.client_id} onAdded={loadSources} />
 
           <AdvancedSettings
             client={client}
@@ -240,6 +257,15 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
         </>
       )}
     </div>
+  )
+}
+
+function ConnectedChip({ connected }) {
+  return (
+    <span className={`fx-badge${connected ? ' ok' : ''}`}>
+      <span className={`fx-dot${connected ? ' ok' : ''}`} />
+      {connected ? 'Connected' : 'Offline'}
+    </span>
   )
 }
 
@@ -286,24 +312,10 @@ function DevicePanelHeader({ client, onClose, onRefresh }) {
         }}
         title="Double-click to rename"
       />
+      <ConnectedChip connected={!!client.connected} />
       <button className="fx-icon-btn" onClick={onClose} aria-label="Close">
         <X size={18} />
       </button>
-    </div>
-  )
-}
-
-function DeviceInfoRow({ client }) {
-  return (
-    <div className="fx-device-info">
-      <span className="fx-row" style={{ gap: 'var(--fx-2)' }}>
-        <span className="fx-caption">ID</span>
-        <code className="fx-mono fx-device-id">{client.client_id}</code>
-      </span>
-      <span className={`fx-badge ${client.connected ? 'ok' : ''}`}>
-        <span className={`fx-dot ${client.connected ? 'ok' : ''}`} />
-        {client.connected ? 'connected' : 'offline'}
-      </span>
     </div>
   )
 }
@@ -325,7 +337,7 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
-  const vc = source.volume_controller === 'self' ? 'self' : 'snapcast'
+  const vcLabel = source.volume_controller === 'self' ? 'Self' : 'Snapcast'
 
   const calLive = mqtt?.calibrations?.[clientId]?.[source.id]
   const calibration = (typeof calLive === 'number') ? calLive : 100
@@ -360,12 +372,16 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
   }
 
   return (
-    <>
+    <div className={`fx-source-item${expanded ? ' expanded' : ''}`}>
       <div className="fx-source-row">
         <div className="fx-source-info">
-          <span className="fx-source-label">{source.label || source.id}</span>
+          <span className="fx-source-label">
+            <span className="fx-source-icon"><SourceIcon source={source} /></span>
+            <span>{source.label || source.id}</span>
+          </span>
           <span className="fx-row" style={{ gap: 'var(--fx-1)' }}>
-            <span className="fx-badge accent">internal · {vc}</span>
+            <span className="fx-badge accent">Internal</span>
+            <span className="fx-badge">{vcLabel}</span>
           </span>
         </div>
         <div className="fx-source-actions">
@@ -384,18 +400,16 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
               title="Remove"
               aria-label="Remove this built-in source"
             >
-              <X size={14} />
+              <Trash2 size={14} />
             </button>
           )}
         </div>
       </div>
       {expanded && (
         <div className="fx-source-form">
-          <div>
-            <label className="fx-label">
-              Calibration <span className="fx-mute-2">— max output {calibration}%</span>
-            </label>
-            <div className="fx-volume accent">
+          <div className="fx-source-setting">
+            <span className="fx-source-setting-label">Volume calibration</span>
+            <div className="fx-volume accent fx-volume-compact">
               <div className="fx-volume-track">
                 <div className="fx-volume-fill" style={{ width: `${calibration}%` }} />
                 <div className="fx-volume-thumb" style={{ left: `${calibration}%` }} />
@@ -407,25 +421,19 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
                   step={1}
                   value={calibration}
                   onChange={handleCalibrationChange}
-                  aria-label={`${source.label || source.id} calibration`}
+                  aria-label="Volume calibration"
                 />
               </div>
-              <span className="fx-volume-label fx-num">{calibration}%</span>
-            </div>
-            <div className="fx-hint">
-              Tune so this source's loudness at 100% matches your others.
-              Spotify often comes in hot; analog input may be quiet. Sources
-              sharing a sink share calibration.
             </div>
           </div>
-          <label className="fx-checkbox-row">
+          <label className="fx-source-setting">
+            <span className="fx-source-setting-label">Call an external API selected</span>
             <input
               className="fx-checkbox"
               type="checkbox"
               checked={enabled}
               onChange={e => setEnabled(e.target.checked)}
             />
-            Call external API when this source is selected
           </label>
           {enabled && (
             <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
@@ -459,7 +467,7 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
           )}
         </div>
       )}
-    </>
+    </div>
   )
 }
 
@@ -509,12 +517,15 @@ function CustomSourceRow({ source, clientId, onDelete, onUpdate }) {
   }
 
   return (
-    <>
+    <div className={`fx-source-item${editing ? ' expanded' : ''}`}>
       <div className="fx-source-row">
         <div className="fx-source-info">
-          <span className="fx-source-label">{source.label || source.id}</span>
+          <span className="fx-source-label">
+            <span className="fx-source-icon"><SourceIcon source={source} /></span>
+            <span>{source.label || source.id}</span>
+          </span>
           <span className="fx-row" style={{ gap: 'var(--fx-1)' }}>
-            <span className="fx-badge">external</span>
+            <span className="fx-badge">External</span>
             {source.control_api && (
               <span className="fx-source-api-hint">{source.control_api}</span>
             )}
@@ -573,12 +584,15 @@ function CustomSourceRow({ source, clientId, onDelete, onUpdate }) {
           </div>
         </div>
       )}
-    </>
+    </div>
   )
 }
 
-function AddCustomSourceForm({ clientId, onAdded }) {
-  const [open, setOpen] = useState(false)
+/**
+ * Inline new-source form. Now opens from the + menu rather than living
+ * as a perma disclosure below the list.
+ */
+function AddCustomSourceForm({ clientId, onAdded, onCancel }) {
   const [id, setId] = useState('')
   const [label, setLabel] = useState('')
   const [apiUrl, setApiUrl] = useState('')
@@ -604,8 +618,6 @@ function AddCustomSourceForm({ clientId, onAdded }) {
         method: 'POST',
         body: JSON.stringify(source),
       })
-      setId(''); setLabel(''); setApiUrl(''); setPayload(''); setContentType('json')
-      setOpen(false)
       onAdded()
     } catch (e) {
       alert(`Add failed: ${e.message}`)
@@ -615,54 +627,48 @@ function AddCustomSourceForm({ clientId, onAdded }) {
   }
 
   return (
-    <div className="fx-add-source">
-      <button
-        className="fx-add-source-toggle"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-      >
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <span>Add custom source</span>
-      </button>
-      {open && (
-        <form onSubmit={handleSubmit} className="fx-stack fx-add-source-form">
-          <div>
-            <label className="fx-label">Source ID</label>
-            <input className="fx-input" type="text" value={id} onChange={e => setId(e.target.value)} required placeholder="vinyl" />
-          </div>
-          <div>
-            <label className="fx-label">Label</label>
-            <input className="fx-input" type="text" value={label} onChange={e => setLabel(e.target.value)} required placeholder="Vinyl" />
-          </div>
-          <div>
-            <label className="fx-label">API URL</label>
-            <input className="fx-input" type="url" value={apiUrl} onChange={e => setApiUrl(e.target.value)} placeholder="https://…" />
-          </div>
-          <div>
-            <label className="fx-label">Payload</label>
-            <textarea
-              className="fx-textarea"
-              rows={3}
-              value={payload}
-              onChange={e => setPayload(e.target.value)}
-              placeholder={contentType === 'form' ? '{"arg": "value"}' : '{"source": "vinyl"}'}
-            />
-          </div>
-          <div>
-            <label className="fx-label">Encoding</label>
-            <select className="fx-select" value={contentType} onChange={e => setContentType(e.target.value)}>
-              <option value="json">JSON</option>
-              <option value="form">Form (x-www-form-urlencoded)</option>
-            </select>
-          </div>
-          <div>
-            <button type="submit" className="fx-btn primary" disabled={submitting}>
-              <Plus size={14} /> Add custom source
-            </button>
-          </div>
-        </form>
-      )}
-    </div>
+    <form onSubmit={handleSubmit} className="fx-stack fx-add-source-form">
+      <div className="fx-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+        <span className="fx-h3">New custom source</span>
+        <button type="button" className="fx-icon-btn sm" onClick={onCancel} aria-label="Cancel">
+          <X size={14} />
+        </button>
+      </div>
+      <div>
+        <label className="fx-label">Source ID</label>
+        <input className="fx-input" type="text" value={id} onChange={e => setId(e.target.value)} required placeholder="vinyl" />
+      </div>
+      <div>
+        <label className="fx-label">Label</label>
+        <input className="fx-input" type="text" value={label} onChange={e => setLabel(e.target.value)} required placeholder="Vinyl" />
+      </div>
+      <div>
+        <label className="fx-label">API URL</label>
+        <input className="fx-input" type="url" value={apiUrl} onChange={e => setApiUrl(e.target.value)} placeholder="https://…" />
+      </div>
+      <div>
+        <label className="fx-label">Payload</label>
+        <textarea
+          className="fx-textarea"
+          rows={3}
+          value={payload}
+          onChange={e => setPayload(e.target.value)}
+          placeholder={contentType === 'form' ? '{"arg": "value"}' : '{"source": "vinyl"}'}
+        />
+      </div>
+      <div>
+        <label className="fx-label">Encoding</label>
+        <select className="fx-select" value={contentType} onChange={e => setContentType(e.target.value)}>
+          <option value="json">JSON</option>
+          <option value="form">Form (x-www-form-urlencoded)</option>
+        </select>
+      </div>
+      <div>
+        <button type="submit" className="fx-btn primary" disabled={submitting}>
+          <Plus size={14} /> Add custom source
+        </button>
+      </div>
+    </form>
   )
 }
 
@@ -716,63 +722,67 @@ function AdvancedSettings({ client, overlays, onRefresh }) {
   }, [client.client_id, selectedOverlay, overlayLocked, onRefresh])
 
   return (
-    <div className="fx-advanced">
-      <button
-        className="fx-advanced-toggle"
-        onClick={() => setOpen(!open)}
-        aria-expanded={open}
-      >
-        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+    <>
+      <div className="fx-section-label">
         <span>Advanced settings</span>
-      </button>
+        <button
+          className="fx-icon-btn sm"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          title={open ? 'Collapse' : 'Expand'}
+        >
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+      </div>
       {open && (
-        <div className="fx-advanced-body">
-          <label className="fx-label">DAC overlay</label>
-          <p className="fx-hint">
-            dt-overlay written to <code className="fx-mono">/boot/firmware/config.txt</code>.
-            Apply rewrites the file remotely and reboots the device.
-          </p>
-          <div className="fx-row" style={{ gap: 'var(--fx-2)', marginTop: 'var(--fx-2)' }}>
-            <select
-              className="fx-select"
-              value={selectedOverlay || ''}
-              disabled={overlayLocked || applying || isRebooting}
-              onChange={e => setSelectedOverlay(e.target.value)}
-              title={overlayLocked
-                ? "Server hardware overlay is locked (analog-input detection in install.sh keys off this exact value)."
-                : "Pick the matching DAC HAT and press Apply to reboot."
-              }
-              style={{ flex: 1, minWidth: 0 }}
-            >
-              {(overlays || []).map(o => (
-                <option key={o.id} value={o.id}>{o.label}</option>
-              ))}
-              {selectedOverlay && !overlays?.some(o => o.id === selectedOverlay) && (
-                <option value={selectedOverlay}>{selectedOverlay} (custom)</option>
-              )}
-            </select>
-            <button
-              className={overlayDirty ? 'fx-btn primary' : 'fx-btn'}
-              disabled={overlayLocked || applying || isRebooting || !selectedOverlay}
-              onClick={handleApplyOverlay}
-              title="Rewrite /boot/firmware/config.txt and reboot. Device offline for ~60s."
-            >
-              {applying ? 'Applying…' : isRebooting ? 'Rebooting…' : (overlayDirty ? 'Apply + reboot' : 'Re-apply')}
-            </button>
-          </div>
-          {applyMessage && (
-            <div className={`fx-hint`} style={{ marginTop: 'var(--fx-2)', color: applyMessage.startsWith('Failed') ? 'var(--fx-err)' : 'var(--fx-text-2)' }}>
-              {applyMessage}
+        <div className="fx-panel-card fx-advanced-body">
+          <div className="fx-advanced-section">
+            <div className="fx-advanced-title">Choose the audio hat this device uses</div>
+            <div className="fx-row" style={{ gap: 'var(--fx-2)', marginTop: 'var(--fx-3)' }}>
+              <select
+                className="fx-select"
+                value={selectedOverlay || ''}
+                disabled={overlayLocked || applying || isRebooting}
+                onChange={e => setSelectedOverlay(e.target.value)}
+                title={overlayLocked
+                  ? "Server hardware overlay is locked (analog-input detection in install.sh keys off this exact value)."
+                  : "Pick the matching DAC HAT and press Apply to reboot."
+                }
+                style={{ flex: 1, minWidth: 0 }}
+              >
+                {(overlays || []).map(o => (
+                  <option key={o.id} value={o.id}>{o.label}</option>
+                ))}
+                {selectedOverlay && !overlays?.some(o => o.id === selectedOverlay) && (
+                  <option value={selectedOverlay}>{selectedOverlay} (custom)</option>
+                )}
+              </select>
+              <button
+                className={overlayDirty ? 'fx-btn primary' : 'fx-btn'}
+                disabled={overlayLocked || applying || isRebooting || !selectedOverlay}
+                onClick={handleApplyOverlay}
+                title="Rewrite /boot/firmware/config.txt and reboot. Device offline for ~60s."
+              >
+                {applying ? 'Applying…' : isRebooting ? 'Rebooting…' : (overlayDirty ? 'Apply + reboot' : 'Re-apply')}
+              </button>
             </div>
-          )}
-          {overlayLocked && (
-            <p className="fx-hint" style={{ marginTop: 'var(--fx-2)' }}>
-              Locked: install.sh's analog-input detection keys off this exact value.
-            </p>
-          )}
+            {selectedOverlay && (
+              <code className="fx-mono fx-overlay-code">dtoverlay={selectedOverlay}</code>
+            )}
+            {applyMessage && (
+              <div className="fx-small" style={{ marginTop: 'var(--fx-2)', color: applyMessage.startsWith('Failed') ? 'var(--fx-err)' : 'var(--fx-text-2)' }}>
+                {applyMessage}
+              </div>
+            )}
+            {overlayLocked && (
+              <p className="fx-small fx-mute" style={{ marginTop: 'var(--fx-2)' }}>
+                Locked: install.sh's analog-input detection keys off this exact value.
+              </p>
+            )}
+          </div>
         </div>
       )}
-    </div>
+    </>
   )
 }
 

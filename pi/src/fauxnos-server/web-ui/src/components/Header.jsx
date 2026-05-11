@@ -2,14 +2,11 @@ import { forwardRef } from 'react'
 import { ChevronDown } from 'lucide-react'
 
 /**
- * Header with clickable status indicator.
- *
- * Floating, backdrop-blurred bar. The wordmark carries a pulsing amber
- * dot whenever the server is running — the brand cue that doubles as
- * the heartbeat. The status pill is the entrypoint for the Devices
- * popover (which replaces the old top-level Devices tab); anchorRef is
- * forwarded out so App can wire it into outside-click detection
- * without bouncing close→open on the same click.
+ * Page header — fauxnos wordmark on the left (sits at the same x as the
+ * group cards below, indented past the drag-handle gutter), devices pill
+ * on the right. The pill is the entrypoint for the Devices popover; its
+ * ref is forwarded so App can wire outside-click detection without
+ * bouncing close→open on the same click.
  */
 const Header = forwardRef(function Header({ status, mqttConnected, onToggleDevices, popoverOpen }, ref) {
   const ok = status?.status === 'running'
@@ -19,13 +16,7 @@ const Header = forwardRef(function Header({ status, mqttConnected, onToggleDevic
 
   return (
     <header className="fx-header">
-      <span className="fx-header-brand">
-        <span
-          className={`fx-dot ${ok ? 'accent pulse' : 'err'}`}
-          style={ok ? { color: 'var(--fx-accent)' } : undefined}
-        />
-        <span className="fx-header-wordmark">fauxnos</span>
-      </span>
+      <h1 className="fx-header-wordmark">fauxnos</h1>
       <button
         ref={ref}
         type="button"

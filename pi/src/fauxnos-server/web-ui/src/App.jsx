@@ -91,13 +91,6 @@ export default function App() {
 
   return (
     <div className="fx-root">
-      <Header
-        ref={headerStatusRef}
-        status={serverStatus}
-        mqttConnected={mqtt.connected}
-        popoverOpen={popoverOpen}
-        onToggleDevices={() => setPopoverOpen(v => !v)}
-      />
       {popoverOpen && (
         <DevicesPopover
           clients={clients}
@@ -108,6 +101,13 @@ export default function App() {
         />
       )}
       <main className="fx-main">
+        <Header
+          ref={headerStatusRef}
+          status={serverStatus}
+          mqttConnected={mqtt.connected}
+          popoverOpen={popoverOpen}
+          onToggleDevices={() => setPopoverOpen(v => !v)}
+        />
         <GroupsTab
           groups={groups}
           clients={clients}
