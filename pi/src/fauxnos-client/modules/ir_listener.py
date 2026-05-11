@@ -49,6 +49,7 @@ import shutil
 import subprocess
 import threading
 import time
+from pathlib import Path
 from typing import Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -96,7 +97,13 @@ class IRListener:
             'timeout'   {command_id}
             'cancelled' {command_id}
             Used by MQTT plumbing to mirror the state to the UI.
-        device_name: rc-core device name (almost always 'rc0').
+        device_name: Fallback rc-core device name when auto-detection
+            fails. We always prefer to discover the right device at
+            start time by scanning /sys/class/rc/rc*/uevent for
+            DRV_NAME=gpio_ir_recv — the Pi's HDMI CEC also shows up
+            as an rc-core device and we don't want to enable IR
+            decoders on it. The fallback is only used if no gpio_ir
+            receiver is registered (e.g. overlay not loaded).
     """
 
     # Debounce windows in seconds.
@@ -242,16 +249,60 @@ class IRListener:
 
     # -------- subprocess management --------
 
+    @staticmethod
+    def _find_rc_device(target_driver: str = 'gpio_ir_recv') -> Optional[str]:
+        """
+        Scan /sys/class/rc/rc* for the device whose driver is
+        gpio_ir_recv. Returns the device name (e.g. 'rc0' or 'rc1')
+        or None if no matching device exists.
+
+        Rationale: on a Pi, /sys/class/rc/ may also contain the HDMI
+        CEC receiver (DRV_NAME=cec). Which rcN gets which driver depends
+        on probe order, so we can't hardcode rc0 across all hardware.
+        """
+        rc_root = Path('/sys/class/rc')
+        if not rc_root.exists():
+            return None
+        for rc_path in sorted(rc_root.glob('rc*')):
+            uevent = rc_path / 'uevent'
+            try:
+                for line in uevent.read_text().splitlines():
+                    if line.startswith('DRV_NAME=') and \
+                       line.split('=', 1)[1].strip() == target_driver:
+                        return rc_path.name
+            except OSError:
+                continue
+        return None
+
     def _start_subprocess(self):
         if self.is_running():
             return
         if shutil.which('ir-keytable') is None:
             logger.warning("IR listener: ir-keytable not installed; cannot start")
             return
+        # Resolve which rcN is actually the gpio_ir_recv. Falls back to
+        # the constructor default if scanning failed — preserves backward
+        # compat for setups where the user explicitly set device_name.
+        resolved = self._find_rc_device() or self.device_name
+        if resolved != self.device_name:
+            logger.info(
+                f"IR listener: auto-detected rc device {resolved!r} "
+                f"(fallback was {self.device_name!r})"
+            )
         # -t: test mode (just print events, don't modify protocols).
         # -s <dev>: select the rc-core device. Protocol enabling is
         # done at boot by fauxnos-ir-decoders.service (see install.sh).
-        cmd = ['ir-keytable', '-t', '-s', self.device_name]
+        #
+        # `stdbuf -oL`: force ir-keytable's stdout to line-buffered.
+        # Otherwise glibc applies full-block buffering when stdout is
+        # a pipe (our subprocess.Popen pipe), and scancodes accumulate
+        # in an 8KB buffer until either the buffer fills or the process
+        # exits. Verified empirically on fauxnos000 (2026-05-10): without
+        # stdbuf, 28 button presses queued for ~29 seconds then dumped in
+        # a 14ms burst on SIGTERM. With stdbuf each event arrives within
+        # one frame of the actual button press. Without this, learn mode
+        # would always time out before the first scancode arrived.
+        cmd = ['stdbuf', '-oL', 'ir-keytable', '-t', '-s', resolved]
         try:
             self._proc = subprocess.Popen(
                 cmd,

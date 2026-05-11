@@ -275,26 +275,66 @@ configure_ir_receiver() {
     # ir-keytable enables individual protocol decoders on the rc-core
     # receiver at runtime. Without this, /dev/lirc0 exists but
     # /dev/input/eventN never emits scancodes because no protocol module
-    # is loaded for the receiver's allowed_protocols mask. Run as a
-    # system oneshot at boot: needs root (writes /sys/class/rc/rc0/*),
-    # runs once, idempotent across reboots. The list covers the IR
-    # encodings used by every universal remote we'd realistically meet
-    # (Sony/JVC/RC-5/RC-6/NEC + the long-tail).
+    # is loaded for the receiver's allowed_protocols mask.
+    #
+    # The right rc-core device (rcN) varies by hardware: on a Pi with
+    # HDMI CEC enabled, the CEC driver also exposes itself via rc-core,
+    # so probe order determines whether gpio_ir_recv is rc0 or rc1.
+    # We install a small helper script that scans /sys/class/rc/ for
+    # DRV_NAME=gpio_ir_recv and uses whichever device matched. Keeps
+    # the systemd ExecStart line readable and mirrors the discovery
+    # logic in modules/ir_listener.py (Python side).
+    log "Installing /usr/local/bin/fauxnos-ir-enable-decoders.sh..."
+    sudo tee /usr/local/bin/fauxnos-ir-enable-decoders.sh > /dev/null <<'EOF'
+#!/bin/sh
+# fauxnos-ir-enable-decoders — find the gpio_ir_recv rc-core device
+# and enable the IR protocol decoders we care about. Retries up to
+# 5 seconds for the overlay's probe to complete.
+
+set -e
+TARGET_DRV=gpio_ir_recv
+PROTOCOLS="nec,rc-5,rc-6,jvc,sony,sanyo,sharp,xmp,imon"
+
+find_rc() {
+    for r in /sys/class/rc/rc*; do
+        [ -d "$r" ] || continue
+        drv=$(awk -F= '/^DRV_NAME=/ {print $2}' "$r/uevent" 2>/dev/null)
+        if [ "$drv" = "$TARGET_DRV" ]; then
+            basename "$r"
+            return 0
+        fi
+    done
+    return 1
+}
+
+for attempt in 1 2 3 4 5; do
+    if rc=$(find_rc); then
+        echo "fauxnos-ir: enabling [$PROTOCOLS] on $rc"
+        exec /usr/bin/ir-keytable -p "$PROTOCOLS" -s "$rc"
+    fi
+    sleep 1
+done
+
+echo "fauxnos-ir: no rc-core device with DRV_NAME=$TARGET_DRV after 5s" >&2
+exit 1
+EOF
+    sudo chmod +x /usr/local/bin/fauxnos-ir-enable-decoders.sh
+
     log "Installing fauxnos-ir-decoders.service (boot-time protocol enabler)..."
     sudo tee /etc/systemd/system/fauxnos-ir-decoders.service > /dev/null <<'EOF'
 [Unit]
-Description=Fauxnos: enable IR protocol decoders on rc0
-# /dev/lirc0 + /sys/class/rc/rc0/ appear once the gpio-ir overlay's
-# probe completes. systemd-udev-settle would be the bullet-proof gate
-# but it's deprecated; instead we just retry inside ExecStart.
+Description=Fauxnos: enable IR protocol decoders on the gpio_ir_recv rc-core device
+# The rc-core devices appear after the gpio-ir overlay's probe; the
+# helper script polls for up to 5s if no matching device is registered
+# yet. ConditionPathExistsGlob short-circuits cleanly on systems
+# without any rc-core devices at all (e.g. /sys/class/rc absent).
 After=systemd-modules-load.service
-ConditionPathExists=/sys/class/rc/rc0
+ConditionPathExistsGlob=/sys/class/rc/rc*
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-# Retry briefly in case rc0 isn't quite ready yet at first call.
-ExecStart=/bin/sh -c 'for i in 1 2 3 4 5; do /usr/bin/ir-keytable -p nec,rc-5,rc-6,jvc,sony,sanyo,sharp,xmp,imon -s rc0 && exit 0; sleep 1; done; exit 1'
+ExecStart=/usr/local/bin/fauxnos-ir-enable-decoders.sh
 
 [Install]
 WantedBy=multi-user.target
