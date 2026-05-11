@@ -34,6 +34,7 @@ class StateManager:
         current_source: Optional[str],
         source_volumes: Dict[str, int],
         pa_calibrations: Optional[Dict[str, int]] = None,
+        ir: Optional[Dict] = None,
     ) -> bool:
         """
         Save current state to file
@@ -44,6 +45,9 @@ class StateManager:
             pa_calibrations: Dict mapping source_id → PA loopback
                 calibration percent (override of YAML's pa_calibration).
                 Optional — if None, existing on-disk value is preserved.
+            ir: Hardware-remote state block:
+                {"enabled": bool, "mappings": {cmd_id: {"protocol", "scancode"} | None}}.
+                Optional — if None, existing on-disk value is preserved.
 
         Returns:
             True if successful, False otherwise
@@ -51,13 +55,17 @@ class StateManager:
         try:
             # Preserve existing pa_calibrations if caller didn't pass one.
             # Otherwise we'd wipe them on every save_state(current_source, ...) call.
+            existing_raw = self._load_raw()
             if pa_calibrations is None:
-                pa_calibrations = self._load_raw().get('pa_calibrations', {})
+                pa_calibrations = existing_raw.get('pa_calibrations', {})
+            if ir is None:
+                ir = existing_raw.get('ir', {'enabled': False, 'mappings': {}})
 
             state = {
                 'current_source': current_source,
                 'source_volumes': source_volumes,
                 'pa_calibrations': pa_calibrations,
+                'ir': ir,
             }
 
             # Write to temporary file first (atomic write)
@@ -125,6 +133,67 @@ class StateManager:
             pa_calibrations=cals,
         )
 
+    # --- IR (hardware remote) state ---
+    #
+    # Shape on disk:
+    #   "ir": {
+    #     "enabled": bool,
+    #     "mappings": {
+    #       "volume_up": {"protocol": "nec", "scancode": "0x1FE807F"},
+    #       "volume_down": null,
+    #       ...
+    #     }
+    #   }
+    # mappings entries are either None (unlearned) or a 2-key dict.
+
+    def get_ir(self) -> Dict:
+        """Return the full ir block, with empty defaults if absent."""
+        state = self.load_state()
+        ir = state.get('ir') or {}
+        return {
+            'enabled': bool(ir.get('enabled', False)),
+            'mappings': dict(ir.get('mappings') or {}),
+        }
+
+    def set_ir_enabled(self, enabled: bool) -> bool:
+        """Toggle the IR feature flag, preserving the mapping table."""
+        state = self.load_state()
+        ir = state.get('ir') or {'enabled': False, 'mappings': {}}
+        ir['enabled'] = bool(enabled)
+        return self.save_state(
+            current_source=state.get('current_source'),
+            source_volumes=state.get('source_volumes', {}),
+            pa_calibrations=state.get('pa_calibrations', {}),
+            ir=ir,
+        )
+
+    def set_ir_mapping(self, command_id: str, protocol: Optional[str],
+                       scancode: Optional[str]) -> bool:
+        """
+        Set (or clear) a single command's IR mapping. Pass protocol=None
+        and scancode=None to clear. Other commands' mappings are
+        preserved.
+        """
+        state = self.load_state()
+        ir = state.get('ir') or {'enabled': False, 'mappings': {}}
+        mappings = dict(ir.get('mappings') or {})
+        if protocol is None or scancode is None:
+            mappings[command_id] = None
+        else:
+            mappings[command_id] = {
+                'protocol': str(protocol),
+                # Normalize to lowercase 0x... form so equality matches
+                # whatever the listener parses out of ir-keytable output.
+                'scancode': str(scancode).lower(),
+            }
+        ir['mappings'] = mappings
+        return self.save_state(
+            current_source=state.get('current_source'),
+            source_volumes=state.get('source_volumes', {}),
+            pa_calibrations=state.get('pa_calibrations', {}),
+            ir=ir,
+        )
+
     def load_state(self) -> Dict:
         """
         Load state from file
@@ -138,6 +207,7 @@ class StateManager:
             'current_source': None,
             'source_volumes': {},
             'pa_calibrations': {},
+            'ir': {'enabled': False, 'mappings': {}},
         }
 
         if not self.state_file.exists():
@@ -153,8 +223,9 @@ class StateManager:
                 self.logger.warning("State file has invalid structure, using empty state")
                 return empty_state
 
-            # pa_calibrations was added later — fill in if missing
+            # pa_calibrations + ir were added later — fill in if missing
             state.setdefault('pa_calibrations', {})
+            state.setdefault('ir', {'enabled': False, 'mappings': {}})
 
             self.logger.info(f"State loaded: source={state['current_source']}")
             return state

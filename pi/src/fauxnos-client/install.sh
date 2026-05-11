@@ -307,6 +307,18 @@ EOF
     # the unit will run cleanly after the post-install reboot.
     sudo systemctl start fauxnos-ir-decoders.service 2>/dev/null || true
 
+    # The userland listener (modules/ir_listener.py) runs as the regular
+    # user and shells out to `ir-keytable -t`, which reads the rc-core
+    # device's /dev/input/eventN node. RPi OS udev defaults set that
+    # node's group to either `input` or `video` depending on the rc
+    # subsystem — add the user to BOTH so the listener works regardless.
+    # Group membership takes effect on next login; install.sh reboots at
+    # the end, so the new groups are live by the time fauxnos-client
+    # tries to spawn the listener.
+    log "Adding $USER to input + video groups for IR access..."
+    sudo usermod -a -G input "$USER" 2>/dev/null || true
+    sudo usermod -a -G video "$USER" 2>/dev/null || true
+
     log_success "IR receiver configured (active after reboot)"
 }
 
@@ -365,6 +377,7 @@ download_client_code() {
     local module_files=(
         "modules/__init__.py"
         "modules/config_manager.py"
+        "modules/ir_listener.py"
         "modules/logger.py"
         "modules/mqtt_client.py"
         "modules/pulse_controller.py"

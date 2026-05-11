@@ -17,6 +17,7 @@ from modules.config_manager import ConfigManager
 from modules import logger as logger_module
 from modules.source_manager import SourceManager
 from modules.mqtt_client import MQTTClient
+from modules.ir_listener import IRListener, COMMAND_IDS as IR_COMMAND_IDS
 
 
 class FauxnosClient:
@@ -53,6 +54,17 @@ class FauxnosClient:
             calibration_getter=self.source_manager.get_calibration,
         )
 
+        # Initialize IR listener (hardware-remote support). Wires the
+        # seven canonical commands to local handlers — volume/source
+        # go through SourceManager directly (no MQTT round-trip), and
+        # transport controls are stubs for now (filled in by phase 3
+        # when we add playerctl + shairport DBUS glue).
+        self.ir_listener = IRListener(
+            state_manager=self.source_manager.state_manager,
+            command_handlers=self._build_ir_handlers(),
+            on_learn_event=None,  # phase 3 wires this to MQTT
+        )
+
         # Flag for graceful shutdown
         self.running = True
 
@@ -64,8 +76,85 @@ class FauxnosClient:
         """Handle shutdown signals"""
         self.logger.info(f"Received signal {sig}, shutting down...")
         self.running = False
+        self.ir_listener.stop()
         self.mqtt_client.stop()
         sys.exit(0)
+
+    # ---- IR command handlers ----
+    #
+    # Each handler is a no-arg callable invoked by IRListener when a
+    # learned scancode matches. They route through the same code paths
+    # the MQTT and Web UI use, so the remote and the UI stay in lockstep
+    # (e.g. a remote-driven volume change still publishes status updates).
+
+    # Volume-step granularity for the IR remote. 5% gives a 20-step
+    # range from 0 to 100, which feels natural on a button press.
+    IR_VOLUME_STEP = 5
+
+    def _build_ir_handlers(self):
+        """Construct the {command_id: callable} map passed to IRListener."""
+        return {
+            'volume_up':    self._ir_volume_up,
+            'volume_down':  self._ir_volume_down,
+            'mute':         self._ir_mute_toggle,
+            'source_cycle': self._ir_source_cycle,
+            # Transport controls are stubbed for phase 2. Phase 3 will
+            # wire these to playerctl (Spotify) and shairport DBUS
+            # (AirPlay), no-op for analog/vinyl/aux.
+            'play_pause':   lambda: self.logger.info("IR play_pause (stub — phase 3)"),
+            'next':         lambda: self.logger.info("IR next (stub — phase 3)"),
+            'previous':     lambda: self.logger.info("IR previous (stub — phase 3)"),
+        }
+
+    def _ir_volume_up(self):
+        cur = self.source_manager.get_current_source()
+        if not cur:
+            return
+        vol = self.source_manager.get_source_volume(cur) or 0
+        new_vol = min(100, vol + self.IR_VOLUME_STEP)
+        if self.source_manager.set_volume(new_vol):
+            self.mqtt_client.update_volume(new_vol)
+
+    def _ir_volume_down(self):
+        cur = self.source_manager.get_current_source()
+        if not cur:
+            return
+        vol = self.source_manager.get_source_volume(cur) or 0
+        new_vol = max(0, vol - self.IR_VOLUME_STEP)
+        if self.source_manager.set_volume(new_vol):
+            self.mqtt_client.update_volume(new_vol)
+
+    def _ir_mute_toggle(self):
+        """
+        Mute toggle: if current volume > 0, save it and set to 0; if
+        already 0, restore the last non-zero value (default 30% if we
+        have no memory).
+        """
+        cur = self.source_manager.get_current_source()
+        if not cur:
+            return
+        vol = self.source_manager.get_source_volume(cur) or 0
+        if vol > 0:
+            self._ir_pre_mute_volume = vol
+            target = 0
+        else:
+            target = getattr(self, '_ir_pre_mute_volume', 30)
+        if self.source_manager.set_volume(target):
+            self.mqtt_client.update_volume(target)
+
+    def _ir_source_cycle(self):
+        """Cycle through this client's internal sources in config order."""
+        sources = list(self.config_manager.get_internal_sources().keys())
+        if not sources:
+            return
+        cur = self.source_manager.get_current_source()
+        try:
+            idx = sources.index(cur)
+        except ValueError:
+            idx = -1
+        nxt = sources[(idx + 1) % len(sources)]
+        if self.source_manager.switch_source(nxt):
+            self.mqtt_client.update_mode(nxt)
 
     def run_daemon(self):
         """Run in daemon mode (background service)"""
@@ -76,6 +165,11 @@ class FauxnosClient:
 
         # Start MQTT client (subscribes to control topics, publishes status)
         self.mqtt_client.start()
+
+        # Start IR listener if the feature is enabled in saved state.
+        # No-op + warning if disabled, so the daemon comes up cleanly
+        # on devices without IR configured.
+        self.ir_listener.start()
 
         # Publish initial state
         current = self.source_manager.get_current_source()
@@ -91,6 +185,7 @@ class FauxnosClient:
         except KeyboardInterrupt:
             pass
 
+        self.ir_listener.stop()
         self.mqtt_client.stop()
         self.logger.info("Daemon shutting down")
 
