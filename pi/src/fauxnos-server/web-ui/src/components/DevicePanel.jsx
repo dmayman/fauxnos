@@ -736,6 +736,7 @@ function AdvancedSettings({ client, overlays, onRefresh }) {
       </div>
       {open && (
         <div className="fx-panel-card fx-advanced-body">
+          <RemoteControlSection client={client} />
           <div className="fx-advanced-section">
             <div className="fx-advanced-title">Choose the audio hat this device uses</div>
             <div className="fx-row" style={{ gap: 'var(--fx-2)', marginTop: 'var(--fx-3)' }}>
@@ -783,6 +784,222 @@ function AdvancedSettings({ client, overlays, onRefresh }) {
         </div>
       )}
     </>
+  )
+}
+
+// Canonical IR command list — must match COMMAND_IDS in
+// client/modules/ir_listener.py and server IR_COMMAND_IDS.
+const IR_COMMANDS = [
+  { id: 'volume_up',    label: 'Volume up' },
+  { id: 'volume_down',  label: 'Volume down' },
+  { id: 'mute',         label: 'Mute' },
+  { id: 'source_cycle', label: 'Source' },
+  { id: 'play_pause',   label: 'Play / Pause' },
+  { id: 'next',         label: 'Next' },
+  { id: 'previous',     label: 'Previous' },
+]
+
+const LEARN_TIMEOUT_S = 15
+
+/**
+ * Remote control (hardware IR) settings — toggle + per-command learn UI.
+ *
+ * Flow:
+ *  - Mount fetches /api/clients/<id>/ir for initial mirror state.
+ *  - SSE /api/clients/<id>/ir/stream pushes learn lifecycle events
+ *    (started / captured / timeout / cancelled / rejected). Captures
+ *    carry the protocol + scancode so we update the row in place
+ *    without a refetch.
+ *  - Toggling the checkbox PUTs {enabled:bool}. The client echoes the
+ *    new state back via MQTT and the next stream snapshot reflects it,
+ *    but we optimistically flip the checkbox so it feels instant.
+ *  - Learn buttons POST /api/clients/<id>/ir/learn — server publishes
+ *    the MQTT start command and the client takes over. The button
+ *    flips to Cancel until a terminal lifecycle event arrives.
+ */
+function RemoteControlSection({ client }) {
+  const [enabled, setEnabled] = useState(false)
+  const [mappings, setMappings] = useState({})
+  const [learningCommand, setLearningCommand] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [errorMsg, setErrorMsg] = useState(null)
+
+  // Initial load — gives us the persisted mappings even if the SSE
+  // stream hasn't delivered a snapshot yet (no learn ever happened).
+  useEffect(() => {
+    let cancelled = false
+    apiFetch(`/api/clients/${client.client_id}/ir`)
+      .then(j => {
+        if (cancelled) return
+        const ir = j?.ir || {}
+        setEnabled(!!ir.enabled)
+        setMappings(ir.mappings || {})
+      })
+      .catch(e => { if (!cancelled) setErrorMsg(e.message) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [client.client_id])
+
+  // SSE — keeps learn state in lockstep with the device. We only
+  // process the `learn_event` and `snapshot` events; the latter is
+  // just the last learn_event replayed for late subscribers.
+  useEffect(() => {
+    if (!client.client_id) return undefined
+    const es = new EventSource(`/api/clients/${client.client_id}/ir/stream`)
+    const handler = (e) => {
+      let data
+      try { data = JSON.parse(e.data) } catch { return }
+      const ev = data?.event
+      if (ev === 'started') {
+        setLearningCommand(data.command_id)
+      } else if (ev === 'captured') {
+        setLearningCommand(prev => prev === data.command_id ? null : prev)
+        setMappings(prev => ({
+          ...prev,
+          [data.command_id]: { protocol: data.protocol, scancode: data.scancode },
+        }))
+      } else if (ev === 'timeout' || ev === 'cancelled' || ev === 'rejected') {
+        setLearningCommand(prev => prev === data.command_id ? null : prev)
+      }
+    }
+    es.addEventListener('learn_event', handler)
+    es.addEventListener('snapshot', handler)
+    es.onerror = () => { /* EventSource auto-reconnects; nothing to do */ }
+    return () => es.close()
+  }, [client.client_id])
+
+  const toggleEnabled = useCallback(async () => {
+    const next = !enabled
+    setEnabled(next)  // optimistic
+    try {
+      await apiFetch(`/api/clients/${client.client_id}/ir`, {
+        method: 'PUT',
+        body: JSON.stringify({ enabled: next }),
+      })
+    } catch (e) {
+      setEnabled(!next)  // revert
+      setErrorMsg(`Failed to ${next ? 'enable' : 'disable'} remote: ${e.message}`)
+    }
+  }, [client.client_id, enabled])
+
+  const startLearn = useCallback(async (commandId) => {
+    setErrorMsg(null)
+    setLearningCommand(commandId)  // optimistic
+    try {
+      await apiFetch(`/api/clients/${client.client_id}/ir/learn`, {
+        method: 'POST',
+        body: JSON.stringify({ command_id: commandId, timeout_s: LEARN_TIMEOUT_S }),
+      })
+    } catch (e) {
+      setLearningCommand(null)
+      setErrorMsg(`Learn failed: ${e.message}`)
+    }
+  }, [client.client_id])
+
+  const cancelLearn = useCallback(async () => {
+    try {
+      await apiFetch(`/api/clients/${client.client_id}/ir/learn/cancel`, {
+        method: 'POST',
+      })
+    } catch (e) {
+      setErrorMsg(`Cancel failed: ${e.message}`)
+    }
+  }, [client.client_id])
+
+  const clearCommand = useCallback(async (commandId) => {
+    setMappings(prev => ({ ...prev, [commandId]: null }))  // optimistic
+    try {
+      await apiFetch(`/api/clients/${client.client_id}/ir`, {
+        method: 'PUT',
+        body: JSON.stringify({ clear: commandId }),
+      })
+    } catch (e) {
+      setErrorMsg(`Clear failed: ${e.message}`)
+    }
+  }, [client.client_id])
+
+  return (
+    <div className="fx-advanced-section">
+      <label className="fx-ir-toggle">
+        <input
+          type="checkbox"
+          checked={enabled}
+          disabled={loading}
+          onChange={toggleEnabled}
+        />
+        <span className="fx-advanced-title" style={{ margin: 0 }}>Remote control</span>
+      </label>
+      {!enabled && !loading && (
+        <p className="fx-small fx-mute" style={{ marginTop: 'var(--fx-2)' }}>
+          Wire a 38 kHz IR receiver (e.g. VS1838B) to GPIO17 / 3V3 / GND and enable
+          to teach this device a remote.
+        </p>
+      )}
+      {enabled && (
+        <div className="fx-ir-rows">
+          {IR_COMMANDS.map(c => (
+            <IrCommandRow
+              key={c.id}
+              label={c.label}
+              mapping={mappings[c.id]}
+              learning={learningCommand === c.id}
+              disabled={learningCommand !== null && learningCommand !== c.id}
+              onLearn={() => startLearn(c.id)}
+              onCancel={cancelLearn}
+              onClear={() => clearCommand(c.id)}
+            />
+          ))}
+        </div>
+      )}
+      {errorMsg && (
+        <div className="fx-small" style={{ marginTop: 'var(--fx-2)', color: 'var(--fx-err)' }}>
+          {errorMsg}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function IrCommandRow({ label, mapping, learning, disabled, onLearn, onCancel, onClear }) {
+  const valueText = learning
+    ? 'Learning…'
+    : (mapping
+        ? `${(mapping.protocol || '?').toUpperCase()} ${mapping.scancode || ''}`
+        : '—')
+
+  return (
+    <div className="fx-ir-row">
+      <span className="fx-ir-label">{label}</span>
+      <code className={`fx-mono fx-ir-value ${learning ? 'learning' : ''} ${mapping && !learning ? 'set' : ''}`}>
+        {valueText}
+      </code>
+      <div className="fx-ir-actions">
+        {learning ? (
+          <button className="fx-btn" onClick={onCancel}>Cancel</button>
+        ) : (
+          <>
+            {mapping && (
+              <button
+                className="fx-icon-btn sm"
+                onClick={onClear}
+                disabled={disabled}
+                title="Forget this mapping"
+              >
+                <X size={14} />
+              </button>
+            )}
+            <button
+              className="fx-btn"
+              onClick={onLearn}
+              disabled={disabled}
+              title={disabled ? 'Cancel the in-flight learn first' : 'Press a button on your remote after clicking'}
+            >
+              {mapping ? 'Re-learn' : 'Learn'}
+            </button>
+          </>
+        )}
+      </div>
+    </div>
   )
 }
 

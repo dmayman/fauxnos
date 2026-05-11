@@ -1379,6 +1379,70 @@ body {
   user-select: all;
 }
 
+/* ── Remote control (IR) section ──────────────────────────────────────────── */
+.fx-ir-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-2);
+  cursor: pointer;
+}
+.fx-ir-toggle input[type="checkbox"] {
+  /* Inherit the same look as other small checkboxes in the panel.
+     fx-checkbox is a class on the <input>; we apply equivalent styling
+     here so the wrapper-label pattern works without adding another
+     class to the input. */
+  width: 16px;
+  height: 16px;
+  accent-color: var(--fx-accent);
+}
+.fx-ir-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fx-1);
+  margin-top: var(--fx-2);
+}
+.fx-ir-row {
+  /* 3-col grid: label | value chip | action(s). Action column is fixed
+     width so all rows align nicely; the chip flexes between them. */
+  display: grid;
+  grid-template-columns: 1fr minmax(110px, auto) auto;
+  align-items: center;
+  gap: var(--fx-2);
+  padding: var(--fx-1) var(--fx-2);
+  border-radius: var(--fx-r-sm);
+}
+.fx-ir-row:hover { background: var(--fx-surface-2); }
+.fx-ir-label {
+  font-size: var(--fx-text-sm);
+  color: var(--fx-text);
+}
+.fx-ir-value {
+  font-size: 11px;
+  padding: 2px var(--fx-2);
+  border-radius: var(--fx-r-sm);
+  background: var(--fx-surface-3);
+  color: var(--fx-text-2);
+  text-align: center;
+  white-space: nowrap;
+  user-select: all;
+}
+.fx-ir-value.set { color: var(--fx-text); }
+.fx-ir-value.learning {
+  color: var(--fx-accent);
+  /* Subtle pulse so the user knows the device is actively listening. */
+  animation: fx-ir-listening 1.2s ease-in-out infinite;
+}
+@keyframes fx-ir-listening {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+.fx-ir-actions {
+  display: flex;
+  gap: var(--fx-1);
+  align-items: center;
+  justify-content: flex-end;
+}
+
 /* ── Source rows in device panel ──────────────────────────────────────────── */
 .fx-source-list { /* fx-panel-card supplies layout/border */ }
 /* Each row + its inline form sits in a fx-source-item so hover and "expanded"
