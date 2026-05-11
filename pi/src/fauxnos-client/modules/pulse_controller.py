@@ -300,7 +300,13 @@ class PulseAudioController:
         # is fine for short feedback clicks; "perceptual" curves matter
         # more for sustained music playback.
         paplay_vol = int(round(vol * 65536 / 100))
-        cmd = ['paplay', '--device', sink_name, f'--volume={paplay_vol}', str(p)]
+        # --latency-msec=50 shrinks PA's playback buffer for this stream
+        # so the WAV starts hitting the DAC ~tens-of-ms after spawn
+        # instead of paplay's default several-hundred-ms latency. Matters
+        # for IR feedback where the tone is the user's primary "I heard
+        # your press" signal.
+        cmd = ['paplay', '--device', sink_name, '--latency-msec=50',
+               f'--volume={paplay_vol}', str(p)]
         try:
             subprocess.Popen(
                 cmd,

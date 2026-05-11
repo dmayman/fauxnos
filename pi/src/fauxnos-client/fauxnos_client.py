@@ -159,9 +159,12 @@ class FauxnosClient:
             return
         vol = self.source_manager.get_source_volume(cur) or 0
         new_vol = min(100, vol + self.IR_VOLUME_STEP)
+        # Feedback FIRST — paplay is non-blocking, so the user hears
+        # the notch tone within ~100ms instead of waiting for the pactl
+        # subprocess + MQTT publish chain below to finish.
+        self._play_volume_feedback(new_vol)
         if self.source_manager.set_volume(new_vol):
             self.mqtt_client.update_volume(new_vol)
-            self._play_volume_feedback(new_vol)
 
     def _ir_volume_down(self):
         cur = self.source_manager.get_current_source()
@@ -169,9 +172,9 @@ class FauxnosClient:
             return
         vol = self.source_manager.get_source_volume(cur) or 0
         new_vol = max(0, vol - self.IR_VOLUME_STEP)
+        self._play_volume_feedback(new_vol)
         if self.source_manager.set_volume(new_vol):
             self.mqtt_client.update_volume(new_vol)
-            self._play_volume_feedback(new_vol)
 
     def _ir_mute_toggle(self):
         """
@@ -193,9 +196,11 @@ class FauxnosClient:
             target = 0
         else:
             target = getattr(self, '_ir_pre_mute_volume', 30)
+        # Sound first; volume change second. Same latency rationale as
+        # the volume up/down handlers above.
+        self._play_feedback_sound('mute.wav' if muting else 'unmute.wav')
         if self.source_manager.set_volume(target):
             self.mqtt_client.update_volume(target)
-            self._play_feedback_sound('mute.wav' if muting else 'unmute.wav')
 
     def _ir_source_cycle(self):
         """Cycle through this client's internal sources in config order."""
@@ -208,6 +213,14 @@ class FauxnosClient:
         except ValueError:
             idx = -1
         nxt = sources[(idx + 1) % len(sources)]
+        # Sound BEFORE the switch — switch_source() does a blocking
+        # fade_volume() loop (~1s for a 0→100 snapcast fade), so if we
+        # played the sound after, the user would wait the full fade
+        # before hearing anything. Single tone for any source change,
+        # distinct from per-notch volume + mute/unmute sounds. IR-only
+        # by design; web/MQTT source switches go through
+        # SourceManager.switch_source() directly and stay silent.
+        self._play_feedback_sound('source_switch.wav')
         if self.source_manager.switch_source(nxt):
             self.mqtt_client.update_mode(nxt)
 

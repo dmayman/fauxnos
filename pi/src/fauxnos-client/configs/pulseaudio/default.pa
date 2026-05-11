@@ -1,5 +1,16 @@
 .include /etc/pulse/default.pa
 
+# --- Keep the DAC awake ---
+# /etc/pulse/default.pa loads module-suspend-on-idle, which suspends any
+# sink (including the hardware ALSA output) after 5s of silence. On a
+# HiFiBerry DAC+ADC that costs ~5s of wake-up latency the next time we
+# play a feedback sound — the user hears nothing on the first IR press
+# until the chip comes back online. Unloading the module trades that
+# latency for negligible idle power draw on a permanently-powered audio
+# device. If you ever hear hiss from an always-on DAC, swap this for a
+# silent-stream pre-warm or a longer suspend timeout instead.
+unload-module module-suspend-on-idle
+
 # --- Custom PulseAudio Configuration for HiFiBerry DAC+ADC ---
 
 # Important: Disable timer-based scheduling for improved stability on Raspberry Pi
