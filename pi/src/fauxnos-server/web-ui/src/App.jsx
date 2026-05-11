@@ -1,132 +1,149 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
+import { X } from 'lucide-react'
 import Header from './components/Header'
 import GroupsTab from './components/GroupsTab'
-import DevicesTab from './components/DevicesTab'
 import AddDeviceTab from './components/AddDeviceTab'
-import SourcesPanel from './components/SourcesPanel'
+import DevicesPopover from './components/DevicesPopover'
+import DevicePanel from './components/DevicePanel'
 import { useMqtt } from './hooks/useMqtt'
 import { apiFetch } from './api'
 
+/**
+ * Top-level layout.
+ *
+ * Tabs are gone — Groups is the only main view. Devices live in a popover
+ * anchored to the header's status pill; clicking a device row opens a
+ * side panel (DevicePanel) with status + sources + advanced settings.
+ * The Add Device wizard now opens as a wider side panel from the popover
+ * footer.
+ *
+ * Side panels are mutually exclusive (open one closes any other) so the
+ * z-index/overlay accounting stays simple.
+ */
 export default function App() {
-  const [activeTab, setActiveTab] = useState('groups')
   const [clients, setClients] = useState([])
   const [groups, setGroups] = useState([])
   const [streams, setStreams] = useState([])
   const [serverStatus, setServerStatus] = useState(null)
-  const [sourcesPanel, setSourcesPanel] = useState({ open: false, clientId: null, clientName: null })
+  const [devicePanelClientId, setDevicePanelClientId] = useState(null)
+  const [popoverOpen, setPopoverOpen] = useState(false)
+  const [addDeviceOpen, setAddDeviceOpen] = useState(false)
+  const headerStatusRef = useRef(null)
 
   const mqtt = useMqtt()
 
-  const loadClients = useCallback(async () => {
+  const loadAll = useCallback(async () => {
     try {
-      const data = await apiFetch('/api/clients')
-      setClients(data.clients || [])
-    } catch { /* ignore */ }
-  }, [])
-
-  const loadGroups = useCallback(async () => {
-    try {
-      const [groupsData, clientsData] = await Promise.all([
-        apiFetch('/api/groups'),
-        apiFetch('/api/clients'),
+      const [groupsData, clientsData, statusData] = await Promise.all([
+        apiFetch('/api/groups').catch(() => null),
+        apiFetch('/api/clients').catch(() => null),
+        apiFetch('/api/status').catch(() => null),
       ])
-      setGroups(groupsData.groups || [])
-      setStreams(groupsData.streams || [])
-      setClients(clientsData.clients || [])
+      if (groupsData) {
+        setGroups(groupsData.groups || [])
+        setStreams(groupsData.streams || [])
+      }
+      if (clientsData) setClients(clientsData.clients || [])
+      if (statusData) setServerStatus(statusData)
     } catch { /* ignore */ }
   }, [])
 
-  const loadStatus = useCallback(async () => {
-    try {
-      const data = await apiFetch('/api/status')
-      setServerStatus(data)
-    } catch {
-      setServerStatus(null)
-    }
-  }, [])
-
-  // Initial load
+  // Initial + 60s background refresh. The popover always wants fresh
+  // client state, so we fetch everything together regardless of which
+  // panels are open.
+  useEffect(() => { loadAll() }, [loadAll])
   useEffect(() => {
-    loadStatus()
-    loadGroups()
-  }, [loadStatus, loadGroups])
-
-  // Auto-refresh every 60s
-  useEffect(() => {
-    const id = setInterval(() => {
-      loadStatus()
-      if (activeTab === 'groups') loadGroups()
-      else if (activeTab === 'devices') loadClients()
-    }, 60000)
+    const id = setInterval(loadAll, 60000)
     return () => clearInterval(id)
-  }, [activeTab, loadStatus, loadGroups, loadClients])
+  }, [loadAll])
 
-  // Reload when switching tabs
+  const openDevice = useCallback((clientId) => {
+    setAddDeviceOpen(false)
+    setDevicePanelClientId(clientId)
+  }, [])
+
+  const closeDevice = useCallback(() => setDevicePanelClientId(null), [])
+
+  const openAddDevice = useCallback(() => {
+    setDevicePanelClientId(null)
+    setAddDeviceOpen(true)
+  }, [])
+
+  const closeAddDevice = useCallback(() => setAddDeviceOpen(false), [])
+
+  // Resolve the currently-open device by id so the panel re-renders with
+  // fresh data after a refresh tick — pulling from state instead of a
+  // captured prop means a rename or status flip shows up immediately.
+  const activeDeviceClient = useMemo(
+    () => clients.find(c => c.client_id === devicePanelClientId) || null,
+    [clients, devicePanelClientId]
+  )
+
+  // If the panel's target device vanishes (e.g. user removed it),
+  // close the panel instead of rendering a stale shell.
   useEffect(() => {
-    if (activeTab === 'groups') loadGroups()
-    else if (activeTab === 'devices') loadClients()
-  }, [activeTab, loadGroups, loadClients])
+    if (devicePanelClientId && !activeDeviceClient) {
+      setDevicePanelClientId(null)
+    }
+  }, [devicePanelClientId, activeDeviceClient])
 
-  const openSources = useCallback((clientId, clientName) => {
-    setSourcesPanel({ open: true, clientId, clientName })
-  }, [])
-
-  const closeSources = useCallback(() => {
-    setSourcesPanel({ open: false, clientId: null, clientName: null })
-  }, [])
-
-  const tabs = [
-    { id: 'groups', label: 'Groups' },
-    { id: 'devices', label: 'Devices' },
-    { id: 'add-device', label: 'Add Device' },
-  ]
+  const sidePanelOpen = !!activeDeviceClient || addDeviceOpen
 
   return (
-    <>
-      <Header status={serverStatus} mqttConnected={mqtt.connected} />
-      <nav>
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            className={`tab-btn${activeTab === t.id ? ' active' : ''}`}
-            onClick={() => setActiveTab(t.id)}
-          >
-            {t.label}
-          </button>
-        ))}
-      </nav>
-      <main>
-        {activeTab === 'groups' && (
-          <GroupsTab
-            groups={groups}
-            clients={clients}
-            streams={streams}
-            mqtt={mqtt}
-            onRefresh={loadGroups}
-            onOpenSources={openSources}
-          />
-        )}
-        {activeTab === 'devices' && (
-          <DevicesTab
-            clients={clients}
-            onRefresh={loadClients}
-          />
-        )}
-        {activeTab === 'add-device' && (
-          <AddDeviceTab onDeviceAdded={() => { loadClients(); loadGroups() }} />
-        )}
-      </main>
-      {sourcesPanel.open && (
-        <>
-          <div className="overlay" onClick={closeSources} />
-          <SourcesPanel
-            clientId={sourcesPanel.clientId}
-            clientName={sourcesPanel.clientName}
-            mqtt={mqtt}
-            onClose={closeSources}
-          />
-        </>
+    <div className="fx-root">
+      <Header
+        ref={headerStatusRef}
+        status={serverStatus}
+        mqttConnected={mqtt.connected}
+        popoverOpen={popoverOpen}
+        onToggleDevices={() => setPopoverOpen(v => !v)}
+      />
+      {popoverOpen && (
+        <DevicesPopover
+          clients={clients}
+          anchorRef={headerStatusRef}
+          onClose={() => setPopoverOpen(false)}
+          onOpenDevice={openDevice}
+          onAddDevice={openAddDevice}
+        />
       )}
-    </>
+      <main className="fx-main">
+        <GroupsTab
+          groups={groups}
+          clients={clients}
+          streams={streams}
+          mqtt={mqtt}
+          onRefresh={loadAll}
+          onOpenDevice={openDevice}
+          onAddDevice={openAddDevice}
+        />
+      </main>
+
+      {sidePanelOpen && <div className="fx-overlay" onClick={() => {
+        closeDevice()
+        closeAddDevice()
+      }} />}
+
+      {activeDeviceClient && (
+        <DevicePanel
+          client={activeDeviceClient}
+          mqtt={mqtt}
+          onClose={closeDevice}
+          onRefresh={loadAll}
+        />
+      )}
+
+      {addDeviceOpen && (
+        <div className="fx-side-panel wide fx-add-device-panel">
+          <div className="fx-device-panel-head">
+            <span className="fx-h2">Add device</span>
+            <button className="fx-icon-btn" onClick={closeAddDevice} aria-label="Close">
+              <X size={18} />
+            </button>
+          </div>
+          <AddDeviceTab onDeviceAdded={loadAll} />
+        </div>
+      )}
+    </div>
   )
 }

@@ -1,24 +1,47 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { Settings2, GripVertical, X } from 'lucide-react'
 import VolumeSlider from './VolumeSlider'
 
-function SourceDropdown({ sources, currentStream, activeMode, groupId, homeClientId, onSwitchSource }) {
-  // Prefer MQTT mode (tracks actual active source), fall back to snapcast stream
+function SourceToggleGroup({ sources, currentStream, activeMode, groupId, homeClientId, onSwitchSource }) {
+  // Prefer MQTT mode (tracks actual active source), fall back to snapcast stream.
+  // We replace the leading `source_fauxnos<N>_` prefix to get the bare source id
+  // — matches the value the toggle buttons fire and lets MQTT echoes light up
+  // the correct button before our optimistic update lands.
   const currentSourceId = activeMode
     || (currentStream ? currentStream.replace(/^source_fauxnos\d+_/, '') : null)
 
+  // Empty source list (transient on first render) — render a single
+  // disabled button echoing the current source id so the card doesn't
+  // jump in height once /api/groups resolves.
+  if (sources.length === 0) {
+    return (
+      <div className="fx-segmented">
+        <button className="fx-segmented-btn active" disabled>
+          {currentSourceId || '—'}
+        </button>
+      </div>
+    )
+  }
+
   return (
-    <select
-      className="stream-select"
-      value={currentSourceId || ''}
-      onChange={e => onSwitchSource(groupId, homeClientId, e.target.value)}
-    >
-      {sources.length > 0
-        ? sources.map(s => (
-            <option key={s.id} value={s.id}>{s.label || s.id}</option>
-          ))
-        : <option>{currentSourceId || '—'}</option>
-      }
-    </select>
+    <div className="fx-segmented" role="radiogroup">
+      {sources.map(s => {
+        const isActive = currentSourceId === s.id
+        return (
+          <button
+            key={s.id}
+            type="button"
+            role="radio"
+            aria-checked={isActive}
+            className={`fx-segmented-btn${isActive ? ' active' : ''}`}
+            onClick={() => onSwitchSource(groupId, homeClientId, s.id)}
+            title={s.label || s.id}
+          >
+            {s.label || s.id}
+          </button>
+        )
+      })}
+    </div>
   )
 }
 
@@ -28,11 +51,11 @@ function DeviceRow({ client, isHome, nameMap, mqtt, onReturnHome, onDragStart, o
   const rowRef = useRef(null)
 
   return (
-    <div className={`device-row${isHome ? ' is-home' : ' is-guest'}`} ref={rowRef}>
-      <div className="device-row-left">
+    <div className="fx-group-member" ref={rowRef}>
+      <span className="fx-group-member-handle">
         {!isHome ? (
           <span
-            className="drag-handle"
+            className="fx-drag"
             draggable
             onDragStart={e => {
               e.dataTransfer.setData('text/plain', client.id)
@@ -45,30 +68,29 @@ function DeviceRow({ client, isHome, nameMap, mqtt, onReturnHome, onDragStart, o
             onDragEnd={onDragEnd}
             title="Drag to regroup"
           >
-            ⠿
+            <GripVertical size={14} />
           </span>
-        ) : (
-          <span className="drag-handle-spacer" />
-        )}
-        <span className={`conn-dot${client.connected ? ' on' : ''}`} />
-        <span className="device-row-name">{name}</span>
+        ) : null}
+      </span>
+      <span className="fx-group-member-name">
+        <span className={`fx-dot ${client.connected ? 'ok' : ''}`} />
+        <span className="fx-group-member-label">{name}</span>
+      </span>
+      <div className="fx-group-member-slider">
+        <VolumeSlider clientId={client.id} value={vol} mqtt={mqtt} hideIcon ariaLabel={`${name} volume`} />
       </div>
-      <div className="device-row-volume">
-        <VolumeSlider clientId={client.id} value={vol} mqtt={mqtt} />
-      </div>
-      <div className="device-row-actions">
+      <span className="fx-group-member-actions">
         {!isHome ? (
           <button
-            className="icon-btn btn-remove"
+            className="fx-icon-btn sm danger"
             onClick={() => onReturnHome(client.id)}
             title="Remove from group"
+            aria-label="Remove from group"
           >
-            &times;
+            <X size={14} />
           </button>
-        ) : (
-          <span className="icon-btn-spacer" />
-        )}
-      </div>
+        ) : null}
+      </span>
     </div>
   )
 }
@@ -78,7 +100,7 @@ export default function GroupCard({
   isDragTarget, isDragging,
   onDragStart, onDragEnd,
   onDragOverGroup, onDragLeaveGroup, onDropOnGroup,
-  onReturnHome, onSwitchSource, onOpenSources,
+  onReturnHome, onSwitchSource, onOpenDevice,
 }) {
   const homeClientId = group.home_client_id
   const isMulti = group.clients.length > 1
@@ -107,77 +129,89 @@ export default function GroupCard({
   }
 
   return (
-    <div className="group-card-row">
+    <div className="fx-group-row">
       {/* Drag handle in the gutter — only for single-device cards */}
-      {!isMulti ? (
-        <span
-          className="drag-handle"
-          draggable
-          onDragStart={e => {
-            e.dataTransfer.setData('text/plain', homeClientId)
-            e.dataTransfer.effectAllowed = 'move'
-            if (cardRef.current) {
-              e.dataTransfer.setDragImage(cardRef.current, 0, 0)
-            }
-            onDragStart(homeClientId)
-          }}
-          onDragEnd={onDragEnd}
-          title="Drag to regroup"
-        >
-          ⠿
-        </span>
-      ) : (
-        <span className="drag-handle-spacer" />
-      )}
+      <span className="fx-group-gutter">
+        {!isMulti && (
+          <span
+            className="fx-drag"
+            draggable
+            onDragStart={e => {
+              e.dataTransfer.setData('text/plain', homeClientId)
+              e.dataTransfer.effectAllowed = 'move'
+              if (cardRef.current) {
+                e.dataTransfer.setDragImage(cardRef.current, 0, 0)
+              }
+              onDragStart(homeClientId)
+            }}
+            onDragEnd={onDragEnd}
+            title="Drag to regroup"
+          >
+            <GripVertical size={16} />
+          </span>
+        )}
+      </span>
 
       <div
         ref={cardRef}
-        className={`group-card${isMulti ? ' group-card-multi' : ' group-card-single'}${isDragTarget ? ' drop-target' : ''}`}
+        className={`fx-card fx-card-hover fx-group-card${isDragTarget ? ' fx-drop' : ''}`}
         onDragOver={handleDragOver}
         onDragLeave={onDragLeaveGroup}
         onDrop={(e) => { e.preventDefault(); onDropOnGroup() }}
       >
-        <div className="group-card-header">
-          <span className="group-name">{groupName}</span>
-          <div className="group-header-right">
-            <SourceDropdown
-              sources={group.sources || []}
-              currentStream={group.stream_id}
-              activeMode={mqtt.modes[homeClientId]}
-              groupId={group.id}
-              homeClientId={homeClientId}
-              onSwitchSource={onSwitchSource}
-            />
-            <button
-              className="icon-btn gear-btn"
-              onClick={() => onOpenSources(homeClientId, nameMap[homeClientId] || homeClientId)}
-              title="Source settings"
-            >
-              &#9881;
-            </button>
-          </div>
+        <div className="fx-group-head">
+          <span className="fx-group-name">{groupName}</span>
+          <button
+            className="fx-icon-btn"
+            onClick={() => onOpenDevice(homeClientId)}
+            title="Device settings"
+            aria-label="Device settings"
+          >
+            <Settings2 size={16} />
+          </button>
         </div>
 
+        <SourceToggleGroup
+          sources={group.sources || []}
+          currentStream={group.stream_id}
+          activeMode={mqtt.modes[homeClientId]}
+          groupId={group.id}
+          homeClientId={homeClientId}
+          onSwitchSource={onSwitchSource}
+        />
+
         {!isMulti && (
-          <VolumeSlider clientId={homeClient.id} value={homeVol} mqtt={mqtt} />
+          <div className="fx-group-vol">
+            <VolumeSlider
+              clientId={homeClient.id}
+              value={homeVol}
+              mqtt={mqtt}
+              variant="accent"
+              ariaLabel={`${groupName} volume`}
+            />
+          </div>
         )}
 
         {isMulti && (
           <>
-            <GroupVolumeSlider clients={sorted} mqtt={mqtt} groupVol={groupVol} />
-            <div className="group-divider" />
-            {sorted.map(c => (
-              <DeviceRow
-                key={c.id}
-                client={c}
-                isHome={c.id === homeClientId}
-                nameMap={nameMap}
-                mqtt={mqtt}
-                onReturnHome={onReturnHome}
-                onDragStart={onDragStart}
-                onDragEnd={onDragEnd}
-              />
-            ))}
+            <div className="fx-group-vol">
+              <GroupVolumeSlider clients={sorted} mqtt={mqtt} groupVol={groupVol} />
+            </div>
+            <hr className="fx-divider" />
+            <div className="fx-group-members">
+              {sorted.map(c => (
+                <DeviceRow
+                  key={c.id}
+                  client={c}
+                  isHome={c.id === homeClientId}
+                  nameMap={nameMap}
+                  mqtt={mqtt}
+                  onReturnHome={onReturnHome}
+                  onDragStart={onDragStart}
+                  onDragEnd={onDragEnd}
+                />
+              ))}
+            </div>
           </>
         )}
       </div>
@@ -205,31 +239,41 @@ function GroupVolumeSlider({ clients, mqtt, groupVol }) {
     })
   }, [clients, mqtt])
 
+  // Custom slider drawing — same look as VolumeSlider but writes proportional
+  // values to every member. We could pass a publisher down to VolumeSlider
+  // but the proportional-ratio logic only makes sense at this level.
+  const pct = `${localVal}%`
+
   return (
-    <div className="volume-control group-volume">
-      <input
-        type="range"
-        className="vol-slider"
-        min="0"
-        max="100"
-        value={localVal}
-        onPointerDown={() => {
-          draggingRef.current = true
-          const bases = {}
-          clients.forEach(c => {
-            bases[c.id] = mqtt.volumes[c.id] ?? c.config?.volume?.percent ?? 0
-          })
-          baseVolsRef.current = bases
-        }}
-        onPointerUp={() => { draggingRef.current = false }}
-        onInput={e => {
-          const v = parseInt(e.target.value, 10)
-          setLocalVal(v)
-          publishAll(v)
-        }}
-        onChange={() => {}}
-      />
-      <span className="vol-label">{localVal}%</span>
+    <div className="fx-volume lg accent">
+      <div className="fx-volume-track">
+        <div className="fx-volume-fill" style={{ width: pct }} />
+        <div className="fx-volume-thumb" style={{ left: pct }} />
+        <input
+          className="fx-volume-input"
+          type="range"
+          min={0}
+          max={100}
+          value={localVal}
+          aria-label="Group volume"
+          onPointerDown={() => {
+            draggingRef.current = true
+            const bases = {}
+            clients.forEach(c => {
+              bases[c.id] = mqtt.volumes[c.id] ?? c.config?.volume?.percent ?? 0
+            })
+            baseVolsRef.current = bases
+          }}
+          onPointerUp={() => { draggingRef.current = false }}
+          onInput={e => {
+            const v = parseInt(e.target.value, 10)
+            setLocalVal(v)
+            publishAll(v)
+          }}
+          onChange={() => {}}
+        />
+      </div>
+      <span className="fx-volume-label fx-num">{localVal}%</span>
     </div>
   )
 }

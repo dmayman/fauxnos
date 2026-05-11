@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Copy, Check, RefreshCw, AlertCircle, CheckCircle2, XCircle } from 'lucide-react'
 import { apiFetch, subscribeInstallStream } from '../api'
 
 /**
@@ -49,7 +50,9 @@ export default function InstallTimeline({ onDone, onRetry }) {
 
   if (!snapshot || !snapshot.steps) {
     return (
-      <div className="waiting"><span className="spinner" /> Connecting…</div>
+      <div className="fx-row fx-mute" style={{ gap: 'var(--fx-2)' }}>
+        <span className="fx-spinner" /> Connecting…
+      </div>
     )
   }
 
@@ -64,25 +67,32 @@ export default function InstallTimeline({ onDone, onRetry }) {
 
   return (
     <div>
-      <div className="timeline">
+      <div className="fx-install-timeline">
         {snapshot.steps.map((step) => (
           <TimelineStep key={step.id} step={step} active={snapshot.current_step === step.id && !terminal} />
         ))}
       </div>
 
       {snapshot.status === 'succeeded' && (
-        <div className="timeline-banner success">
-          ✓ Installed{snapshot.client_id ? ` as ${snapshot.client_id}` : ''}
-          {snapshot.display_name ? ` — ${snapshot.display_name}` : ''}
+        <div className="fx-banner ok">
+          <CheckCircle2 size={16} />
+          <span>
+            Installed{snapshot.client_id ? ` as ${snapshot.client_id}` : ''}
+            {snapshot.display_name ? ` — ${snapshot.display_name}` : ''}
+          </span>
         </div>
       )}
       {snapshot.status === 'failed' && (
-        <div className="timeline-banner failure">
-          ✗ Install failed{snapshot.error ? `: ${snapshot.error}` : ''}
+        <div className="fx-banner err">
+          <XCircle size={16} />
+          <span>Install failed{snapshot.error ? `: ${snapshot.error}` : ''}</span>
         </div>
       )}
       {snapshot.status === 'cancelled' && (
-        <div className="timeline-banner failure">Install cancelled</div>
+        <div className="fx-banner err">
+          <XCircle size={16} />
+          <span>Install cancelled</span>
+        </div>
       )}
 
       {fallbackStep && fallbackStep.fallback_kind === 'auth_key_missing' && (
@@ -92,16 +102,16 @@ export default function InstallTimeline({ onDone, onRetry }) {
         />
       )}
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+      <div className="fx-row fx-install-actions">
         {!terminal && (
           <button
-            className="btn-secondary"
+            className="fx-btn"
             onClick={() => apiFetch('/api/install/cancel', { method: 'POST' }).catch(() => {})}
           >
             Cancel install
           </button>
         )}
-        <button className="btn-secondary" onClick={() => setShowLog((s) => !s)}>
+        <button className="fx-btn ghost" onClick={() => setShowLog((s) => !s)}>
           {showLog ? 'Hide install log' : 'Show install log'}
         </button>
       </div>
@@ -130,17 +140,17 @@ function TimelineStep({ step, active }) {
   const duration = formatDuration(step)
 
   return (
-    <div className={`timeline-step ${step.status === 'succeeded' ? 'done' : ''} ${step.status}`}>
-      <div className="timeline-rail">
-        <div className={`timeline-dot ${dotClass}`} />
-        <div className="timeline-connector" />
+    <div className={`fx-install-step ${step.status}`}>
+      <div className="fx-install-rail">
+        <span className={`fx-timeline-dot ${dotClass}`} />
+        <span className="fx-install-connector" />
       </div>
-      <div className="timeline-body">
-        <div className="timeline-label">{step.label}</div>
-        {step.note && <div className="timeline-note">{step.note}</div>}
-        {tailLine && <div className="timeline-tail">{tailLine}</div>}
+      <div className="fx-install-body">
+        <div className="fx-install-label">{step.label}</div>
+        {step.note && <div className="fx-install-note">{step.note}</div>}
+        {tailLine && <div className="fx-install-tail fx-mono">{tailLine}</div>}
       </div>
-      <div className="timeline-duration">{duration}</div>
+      <div className="fx-install-duration fx-mono">{duration}</div>
     </div>
   )
 }
@@ -178,23 +188,25 @@ function AuthKeyMissingFallback({ targetHost, onRetry }) {
   }
 
   return (
-    <div className="card" style={{ marginTop: 12 }}>
-      <h4 style={{ marginTop: 0 }}>Authorize the server's key from your workstation</h4>
-      <p style={{ marginTop: 4, fontSize: 13, lineHeight: 1.5 }}>
-        The server reached <code>{targetHost}</code> but its install key isn't in{' '}
-        <code>~/.ssh/authorized_keys</code> on the Pi (Pi Imager may only have kept your
-        personal key). Run this on the workstation that can already SSH to the Pi, then
-        click Retry:
+    <div className="fx-card fx-auth-fallback">
+      <div className="fx-row fx-auth-title">
+        <AlertCircle size={16} style={{ color: 'var(--fx-warn)' }} />
+        <span className="fx-h3">Authorize the server's key</span>
+      </div>
+      <p className="fx-small">
+        The server reached <code className="fx-mono">{targetHost}</code> but its install
+        key isn't in <code className="fx-mono">~/.ssh/authorized_keys</code> on the Pi.
+        Run this on the workstation that can already SSH to the Pi, then click Retry:
       </p>
-      <div className="pubkey-block">
+      <div className="fx-codeblock">
         <pre>{command}</pre>
-        <button className={`pubkey-copy ${copied ? 'copied' : ''}`} onClick={copy}>
-          {copied ? '✓ Copied' : '📋 Copy'}
+        <button className={`fx-codeblock-copy${copied ? ' copied' : ''}`} onClick={copy}>
+          {copied ? <><Check size={12} /> Copied</> : <><Copy size={12} /> Copy</>}
         </button>
       </div>
       {onRetry && (
-        <button className="btn-primary" onClick={onRetry} style={{ marginTop: 8 }}>
-          Retry SSH
+        <button className="fx-btn primary" onClick={onRetry}>
+          <RefreshCw size={14} /> Retry SSH
         </button>
       )}
     </div>
@@ -209,7 +221,7 @@ function InstallLog({ steps }) {
     const body = (s.log_tail || []).join('\n')
     return `${head}\n${body || '(no output captured)'}`
   }).join('\n\n')
-  return <pre className="timeline-log">{text}</pre>
+  return <pre className="fx-install-log fx-mono">{text}</pre>
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

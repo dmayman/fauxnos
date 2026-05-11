@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Copy, Check, Play } from 'lucide-react'
 import { apiFetch } from '../api'
 import InstallTimeline from './InstallTimeline'
 
@@ -110,9 +111,7 @@ export default function AddDeviceTab({ onDeviceAdded }) {
   }
 
   return (
-    <div>
-      <div className="panel-header"><h2>Add Device</h2></div>
-
+    <div className="fx-add-device">
       {!running && !completed && (
         <PreInstallView
           pubkey={pubkey}
@@ -127,13 +126,17 @@ export default function AddDeviceTab({ onDeviceAdded }) {
       )}
 
       {(running || completed) && (
-        <div className="card">
-          <h3>{completed?.status === 'succeeded' ? 'Install complete' : 'Installing'}</h3>
+        <div className="fx-card">
+          <h3 className="fx-h2" style={{ marginBottom: 'var(--fx-3)' }}>
+            {completed?.status === 'succeeded' ? 'Install complete' : 'Installing'}
+          </h3>
           <InstallTimeline key={resetTick} onDone={onDone} onRetry={retry} />
           {completed && (
-            <button className="btn-secondary" onClick={reset} style={{ marginTop: 12 }}>
-              {completed.status === 'succeeded' ? 'Install another' : 'Try again'}
-            </button>
+            <div style={{ marginTop: 'var(--fx-4)' }}>
+              <button className="fx-btn" onClick={reset}>
+                {completed.status === 'succeeded' ? 'Install another' : 'Try again'}
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -157,30 +160,32 @@ function PreInstallView({ pubkey, pubkeyError, displayName, setDisplayName, targ
   }
 
   return (
-    <>
-      <div className="card">
-        <h3>Prerequisites</h3>
-        <ul className="prereq-list">
+    <div className="fx-stack" style={{ gap: 'var(--fx-4)' }}>
+      <div className="fx-card">
+        <h3 className="fx-h3" style={{ marginBottom: 'var(--fx-2)' }}>Prerequisites</h3>
+        <ul className="fx-prereq-list">
           <li>Flash <strong>Raspberry Pi OS Lite (64-bit, Bookworm)</strong> with Pi Imager — <em>not</em> Trixie, not Desktop.</li>
-          <li>In Pi Imager, set hostname <code>fauxnos-client</code>, username <code>user</code>, a per-Pi password (save in 1Password).</li>
+          <li>In Pi Imager, set hostname <code className="fx-mono">fauxnos-client</code>, username <code className="fx-mono">user</code>, a per-Pi password (save in 1Password).</li>
           <li>Configure WiFi credentials and locale.</li>
           <li>Enable SSH → "Allow public-key authentication only" → paste <strong>both</strong> keys below.</li>
         </ul>
       </div>
 
-      <div className="card">
-        <h3>SSH keys to paste in Pi Imager</h3>
-        <p style={{ marginTop: 4 }}>1) Your personal public key (from 1Password — the one you use to SSH into other fauxnos Pis).</p>
-        <p style={{ marginTop: 8 }}>2) This server's install key — needed so the wizard can SSH in and run the install:</p>
-        <div className="pubkey-block">
+      <div className="fx-card">
+        <h3 className="fx-h3" style={{ marginBottom: 'var(--fx-2)' }}>SSH keys to paste in Pi Imager</h3>
+        <p className="fx-small">1) Your personal public key (from 1Password — the one you use to SSH into other fauxnos Pis).</p>
+        <p className="fx-small" style={{ marginTop: 'var(--fx-2)' }}>
+          2) This server's install key — needed so the wizard can SSH in and run the install:
+        </p>
+        <div className="fx-codeblock" style={{ marginTop: 'var(--fx-2)' }}>
           {pubkeyError ? (
-            <pre style={{ color: 'var(--red)' }}>{pubkeyError}</pre>
+            <pre style={{ color: 'var(--fx-err)' }}>{pubkeyError}</pre>
           ) : (
             <>
               <pre>{pubkey || 'Loading…'}</pre>
               {pubkey && (
-                <button className={`pubkey-copy ${copied ? 'copied' : ''}`} onClick={copyPubkey}>
-                  {copied ? '✓ Copied' : '📋 Copy'}
+                <button className={`fx-codeblock-copy${copied ? ' copied' : ''}`} onClick={copyPubkey}>
+                  {copied ? <><Check size={12} /> Copied</> : <><Copy size={12} /> Copy</>}
                 </button>
               )}
             </>
@@ -188,42 +193,51 @@ function PreInstallView({ pubkey, pubkeyError, displayName, setDisplayName, targ
         </div>
       </div>
 
-      <div className="card">
-        <h3>Install</h3>
-        <label htmlFor="display-name-input">
-          Device name <span className="hint">(e.g. "Kitchen")</span>
-        </label>
-        <input
-          type="text"
-          id="display-name-input"
-          placeholder="Kitchen"
-          maxLength={64}
-          value={displayName}
-          onChange={(e) => setDisplayName(e.target.value)}
-        />
-
-        <label htmlFor="target-host-input" style={{ marginTop: 12 }}>
-          Target hostname <span className="hint">(default: <code>fauxnos-client.local</code>)</span>
-        </label>
-        <input
-          type="text"
-          id="target-host-input"
-          value={targetHost}
-          onChange={(e) => setTargetHost(e.target.value)}
-        />
-
-        <button
-          className="btn-primary"
-          onClick={onStart}
-          disabled={!displayName.trim() || !targetHost.trim()}
-          style={{ marginTop: 12 }}
-        >
-          Install on {targetHost.trim() || 'fauxnos-client.local'}
-        </button>
-        {submitError && (
-          <div style={{ color: 'var(--red)', marginTop: 8, fontSize: 13 }}>{submitError}</div>
-        )}
+      <div className="fx-card">
+        <h3 className="fx-h3" style={{ marginBottom: 'var(--fx-3)' }}>Install</h3>
+        <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
+          <div>
+            <label className="fx-label" htmlFor="display-name-input">
+              Device name <span className="fx-mute-2">(e.g. "Kitchen")</span>
+            </label>
+            <input
+              type="text"
+              id="display-name-input"
+              className="fx-input"
+              placeholder="Kitchen"
+              maxLength={64}
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="fx-label" htmlFor="target-host-input">
+              Target hostname <span className="fx-mute-2">(default: <code className="fx-mono">fauxnos-client.local</code>)</span>
+            </label>
+            <input
+              type="text"
+              id="target-host-input"
+              className="fx-input"
+              value={targetHost}
+              onChange={(e) => setTargetHost(e.target.value)}
+            />
+          </div>
+          <div>
+            <button
+              className="fx-btn primary"
+              onClick={onStart}
+              disabled={!displayName.trim() || !targetHost.trim()}
+            >
+              <Play size={14} /> Install on {targetHost.trim() || 'fauxnos-client.local'}
+            </button>
+          </div>
+          {submitError && (
+            <div className="fx-banner err">
+              <span>{submitError}</span>
+            </div>
+          )}
+        </div>
       </div>
-    </>
+    </div>
   )
 }

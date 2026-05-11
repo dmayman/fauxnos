@@ -1,8 +1,9 @@
 import { useState, useCallback } from 'react'
+import { RefreshCw, Speaker, Plus } from 'lucide-react'
 import GroupCard from './GroupCard'
 import { apiFetch } from '../api'
 
-export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenSources }) {
+export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevice, onAddDevice }) {
   const [dragClientId, setDragClientId] = useState(null)
   const [dropTargetGroupId, setDropTargetGroupId] = useState(null)
 
@@ -89,23 +90,39 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenSour
 
   if (activeGroups.length === 0) {
     return (
-      <div>
-        <div className="panel-header">
-          <h2>Groups</h2>
-          <button className="btn-secondary" onClick={onRefresh}>Refresh</button>
+      <div className="fx-page">
+        <div className="fx-page-head">
+          <h1 className="fx-h1">Groups</h1>
+          <button className="fx-btn" onClick={onRefresh} aria-label="Refresh">
+            <RefreshCw size={14} /> Refresh
+          </button>
         </div>
-        <div className="empty-state">No snapcast groups found.</div>
+        <div className="fx-card fx-empty">
+          <Speaker size={28} />
+          <div className="fx-h3">No devices yet</div>
+          <p className="fx-small fx-mute">
+            Add your first Fauxnos device to start streaming. You'll need a
+            Raspberry Pi and a DAC HAT.
+          </p>
+          {onAddDevice && (
+            <button className="fx-btn primary" onClick={onAddDevice}>
+              <Plus size={14} /> Add device
+            </button>
+          )}
+        </div>
       </div>
     )
   }
 
   return (
-    <div>
-      <div className="panel-header">
-        <h2>Groups</h2>
-        <button className="btn-secondary" onClick={onRefresh}>Refresh</button>
+    <div className="fx-page">
+      <div className="fx-page-head">
+        <h1 className="fx-h1">Groups</h1>
+        <button className="fx-btn" onClick={onRefresh} aria-label="Refresh">
+          <RefreshCw size={14} /> Refresh
+        </button>
       </div>
-      <div className="groups-grid">
+      <div className="fx-groups-grid">
         {activeGroups.map(group => (
           <GroupCard
             key={group.id}
@@ -121,7 +138,7 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenSour
             onDropOnGroup={() => handleDropOnGroup(group.id)}
             onReturnHome={handleReturnHome}
             onSwitchSource={handleSwitchSource}
-            onOpenSources={onOpenSources}
+            onOpenDevice={onOpenDevice}
           />
         ))}
       </div>

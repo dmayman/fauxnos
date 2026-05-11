@@ -10,6 +10,7 @@
     "deploy": "vite build && scp -i ~/.ssh/id_rsa -r ../web/* user@fauxnos000.local:~/src/fauxnos-server/web/ && ssh -i ~/.ssh/id_rsa user@fauxnos000.local 'systemctl --user restart fauxnos-server'"
   },
   "dependencies": {
+    "lucide-react": "^1.14.0",
     "mqtt": "^5.10.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
