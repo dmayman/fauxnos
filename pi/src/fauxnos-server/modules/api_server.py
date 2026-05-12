@@ -1666,7 +1666,11 @@ class FauxnosAPIServer:
         if status.dirty and not force:
             return jsonify({
                 "error": "working_tree_dirty",
-                "message": "Server has uncommitted changes. POST {\"force\": true} to override.",
+                "message": (
+                    "Server has uncommitted changes (likely from rsync during dev "
+                    "iteration). POST {\"force\": true} to discard them and sync to "
+                    "origin/main. Local commits ahead of origin will block force."
+                ),
                 "current_sha": status.sha,
             }), 409
 
@@ -1684,6 +1688,24 @@ class FauxnosAPIServer:
                 "short_sha": status.short_sha,
                 "message": f"Already at origin/main ({status.short_sha}).",
             }), 200
+
+        # force=true is dev-iteration semantics: "I rsync'd code that's now
+        # been committed on macbook + pushed to main; please discard the
+        # working-tree state and sync to origin/main." BUT we refuse if
+        # there are local commits the server has that aren't on origin —
+        # those would be silently lost by reset --hard. Require the user
+        # to deal with that case manually (it's not the dev-iteration
+        # workflow we're optimizing for).
+        if force and status.ahead > 0:
+            return jsonify({
+                "error": "local_commits_ahead",
+                "message": (
+                    f"Server has {status.ahead} commit(s) on HEAD that aren't on "
+                    "origin/main. Force-update would lose them. Push or revert them first."
+                ),
+                "current_sha": status.sha,
+                "ahead": status.ahead,
+            }), 409
 
         if not FauxnosAPIServer._server_update_lock.acquire(blocking=False):
             return jsonify({
@@ -1712,23 +1734,70 @@ class FauxnosAPIServer:
                     })
                     return
 
-                # --- Phase 2: pull -------------------------------------------
-                yield _sse_event("phase", {
-                    "name": "pull",
-                    "message": "git pull --ff-only on main branch...",
-                })
-                rc = yield from _stream_subprocess(
-                    ["git", "pull", "--ff-only", "--no-edit"],
-                    cwd=str(um.REPO_ROOT),
-                )
-                if rc != 0:
-                    yield _sse_event("done", {
-                        "status": "failed",
-                        "phase": "pull",
-                        "exit_code": rc,
-                        "message": "git pull failed (non-fast-forward? local commits?)",
+                # --- Phase 2: sync to origin/main ----------------------------
+                # Two paths:
+                #   - clean working tree (not force OR force-but-clean): use
+                #     `git pull --ff-only` — refuses on any conflict, which is
+                #     the right behavior when state is supposed to be clean.
+                #   - dirty working tree + force=true: `git reset --hard
+                #     origin/main` then `git clean -fd` to remove rsync'd
+                #     untracked files. This matches the dev-iteration model:
+                #     local changes are now in main, safe to discard the
+                #     preview state. Limited to the sparse-checkout paths
+                #     so the clean can't reach outside.
+                if force and status.dirty:
+                    yield _sse_event("phase", {
+                        "name": "reset",
+                        "message": "Discarding local working-tree changes (force=true)...",
                     })
-                    return
+                    rc = yield from _stream_subprocess(
+                        ["git", "reset", "--hard", "origin/main"],
+                        cwd=str(um.REPO_ROOT),
+                    )
+                    if rc != 0:
+                        yield _sse_event("done", {
+                            "status": "failed",
+                            "phase": "reset",
+                            "exit_code": rc,
+                            "message": "git reset --hard failed",
+                        })
+                        return
+                    # Remove rsync'd untracked files. -d for directories, -f
+                    # for force, and explicit paths bound it to the
+                    # sparse-checkout subtrees so we never reach outside.
+                    rc = yield from _stream_subprocess(
+                        [
+                            "git", "clean", "-fd", "--",
+                            "pi/src/fauxnos-server",
+                            "pi/src/fauxnos-client",
+                        ],
+                        cwd=str(um.REPO_ROOT),
+                    )
+                    if rc != 0:
+                        yield _sse_event("done", {
+                            "status": "failed",
+                            "phase": "clean",
+                            "exit_code": rc,
+                            "message": "git clean failed",
+                        })
+                        return
+                else:
+                    yield _sse_event("phase", {
+                        "name": "pull",
+                        "message": "git pull --ff-only on main branch...",
+                    })
+                    rc = yield from _stream_subprocess(
+                        ["git", "pull", "--ff-only", "--no-edit"],
+                        cwd=str(um.REPO_ROOT),
+                    )
+                    if rc != 0:
+                        yield _sse_event("done", {
+                            "status": "failed",
+                            "phase": "pull",
+                            "exit_code": rc,
+                            "message": "git pull failed (non-fast-forward? working tree dirty?)",
+                        })
+                        return
 
                 # --- Phase 3: schedule restart -------------------------------
                 # Read the new HEAD so we can include it in the done event
