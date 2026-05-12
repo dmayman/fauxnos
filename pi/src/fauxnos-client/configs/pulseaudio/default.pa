@@ -25,6 +25,13 @@ load-module module-alsa-card device_id=0 tsched=0
 load-module module-null-sink sink_name=systemsink sink_properties="device.description='System Sounds'"
 load-module module-null-sink sink_name=analogsink sink_properties="device.description='Analog Loopback'"
 load-module module-null-sink sink_name=snapsink sink_properties="device.description='Snapcast Output'"
+# airplaysink — shairport-sync writes here when an AirPlay session is
+# active. The fauxnos source manager mutes/unmutes it just like the
+# other virtual sinks. shairport's software volume on the PCM stream
+# is the single user-control stage; fauxnos pins this sink at 100%
+# while airplay is the active source so the externally-attenuated
+# audio passes through transparently.
+load-module module-null-sink sink_name=airplaysink sink_properties="device.description='AirPlay Output'"
 
 # --- Analog Input Loopback ---
 # Pipes your analog input directly to the 'analogsink' virtual sink.
@@ -50,6 +57,7 @@ load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallbac
 load-module module-loopback source=systemsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-systemsink-out
 load-module module-loopback source=analogsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-analogsink-out
 load-module module-loopback source=snapsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-snapsink-out
+load-module module-loopback source=airplaysink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-airplaysink-out
 
 # --- Application Routing ---
 # Automatically route specific applications to their designated sinks

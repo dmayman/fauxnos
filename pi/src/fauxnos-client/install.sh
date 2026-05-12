@@ -107,6 +107,8 @@ install_system_dependencies() {
     log "Installing core dependencies..."
     sudo apt install -y \
         snapclient \
+        shairport-sync \
+        mosquitto-clients \
         pulseaudio \
         pulseaudio-utils \
         alsa-utils \
@@ -411,6 +413,9 @@ download_client_code() {
         "configs/pulseaudio/default.pa"
         "configs/systemd/snapclient.service"
         "configs/systemd/fauxnos-client.service"
+        "configs/systemd/shairport-sync-fauxnos.service"
+        "configs/shairport-sync/fauxnos.conf"
+        "configs/shairport-sync/claim-source.sh"
     )
 
     # Python modules

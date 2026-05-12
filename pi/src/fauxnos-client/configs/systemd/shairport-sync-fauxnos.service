@@ -1,0 +1,19 @@
+[Unit]
+Description=Shairport-Sync AirPlay receiver (fauxnos, local PA output)
+# pulseaudio must own the airplaysink before shairport tries to write
+# to it; network-online so the mDNS service registers on the real
+# interface, not loopback.
+After=pulseaudio.service network-online.target
+Wants=pulseaudio.service
+
+[Service]
+Type=simple
+# %h expands to the user's home dir under user systemd (so each install
+# can keep its config under ~/.config/shairport-sync/ without hardcoding
+# /home/user/ — and the same unit works for any login name).
+ExecStart=/usr/bin/shairport-sync -c %h/.config/shairport-sync/fauxnos.conf
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

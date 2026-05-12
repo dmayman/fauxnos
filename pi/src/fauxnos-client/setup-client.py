@@ -493,6 +493,76 @@ class FauxnosClientSetup:
             self.log(f"Failed to deploy user services: {e}", "ERROR")
             return False
 
+    def setup_shairport(self) -> bool:
+        """Install the shairport-sync user unit + config so this client
+        is reachable as an AirPlay receiver. shairport-sync itself is
+        installed via apt in install.sh — here we only place the conf,
+        the sessioncontrol claim-source.sh hook, and the user-systemd
+        unit, then enable + start the service.
+
+        Idempotent: a re-install can copy fresh copies over existing
+        files. The unit + conf are device-agnostic; the mDNS name comes
+        from `%h = hostname` set inside the conf at runtime."""
+        self.log("Setting up shairport-sync (AirPlay receiver)...")
+
+        if self.dry_run or self.test_mode:
+            self.log("Would install shairport-sync config + unit")
+            return True
+
+        try:
+            # 1. Copy fauxnos.conf + claim-source.sh into ~/.config/shairport-sync/
+            shairport_user_dir = Path.home() / ".config" / "shairport-sync"
+            shairport_user_dir.mkdir(parents=True, exist_ok=True)
+
+            src_conf = self.client_dir / "configs" / "shairport-sync" / "fauxnos.conf"
+            src_hook = self.client_dir / "configs" / "shairport-sync" / "claim-source.sh"
+            if not src_conf.exists() or not src_hook.exists():
+                self.log(
+                    f"shairport-sync configs not found at {src_conf.parent} — "
+                    f"the install.sh asset list may be out of date", "ERROR"
+                )
+                return False
+
+            import shutil
+            shutil.copy(src_conf, shairport_user_dir / "fauxnos.conf")
+            shutil.copy(src_hook, shairport_user_dir / "claim-source.sh")
+            (shairport_user_dir / "claim-source.sh").chmod(0o755)
+            self.log(f"shairport-sync configs deployed to {shairport_user_dir}")
+
+            # 2. Install the user systemd unit. The unit references %h
+            # (= the user's home dir as seen by systemd-user), so no
+            # template substitution is needed — same file works for
+            # every user account.
+            user_systemd_dir = Path.home() / ".config" / "systemd" / "user"
+            user_systemd_dir.mkdir(parents=True, exist_ok=True)
+            unit_src = self.client_dir / "configs" / "systemd" / "shairport-sync-fauxnos.service"
+            if not unit_src.exists():
+                self.log(f"shairport unit template missing: {unit_src}", "ERROR")
+                return False
+            shutil.copy(unit_src, user_systemd_dir / "shairport-sync-fauxnos.service")
+
+            # 3. Enable + start (lingering was already enabled by deploy_services).
+            self.execute(
+                "systemctl --user daemon-reload",
+                "Reloading user systemd daemon for shairport unit",
+            )
+            if not self.execute(
+                "systemctl --user enable shairport-sync-fauxnos.service",
+                "Enabling shairport-sync-fauxnos user service",
+            ):
+                return False
+            if not self.execute(
+                "systemctl --user start shairport-sync-fauxnos.service",
+                "Starting shairport-sync-fauxnos user service",
+            ):
+                return False
+
+            return True
+
+        except Exception as e:
+            self.log(f"shairport-sync setup failed: {e}", "ERROR")
+            return False
+
     def setup_alsa_config(self) -> bool:
         """Configure ALSA to route through PulseAudio"""
         self.log("Setting up ALSA configuration...")
@@ -668,7 +738,14 @@ ctl.!default {
         if not self.deploy_services(config):
             return False
 
-        # Step 12: Success!
+        # Step 12: Deploy shairport-sync (AirPlay receiver). Treated
+        # as a default capability — every fauxnos device is an AirPlay
+        # target out of the box.
+        if not self.setup_shairport():
+            self.log("shairport-sync setup failed — AirPlay won't work on this device, "
+                     "but the rest of the install will continue", "WARNING")
+
+        # Step 13: Success!
         self.log("Client setup completed successfully!", "SUCCESS")
         self.log(f"Client ID: {client_id}")
         self.log(f"Display Name: {display_name}")
