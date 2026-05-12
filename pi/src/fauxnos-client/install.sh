@@ -124,7 +124,7 @@ install_system_dependencies() {
         python3-evdev
 
     log "Installing Python packages..."
-    pip3 install --user requests pyyaml --break-system-packages
+    pip3 install --user requests pyyaml paho-mqtt websocket-client --break-system-packages
 
     log_success "System dependencies installed"
 }
@@ -417,6 +417,7 @@ download_client_code() {
     local module_files=(
         "modules/__init__.py"
         "modules/config_manager.py"
+        "modules/go_librespot.py"
         "modules/ir_listener.py"
         "modules/logger.py"
         "modules/mqtt_client.py"

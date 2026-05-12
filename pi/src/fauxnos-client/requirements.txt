@@ -10,5 +10,9 @@ requests>=2.25.1
 # MQTT client for remote control (volume, source switching)
 paho-mqtt>=1.5.1
 
+# WebSocket client for go-librespot /events (Spotify mobile-app slider
+# changes propagate back to fauxnos via this).
+websocket-client>=1.6.0
+
 # Optional: Audio processing (if needed for volume monitoring)
 # pyaudio>=0.2.11
