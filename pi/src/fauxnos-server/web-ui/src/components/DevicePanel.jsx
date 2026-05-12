@@ -339,7 +339,19 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
-  const vcLabel = source.volume_controller === 'self' ? 'Self' : 'Snapcast'
+  // Pretty label per volume_controller. The badge tells the operator
+  // who owns the audio attenuation for this source — useful debug
+  // surface when something sounds two-stage or unresponsive. Anything
+  // unknown falls back to the raw value so the badge isn't silently
+  // wrong (the old code mapped EVERYTHING non-'self' to 'Snapcast',
+  // which mislabeled both go_librespot and external sources).
+  const VC_LABELS = {
+    self: 'Self',
+    snapcast: 'Snapcast',
+    go_librespot: 'Spotify Connect',
+    external: 'External',
+  }
+  const vcLabel = VC_LABELS[source.volume_controller] || source.volume_controller || 'Self'
 
   const calLive = mqtt?.calibrations?.[clientId]?.[source.id]
   const calibration = (typeof calLive === 'number') ? calLive : 100
