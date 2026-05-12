@@ -38,6 +38,7 @@ class MQTTClient:
     def __init__(self, config_manager: ConfigManager,
                  volume_callback: Callable[[int], bool],
                  mode_callback: Callable[[str], bool],
+                 source_volume_getter: Optional[Callable[[str], Optional[int]]] = None,
                  calibration_callback: Optional[Callable[[str, int], bool]] = None,
                  calibration_getter: Optional[Callable[[str], int]] = None,
                  ir_enable_callback: Optional[Callable[[bool], None]] = None,
@@ -87,6 +88,7 @@ class MQTTClient:
         # Callbacks for handling commands
         self.volume_callback = volume_callback
         self.mode_callback = mode_callback
+        self.source_volume_getter = source_volume_getter
         self.calibration_callback = calibration_callback
         self.calibration_getter = calibration_getter
         self.ir_enable_callback = ir_enable_callback
@@ -217,6 +219,17 @@ class MQTTClient:
                         logger.info(f"MQTT mode command: {payload}")
                         self.mode_callback(payload)
                         self.update_mode(payload)
+                        # Each source remembers its own volume; the UI is
+                        # mode-aware and shows the active source's stored
+                        # level. Without this re-publish, the slider keeps
+                        # whatever value it had under the PREVIOUS source —
+                        # e.g. set spotify=15, switch to analog=90, switch
+                        # back to spotify, UI still reads 90 even though
+                        # source_manager correctly restored 15.
+                        if self.source_volume_getter is not None:
+                            new_vol = self.source_volume_getter(payload)
+                            if new_vol is not None:
+                                self.update_volume(new_vol)
                     else:
                         logger.error(f"Invalid mode: {payload}. Available: {self.sources_list}")
 
