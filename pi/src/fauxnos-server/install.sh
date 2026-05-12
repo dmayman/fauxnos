@@ -20,7 +20,7 @@
 set -e
 
 # ─── Configuration ───────────────────────────────────────────────────────────
-REPO_URL="https://raw.githubusercontent.com/dmayman/fauxnos/main"
+REPO_URL="${REPO_URL:-https://raw.githubusercontent.com/dmayman/fauxnos/main}"
 INSTALL_DIR="$HOME/src/fauxnos-server"
 LOG_FILE="/tmp/fauxnos-server-install.log"
 SERVER_HOSTNAME="fauxnos000"
@@ -112,6 +112,9 @@ install_system_dependencies() {
     sudo apt update -y
 
     log "Installing core packages..."
+    # `ir-keytable` is what fauxnos-client's IR listener spawns to read raw IR
+    # scancodes; without it, fauxnos_client.py logs "IR listener: feature
+    # disabled, not starting" and the remote is dead.
     sudo apt install -y \
         snapclient \
         mosquitto \
@@ -119,6 +122,7 @@ install_system_dependencies() {
         avahi-daemon \
         avahi-utils \
         shairport-sync \
+        ir-keytable \
         python3 \
         python3-pip \
         python3-yaml \
@@ -142,7 +146,14 @@ install_system_dependencies() {
     fi
 
     log "Installing Python packages..."
-    pip3 install --user flask flask-cors requests websockets paho-mqtt paramiko --break-system-packages
+    # `websocket-client` (NOT `websockets` — different package) is what
+    # fauxnos-client/modules/go_librespot.py uses for the WS connection to
+    # the go-librespot daemon. Without it, Spotify-mobile-app slider changes
+    # don't propagate to fauxnos UI and the warning
+    #   "websocket-client not installed — Spotify-side volume changes will
+    #    not propagate to fauxnos"
+    # appears in fauxnos-client logs at startup.
+    pip3 install --user flask flask-cors requests websockets websocket-client paho-mqtt paramiko --break-system-packages
 
     log_success "System dependencies installed"
 }
@@ -281,6 +292,7 @@ download_server_code() {
         "modules/client_monitor.py"
         "modules/volume_manager.py"
         "modules/install_runner.py"
+        "modules/dac_overlays.py"
     )
 
     # The web UI is React + Vite. index.html references hashed asset files
@@ -354,19 +366,85 @@ download_server_code() {
         fi
     fi
 
-    # Also download client install.sh so API can serve it
+    # Download the full fauxnos-client tree. The server device IS also a
+    # client (server-as-client architecture: fauxnos000 runs a
+    # fauxnos-client-fauxnos000 daemon for its own room), so it needs the
+    # whole client codebase locally — not just the bootstrap install.sh.
+    # The wizard also serves these files to fresh client Pis via the API,
+    # so they're useful for that path too.
+    #
+    # Without this, fauxnos-client-fauxnos000.service hits
+    #   ModuleNotFoundError: No module named 'modules.config_manager'
+    # and restart-loops forever, dragging IR + per-source volume sync down
+    # with it.
     mkdir -p "../fauxnos-client"
-    local client_url="${REPO_URL}/pi/src/fauxnos-client/install.sh"
-    if curl -fsSL "$client_url" -o "../fauxnos-client/install.sh"; then
-        chmod +x "../fauxnos-client/install.sh"
-        log "Downloaded: fauxnos-client/install.sh"
-    else
-        log_warning "Failed to download client install.sh"
-    fi
+    cd "../fauxnos-client"
 
+    local client_root_files=(
+        "install.sh"
+        "fauxnos_client.py"
+        "setup-client.py"
+        "requirements.txt"
+        "client_config.yaml.template"
+    )
+    local client_modules=(
+        "modules/__init__.py"
+        "modules/config_manager.py"
+        "modules/go_librespot.py"
+        "modules/ir_listener.py"
+        "modules/logger.py"
+        "modules/mqtt_client.py"
+        "modules/pulse_controller.py"
+        "modules/snapcast_controller.py"
+        "modules/source_manager.py"
+        "modules/state_manager.py"
+    )
+    local client_configs=(
+        "configs/config.yaml.template"
+        "configs/pulseaudio/default.pa"
+        "configs/systemd/fauxnos-client.service"
+        "configs/systemd/snapclient.service"
+    )
+
+    mkdir -p modules configs/pulseaudio configs/systemd sounds
+
+    for file in "${client_root_files[@]}" "${client_modules[@]}" "${client_configs[@]}"; do
+        local url="${REPO_URL}/pi/src/fauxnos-client/${file}"
+        if curl -fsSL "$url" -o "$file"; then
+            log "Downloaded: fauxnos-client/$file"
+        else
+            log_warning "Failed to download fauxnos-client/$file"
+        fi
+    done
+
+    # IR feedback sounds. Volume-N tone files are named volume-NNN.wav for
+    # N in 0..100 step 5, plus mute / unmute / source_switch / volume_up /
+    # volume_down. fauxnos-client/modules/ir_listener.py looks them up from
+    # the package-relative `sounds/` dir at startup.
+    local sound_files=(
+        "sounds/mute.wav"
+        "sounds/unmute.wav"
+        "sounds/source_switch.wav"
+        "sounds/volume_up.wav"
+        "sounds/volume_down.wav"
+    )
+    for n in 000 005 010 015 020 025 030 035 040 045 050 \
+             055 060 065 070 075 080 085 090 095 100; do
+        sound_files+=("sounds/volume-${n}.wav")
+    done
+    for file in "${sound_files[@]}"; do
+        local url="${REPO_URL}/pi/src/fauxnos-client/${file}"
+        curl -fsSL "$url" -o "$file" 2>/dev/null \
+            && log "Downloaded: fauxnos-client/$file" \
+            || log_warning "Failed to download fauxnos-client/$file"
+    done
+
+    chmod +x install.sh fauxnos_client.py setup-client.py 2>/dev/null || true
+
+    cd "$INSTALL_DIR"
     chmod +x fauxnos-server.py 2>/dev/null || true
 
-    log_success "Server code downloaded to: $INSTALL_DIR"
+    log_success "Server + client code downloaded to: $INSTALL_DIR + ../fauxnos-client"
 }
 
 # ─── Step 5b: Server SSH identity for client install runner ──────────────────
@@ -515,6 +593,17 @@ _configure_hifiberry() {
     # Replace any existing hifiberry overlay with the server's overlay
     sudo sed -i '/^dtoverlay=hifiberry/d' "$config_txt"
     echo "dtoverlay=$dtoverlay" | sudo tee -a "$config_txt" > /dev/null
+
+    # GPIO IR receiver overlay. The fauxnos remote-receiver hardware is wired
+    # to GPIO17 (3.3V on the receiver's VS line — GPIO is NOT 5V-tolerant).
+    # Without this overlay, the kernel only registers /sys/class/rc/rc0 as
+    # rc-cec (HDMI CEC); fauxnos-client's IR listener has no gpio_ir_recv
+    # device to attach to and the remote silently does nothing. Idempotent —
+    # drops any prior line first so changing pin numbers in a future revision
+    # just works.
+    sudo sed -i '/^dtoverlay=gpio-ir/d' "$config_txt"
+    echo "dtoverlay=gpio-ir,gpio_pin=17" | sudo tee -a "$config_txt" > /dev/null
+    log "Added: dtoverlay=gpio-ir,gpio_pin=17 → $config_txt"
     log_success "HiFiBerry overlay set to $dtoverlay in $config_txt"
 }
 
