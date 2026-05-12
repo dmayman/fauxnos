@@ -1847,3 +1847,164 @@ label.fx-source-setting { cursor: pointer; }
 }
 .fx-auth-fallback { margin-top: var(--fx-3); display: flex; flex-direction: column; gap: var(--fx-3); }
 .fx-auth-title { gap: var(--fx-2); }
+
+/* ── Update pipeline (Phase C) ────────────────────────────────────────────── */
+
+/* Header version chip — both the "Update server" button state and the
+ * idle ghost state (just shows short SHA). Sits left of the devices pill. */
+.fx-header-version-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fx-1);
+  padding: 0 var(--fx-3);
+  height: 28px;
+  border-radius: var(--fx-r-sm);
+  font-size: var(--fx-text-sm);
+  line-height: 1;
+  white-space: nowrap;
+}
+.fx-header-version-pill.ghost {
+  background: transparent;
+  color: var(--fx-text-2);
+}
+.fx-header-version-pill.update {
+  /* Inherits from .fx-btn — just need the icon spacing. */
+}
+.fx-header-version-pill.dirty .fx-mono,
+.fx-header-version-pill.offline .fx-mono {
+  color: var(--fx-text-3);
+}
+
+/* Per-device update affordance: small icon button on the right of each
+ * popover row. Sits beside the chevron without expanding the row. */
+.fx-device-cell-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--fx-1);
+}
+.fx-device-cell-row .fx-device-cell {
+  min-width: 0;
+}
+.fx-device-update-btn {
+  padding: 0 var(--fx-2);
+  height: 28px;
+  min-width: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* UpdateStreamModal — sits center of the viewport on a backdrop. Reuses
+ * the design language; not a side-panel because the SSE log wants
+ * horizontal real estate that a 480px sheet would crowd. */
+.fx-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: var(--fx-4);
+}
+.fx-modal {
+  background: var(--fx-surface);
+  border: 1px solid var(--fx-line);
+  border-radius: var(--fx-r);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.fx-update-modal {
+  width: min(800px, 100%);
+  max-height: 80vh;
+}
+.fx-update-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--fx-3) var(--fx-4);
+  border-bottom: 1px solid var(--fx-line);
+  flex-shrink: 0;
+}
+.fx-update-modal-title {
+  font-size: var(--fx-text-lg);
+  font-weight: 600;
+  margin: 0;
+}
+.fx-update-modal-statusbar {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-3);
+  padding: var(--fx-2) var(--fx-4);
+  border-bottom: 1px solid var(--fx-line);
+  flex-shrink: 0;
+}
+.fx-update-phase-text {
+  font-size: var(--fx-text-sm);
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fx-update-modal-log {
+  flex: 1 1 auto;
+  min-height: 200px;
+  overflow: auto;
+  padding: var(--fx-3) var(--fx-4);
+  background: var(--fx-surface-2);
+  font-size: 12px;
+  line-height: 1.45;
+  border-bottom: 1px solid var(--fx-line);
+}
+.fx-update-log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--fx-text-2);
+}
+.fx-update-modal-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-3);
+  padding: var(--fx-3) var(--fx-4);
+  justify-content: flex-end;
+  flex-shrink: 0;
+}
+
+/* Used for the running-status spinner in the modal status bar. */
+.fx-spin {
+  animation: fx-spin-anim 1s linear infinite;
+}
+@keyframes fx-spin-anim {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Small badge variant used in the version chip + per-device row.
+ * Re-uses the existing .fx-badge color rules but slightly tighter. */
+.fx-badge.sm {
+  font-size: 10px;
+  padding: 1px 6px;
+  height: 16px;
+}
+
+/* Warn variant for the dev-iteration force-update path — same shape as
+ * the regular update chip but tinted to signal "this will discard local
+ * changes." Hue lifted from the existing yellow-warning palette used by
+ * stalled-step indicators. */
+.fx-header-version-pill.update.warn {
+  background: rgba(234, 179, 8, 0.15);
+  border-color: rgba(234, 179, 8, 0.45);
+  color: rgb(234, 179, 8);
+}
+.fx-header-version-pill.update.warn:hover {
+  background: rgba(234, 179, 8, 0.25);
+}
+.fx-badge.sm.warn {
+  background: rgba(234, 179, 8, 0.25);
+  color: rgb(250, 204, 21);
+}

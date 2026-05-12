@@ -5,8 +5,9 @@ import GroupsTab from './components/GroupsTab'
 import AddDeviceTab from './components/AddDeviceTab'
 import DevicesPopover from './components/DevicesPopover'
 import DevicePanel from './components/DevicePanel'
+import UpdateStreamModal from './components/UpdateStreamModal'
 import { useMqtt } from './hooks/useMqtt'
-import { apiFetch } from './api'
+import { apiFetch, getServerVersion } from './api'
 
 /**
  * Top-level layout.
@@ -25,19 +26,29 @@ export default function App() {
   const [groups, setGroups] = useState([])
   const [streams, setStreams] = useState([])
   const [serverStatus, setServerStatus] = useState(null)
+  const [serverVersion, setServerVersion] = useState(null)
   const [devicePanelClientId, setDevicePanelClientId] = useState(null)
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [addDeviceOpen, setAddDeviceOpen] = useState(false)
+  // Update-pipeline modal: a single modal we reuse for both server-self-
+  // update and per-client update. `null` = closed; otherwise the shape
+  // `{ title, icon, url, body }` parameterizes the SSE stream.
+  const [updateModal, setUpdateModal] = useState(null)
   const headerStatusRef = useRef(null)
 
   const mqtt = useMqtt()
 
   const loadAll = useCallback(async () => {
     try {
-      const [groupsData, clientsData, statusData] = await Promise.all([
+      // Server version is in its own request because it includes a
+      // `git fetch` round-trip (~500ms) and we don't want that to block
+      // /api/clients rendering. Caught so a github outage doesn't break
+      // the rest of the UI.
+      const [groupsData, clientsData, statusData, versionData] = await Promise.all([
         apiFetch('/api/groups').catch(() => null),
         apiFetch('/api/clients').catch(() => null),
         apiFetch('/api/status').catch(() => null),
+        getServerVersion().catch(() => null),
       ])
       if (groupsData) {
         setGroups(groupsData.groups || [])
@@ -45,6 +56,7 @@ export default function App() {
       }
       if (clientsData) setClients(clientsData.clients || [])
       if (statusData) setServerStatus(statusData)
+      if (versionData) setServerVersion(versionData)
     } catch { /* ignore */ }
   }, [])
 
@@ -56,6 +68,33 @@ export default function App() {
     const id = setInterval(loadAll, 60000)
     return () => clearInterval(id)
   }, [loadAll])
+
+  const openServerUpdate = useCallback((opts = {}) => {
+    const { force = false } = opts
+    setUpdateModal({
+      title: force ? 'Force-update server from GitHub' : 'Update server from GitHub',
+      icon: 'server',
+      url: '/api/server/update',
+      body: force ? { force: true } : {},
+    })
+  }, [])
+
+  const openClientUpdate = useCallback((client) => {
+    const name = client?.name || client?.client_id || 'client'
+    setUpdateModal({
+      title: `Update ${name}`,
+      icon: 'device',
+      url: `/api/clients/${client.client_id}/update`,
+      body: {},
+    })
+  }, [])
+
+  const closeUpdateModal = useCallback(() => setUpdateModal(null), [])
+
+  // When an update finishes, refresh everything so the chip + per-device
+  // badges reflect the new state. Cheap enough; loadAll already runs in
+  // parallel.
+  const onUpdateDone = useCallback(() => { loadAll() }, [loadAll])
 
   const openDevice = useCallback((clientId) => {
     setAddDeviceOpen(false)
@@ -98,6 +137,7 @@ export default function App() {
           onClose={() => setPopoverOpen(false)}
           onOpenDevice={openDevice}
           onAddDevice={openAddDevice}
+          onUpdateClient={openClientUpdate}
         />
       )}
       <main className="fx-main">
@@ -107,6 +147,8 @@ export default function App() {
           mqttConnected={mqtt.connected}
           popoverOpen={popoverOpen}
           onToggleDevices={() => setPopoverOpen(v => !v)}
+          serverVersion={serverVersion}
+          onUpdateServer={openServerUpdate}
         />
         <GroupsTab
           groups={groups}
@@ -143,6 +185,18 @@ export default function App() {
           </div>
           <AddDeviceTab onDeviceAdded={loadAll} />
         </div>
+      )}
+
+      {updateModal && (
+        <UpdateStreamModal
+          open={true}
+          onClose={closeUpdateModal}
+          title={updateModal.title}
+          icon={updateModal.icon}
+          url={updateModal.url}
+          body={updateModal.body}
+          onDone={onUpdateDone}
+        />
       )}
     </div>
   )

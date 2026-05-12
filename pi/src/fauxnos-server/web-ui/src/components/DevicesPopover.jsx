@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, Plus } from 'lucide-react'
+import { ChevronRight, Plus, ArrowDownToLine } from 'lucide-react'
 
 /**
  * Popover anchored to the top-right status indicator.
@@ -12,7 +12,7 @@ import { ChevronRight, Plus } from 'lucide-react'
  * The "Add device" button at the bottom is the only entry point to the
  * install wizard now that the top tabs are gone.
  */
-export default function DevicesPopover({ clients, anchorRef, onClose, onOpenDevice, onAddDevice }) {
+export default function DevicesPopover({ clients, anchorRef, onClose, onOpenDevice, onAddDevice, onUpdateClient }) {
   const ref = useRef(null)
   // Measured anchor rect → translates into fixed-position top/right so the
   // popover hangs exactly off the pill's bottom-right edge, regardless of
@@ -63,23 +63,52 @@ export default function DevicesPopover({ clients, anchorRef, onClose, onOpenDevi
         <div className="fx-devices-popover-empty">No devices registered.</div>
       )}
       <div className="fx-devices-popover-list">
-        {sorted.map((c) => (
-          <button
-            key={c.client_id}
-            className="fx-device-cell"
-            onClick={() => { onOpenDevice(c.client_id); onClose() }}
-          >
-            <span className="fx-device-cell-text">
-              <span className="fx-device-cell-name">{c.name || c.client_id}</span>
-              <span className="fx-device-cell-id fx-mono">{c.client_id}</span>
-            </span>
-            <span className={`fx-badge${c.connected ? ' ok' : ''}`}>
-              <span className={`fx-dot${c.connected ? ' ok' : ''}`} />
-              {c.connected ? 'Connected' : 'Offline'}
-            </span>
-            <ChevronRight size={14} className="fx-device-cell-chevron" aria-hidden />
-          </button>
-        ))}
+        {sorted.map((c) => {
+          // Deploy state lives on `c.deploy` (see api_server.handle_list_clients
+          // post-Phase-B3). It's null for clients that were never updated via
+          // the pipeline — render those as "pipeline?" rather than "behind N"
+          // so the user knows the comparison isn't reliable yet.
+          const deploy = c.deploy
+          const behind = deploy?.behind_server
+          const hasUpdate = c.client_id !== 'fauxnos000' && c.connected && (behind === null || behind > 0)
+          const updateLabel = behind === null
+            ? 'Update (initial)'
+            : `Update (${behind} behind)`
+
+          return (
+            <div key={c.client_id} className="fx-device-cell-row">
+              <button
+                className="fx-device-cell"
+                onClick={() => { onOpenDevice(c.client_id); onClose() }}
+              >
+                <span className="fx-device-cell-text">
+                  <span className="fx-device-cell-name">{c.name || c.client_id}</span>
+                  <span className="fx-device-cell-id fx-mono">{c.client_id}</span>
+                </span>
+                <span className={`fx-badge${c.connected ? ' ok' : ''}`}>
+                  <span className={`fx-dot${c.connected ? ' ok' : ''}`} />
+                  {c.connected ? 'Connected' : 'Offline'}
+                </span>
+                <ChevronRight size={14} className="fx-device-cell-chevron" aria-hidden />
+              </button>
+              {hasUpdate && onUpdateClient && (
+                <button
+                  type="button"
+                  className="fx-btn ghost sm fx-device-update-btn"
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onUpdateClient(c)
+                    onClose()
+                  }}
+                  title={updateLabel}
+                  aria-label={updateLabel}
+                >
+                  <ArrowDownToLine size={14} />
+                </button>
+              )}
+            </div>
+          )
+        })}
       </div>
       <div className="fx-devices-popover-footer">
         <button className="fx-btn block" onClick={() => { onAddDevice(); onClose() }}>
