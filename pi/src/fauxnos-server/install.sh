@@ -275,10 +275,13 @@ download_server_code() {
 
     log "Downloading server files..."
 
+    # server_config.json is NOT in this list anymore — it's runtime state
+    # (registered clients, home_groups, deployed SHAs), gitignored, and
+    # auto-created from configs/server_config.json.template by
+    # config_manager.ConfigManager._ensure_config_exists() on first start.
     local files=(
         "fauxnos-server.py"
         "requirements.txt"
-        "server_config.json"
     )
 
     local module_files=(
@@ -320,17 +323,10 @@ download_server_code() {
     mkdir -p modules web tests configs/pulseaudio configs/avahi
 
     for file in "${files[@]}" "${module_files[@]}" "${web_files[@]}" "${test_files[@]}" "${config_files[@]}"; do
-        # Don't blow away live deployment state on re-runs. server_config.json
-        # is mutable state owned by the Pi (clients, MACs, ports). The starter
-        # in the repo has clients:[] — downloading it on every install run
-        # wipes the registered clients. Skip if a valid one already exists.
-        if [ "$file" = "server_config.json" ] && \
-           [ -f "$file" ] && \
-           python3 -c "import json,sys; d=json.load(open('$file')); sys.exit(0 if 'clients' in d else 1)" 2>/dev/null; then
-            log "Preserving existing server_config.json (has $(python3 -c "import json; print(len(json.load(open('$file'))['clients']))") clients)"
-            continue
-        fi
-
+        # server_config.json is no longer in the download list — it's runtime
+        # state, gitignored, auto-created from the template by config_manager.
+        # Old preserve-on-rerun branch removed (was a workaround for the file
+        # being tracked in git).
         local url="${REPO_URL}/pi/src/fauxnos-server/$file"
         local dir
         dir=$(dirname "$file")
@@ -742,28 +738,20 @@ initialize_server_config() {
 
     cd "$INSTALL_DIR"
 
-    # Ensure server_config.json has the right structure
+    # Ensure server_config.json exists + is valid JSON. config_manager would
+    # also auto-create from template on first ConfigManager() instantiation,
+    # but we do it here so the file is in place before `fauxnos-server.py
+    # add-client` runs below (and so the install log makes it visible).
     if [ ! -f "server_config.json" ] || ! python3 -c "import json; json.load(open('server_config.json'))" 2>/dev/null; then
-        log "Creating fresh server_config.json..."
-        cat > server_config.json <<'JSON'
-{
-  "server": {
-    "snapcast": {
-      "host": "localhost",
-      "port": 1705
-    },
-    "mqtt": {
-      "broker_host": "localhost",
-      "broker_port": 1883
-    },
-    "paths": {
-      "fifo_base": "/tmp/snapfifo",
-      "go_librespot_config_base": "~/.config/go-librespot"
-    }
-  },
-  "clients": []
-}
-JSON
+        if [ -f "configs/server_config.json.template" ]; then
+            log "Creating server_config.json from template..."
+            cp configs/server_config.json.template server_config.json
+        else
+            log_error "Missing configs/server_config.json.template — bad install state"
+            return 1
+        fi
+    else
+        log "Preserving existing server_config.json ($(python3 -c "import json; print(len(json.load(open('server_config.json'))['clients']))") clients registered)"
     fi
 
     # Check if fauxnos000 is already registered

@@ -1,14 +1,17 @@
 {
-  "server_name": "fauxnos-server",
-  "api_port": 8080,
-  "clients": [],
-  "snapserver": {
-    "control_port": 1705,
-    "stream_port": 1704
+  "server": {
+    "snapcast": {
+      "host": "localhost",
+      "port": 1705
+    },
+    "mqtt": {
+      "broker_host": "localhost",
+      "broker_port": 1883
+    },
+    "paths": {
+      "fifo_base": "/tmp/snapfifo",
+      "go_librespot_config_base": "~/.config/go-librespot"
+    }
   },
-  "paths": {
-    "config_dir": "~/.config",
-    "staging_dir": "~/fauxnos-staging",
-    "fifo_dir": "/tmp/fauxnos-fifos"
-  }
+  "clients": []
 }

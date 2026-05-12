@@ -12,3 +12,11 @@ pi_backups/
 # the source projects themselves are too big and not needed by the build.
 pi/sounds/
 m4l-batch-locator-export/
+
+# Runtime state — created from configs/server_config.json.template by
+# config_manager.ConfigManager._ensure_config_exists() on first server
+# startup. The live file accumulates registered clients, home_groups,
+# deployed_sha tracking, etc. Tracking it in git would cause every
+# `git pull` on a server to either clobber that state or hit a merge
+# conflict on routine changes. The template is the canonical schema.
+pi/src/fauxnos-server/server_config.json
