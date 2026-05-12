@@ -1,5 +1,8 @@
 # Fauxnos Volume Architecture
 
+> **AirPlay was removed from fauxnos on 2026-05-11** — see commit history.
+> This doc previously included AirPlay; all references have been stripped.
+
 The single most important invariant in fauxnos audio:
 
 > **Each source has exactly one volume attenuation stage.**
@@ -11,7 +14,6 @@ Multi-stage attenuation (PA × snapcast × hardware × …) multiplies, gets con
 | Source       | Attenuator         | Other stages held at | Configured via                      |
 |--------------|--------------------|----------------------|-------------------------------------|
 | **Spotify**  | snapcast client    | PA snapsink @ 100%, go-librespot has `external_volume:true` (it reports, doesn't apply) | `volume_controller: snapcast` |
-| **AirPlay**  | snapcast client    | PA snapsink @ 100%, shairport-sync configured to forward (not apply) | `volume_controller: snapcast` |
 | **Analog In**| PA `analogsink`    | PA loopback `analog_input → analogsink` runs at 100% | `volume_controller: self` |
 
 The `volume_controller` field on each `source` in `client_config.yaml` is the **only** place this is encoded. Everything else (source_manager, mqtt_client, the UI) reads from there.
@@ -39,26 +41,6 @@ PA snapsink @ 100%          (forced by source_manager when this is active)
 alsa_output → HiFiBerry DAC → speaker
 
 
-AIRPLAY (similar)
-─────────────────────────────────────────────────────────────────────────────
-iOS / macOS device
-   │  (AirPlay volume in iOS sends to shairport)
-   ▼
-shairport-sync (configured to forward, not apply, the Apple-side volume)
-   │
-   ▼ FIFO /tmp/snapfifo/airplay_fauxnos<NNN>
-snapserver
-   │
-   ▼
-snapclient (software mixer) ◄── *** ATTENUATES HERE ***
-   │
-   ▼
-PA snapsink @ 100%
-   │
-   ▼ PA loopback @ 100%
-alsa_output → HiFiBerry DAC → speaker
-
-
 ANALOG IN
 ─────────────────────────────────────────────────────────────────────────────
 RCA / 3.5mm jack → ADC half of HiFiBerry DAC+ADC
@@ -79,7 +61,7 @@ The `snapcast client volume` and `PA analogsink volume` are the only knobs that 
 
 The fauxnos UI volume slider always shows the **effective volume of the currently active source** — i.e. the value of whichever single attenuator is in use:
 
-- Active source = Spotify or AirPlay → slider = snapcast client volume (0–100%)
+- Active source = Spotify → slider = snapcast client volume (0–100%)
 - Active source = Analog In → slider = PA `analogsink` volume (0–100%)
 
 Switching sources should always show the volume associated with the new active source's attenuator. Each source remembers its own last-known volume in `~/.config/fauxnos/client_state.json` (`source_volumes` map).
@@ -108,7 +90,7 @@ The attenuator (snapcast client OR PA sink) is always the source of truth for th
 
 2. **PA sinks for snapcast-controlled sources MUST be forced to 100% on source switch**, not just "left alone." If the previous source set the sink to 30% and the new source uses `volume_controller: snapcast`, leaving the PA sink at 30% would create a hidden second stage. `source_manager._set_source_volume` does this correctly today.
 
-3. **snapcast volume changes don't propagate when a non-snapcast source is active.** If you're playing Analog and someone external changes the snapcast group volume (e.g. another snapcast UI, `snapctl`), it has no audible effect, and the fauxnos UI slider — which is bound to the *active* source's attenuator — should not move. Only when Spotify/AirPlay is the active source should snapcast-side changes surface.
+3. **snapcast volume changes don't propagate when a non-snapcast source is active.** If you're playing Analog and someone external changes the snapcast group volume (e.g. another snapcast UI, `snapctl`), it has no audible effect, and the fauxnos UI slider — which is bound to the *active* source's attenuator — should not move. Only when Spotify is the active source should snapcast-side changes surface.
 
 ## Known TODOs
 
@@ -118,9 +100,8 @@ The attenuator (snapcast client OR PA sink) is always the source of truth for th
 - snapcast client lookup currently uses MAC; should use hostID (which is always `fauxnos<NNN>`) to avoid eth0 vs wlan0 MAC mismatches when a Pi's primary interface differs from what install.sh recorded
 - Server-side `VolumeManager` should publish `status/clients/<id>/volume` MQTT after applying a snapcast change, so a Spotify-app volume change reaches the UI in real time
 
-### Deferred — Spotify-first scope
+### Deferred
 
-- **All AirPlay volume work** is paused until the Spotify path is solid end-to-end. AirPlay sources are configured (`volume_controller: snapcast`) and audio plays, but per-instance shairport behavior, AirPlay → snapcast bridging, and AirPlay → UI status are not validated.
 - **Snapcast → Spotify back-channel** (UI changes → Spotify app slider updates). Functionally the volume *sound* is controllable from both interfaces; only Spotify's visual slider drifts. Acceptable.
 
 ### Future hardening
