@@ -92,6 +92,8 @@ class GoLibrespotController:
         on_volume: Optional[Callable[[int], None]] = None,
         on_active: Optional[Callable[[], None]] = None,
         on_inactive: Optional[Callable[[], None]] = None,
+        on_playing: Optional[Callable[[], None]] = None,
+        on_paused: Optional[Callable[[], None]] = None,
     ):
         self.logger = logging.getLogger(__name__)
         self.host = host
@@ -102,6 +104,8 @@ class GoLibrespotController:
         self.on_volume = on_volume
         self.on_active = on_active
         self.on_inactive = on_inactive
+        self.on_playing = on_playing
+        self.on_paused = on_paused
 
         # WebSocket plumbing
         self._ws_thread: Optional[threading.Thread] = None
@@ -154,6 +158,37 @@ class GoLibrespotController:
             return False
         except Exception as e:
             self.logger.error(f"go-librespot set_volume error: {e}")
+            return False
+
+    def pause(self) -> bool:
+        """
+        POST /player/pause — stops Spotify playback in go-librespot.
+        Used when fauxnos switches AWAY from a go_librespot source so
+        the daemon doesn't keep streaming into the now-unselected
+        snapcast stream.
+
+        Soft-fail: returns False on connection refused, timeout, or
+        non-2xx (which includes "no active session" — pausing when
+        nothing is playing isn't a real error from our perspective).
+        """
+        url = f"{self.base_url}/player/pause"
+        try:
+            resp = requests.post(url, timeout=HTTP_TIMEOUT_S)
+            if resp.status_code in (200, 204):
+                self.logger.debug("go-librespot paused")
+                return True
+            self.logger.debug(
+                f"go-librespot pause HTTP {resp.status_code}: {resp.text[:80]}"
+            )
+            return False
+        except requests.exceptions.ConnectionError:
+            self.logger.debug(f"go-librespot connection refused at {url}")
+            return False
+        except requests.exceptions.Timeout:
+            self.logger.debug(f"go-librespot pause timeout at {url}")
+            return False
+        except Exception as e:
+            self.logger.debug(f"go-librespot pause error: {e}")
             return False
 
     # -------- WebSocket --------
@@ -254,9 +289,10 @@ class GoLibrespotController:
           {"type": "volume",   "data": {"value": <0-100>, "max": 100}}
           {"type": "active",   "data": {...}}
           {"type": "inactive", "data": {...}}
+          {"type": "playing",  "data": {...}}  — audio just started
+          {"type": "paused",   "data": {...}}  — audio just paused
 
-        Anything else (track, playing, metadata, seek, …) is ignored
-        here — those belong to brief_auto_source_switching.md.
+        Anything else (track, metadata, seek, …) is ignored here.
         """
         try:
             evt = json.loads(message)
@@ -299,3 +335,19 @@ class GoLibrespotController:
                     self.on_inactive()
                 except Exception as e:
                     self.logger.error(f"on_inactive callback raised: {e}")
+
+        elif etype == "playing":
+            self.logger.info("go-librespot playing (Spotify audio started)")
+            if self.on_playing:
+                try:
+                    self.on_playing()
+                except Exception as e:
+                    self.logger.error(f"on_playing callback raised: {e}")
+
+        elif etype == "paused":
+            self.logger.debug("go-librespot paused")
+            if self.on_paused:
+                try:
+                    self.on_paused()
+                except Exception as e:
+                    self.logger.error(f"on_paused callback raised: {e}")

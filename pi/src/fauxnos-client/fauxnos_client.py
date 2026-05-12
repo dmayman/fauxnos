@@ -62,6 +62,8 @@ class FauxnosClient:
                 on_volume=self._on_spotify_external_volume,
                 on_active=self._on_spotify_active,
                 on_inactive=None,
+                on_playing=self._on_spotify_playing,
+                on_paused=None,
             )
             self.logger.info(
                 f"go-librespot controller: "
@@ -152,8 +154,44 @@ class FauxnosClient:
         what the user last set in fauxnos. Without this, the phone
         slider snaps to go-librespot's `initial_volume: 50` regardless
         of what fauxnos says it should be.
+
+        Note: source-switching is deliberately NOT here — `active`
+        fires when the user merely SELECTS the device in the Spotify
+        app (browsing devices), not necessarily when they want audio.
+        The `playing` event below is the audio-start signal.
         """
         self.source_manager.resync_go_librespot_volume()
+
+    def _on_spotify_playing(self):
+        """
+        Spotify audio started playing on go-librespot. If fauxnos
+        isn't already on the spotify source, auto-switch — the user's
+        intent is unambiguous: they pressed play on the Spotify mobile
+        app, so they want audio from this device.
+
+        This also fires on resume after a pause, which is the same
+        intent ("play this here now") so the same switch is correct.
+
+        If the auto-switch happens, we go through MQTTClient.update_mode
+        so the web UI tracks the change just like a manual switch.
+        """
+        spotify_source_id = self._go_librespot_source_id()
+        if spotify_source_id is None:
+            return
+        if self.source_manager.get_current_source() == spotify_source_id:
+            return  # Already on spotify — nothing to do.
+        self.logger.info(
+            f"Spotify playing detected — auto-switching to {spotify_source_id}"
+        )
+        if self.source_manager.switch_source(spotify_source_id):
+            self.mqtt_client.update_mode(spotify_source_id)
+            # Per-source volume republish, matching the path an MQTT
+            # mode command takes (see mqtt_client.py phase 4). Without
+            # this the UI keeps showing whatever the previous source
+            # was at.
+            new_vol = self.source_manager.get_source_volume(spotify_source_id)
+            if new_vol is not None:
+                self.mqtt_client.update_volume(new_vol)
 
     def _on_source_external_volume(self, source_id: str, volume: int):
         """

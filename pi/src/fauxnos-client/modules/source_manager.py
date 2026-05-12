@@ -101,6 +101,20 @@ class SourceManager:
             self.logger.debug(f"Already on source {source_id}, skipping switch")
             return True
 
+        # Leaving a go_librespot-controlled source? Pause it so the
+        # daemon doesn't keep streaming Spotify audio into the now-
+        # unselected snapcast stream (which would also keep the
+        # Spotify "Now Playing" running on the user's phone). Idempotent:
+        # pause when already paused is a soft no-op inside the controller.
+        if self.current_source is not None:
+            prev_source = self.config_manager.get_source(self.current_source)
+            if (
+                prev_source is not None
+                and prev_source.volume_controller == 'go_librespot'
+                and self.go_librespot is not None
+            ):
+                self.go_librespot.pause()
+
         self.logger.info(f"Switching to source: {source.label} ({source_id})")
 
         # Handle external sources differently
