@@ -39,7 +39,7 @@ sources:
     type: internal
     sink: snapsink                   # PulseAudio sink name
     starting_volume: 50              # Default volume (0-100)
-    volume_controller: go_librespot  # 'self', 'snapcast', or 'go_librespot'
+    volume_controller: go_librespot  # 'self', 'snapcast', 'go_librespot', or 'external'
     pa_calibration: 100              # Loopback ceiling 0-100; tune in UI later
 
   # Internal source - Analog input (only for devices with ADC hardware)
@@ -51,6 +51,24 @@ sources:
     starting_volume: 50
     volume_controller: self          # Use PA sink for volume control
     pa_calibration: 100
+
+  # Internal source - AirPlay (only for devices with shairport-sync +
+  # airplaysink configured in default.pa). Uncomment to enable.
+  # volume_controller=external puts the iPhone in sole control:
+  # shairport-sync software-attenuates the PCM, fauxnos pins the PA
+  # sink at 100% when active, and the UI surfaces a "Volume controlled
+  # by iPhone" caption (fauxnos slider drags are no-ops on this source).
+  # on_leave_command restarts shairport on switch-away so the iPhone's
+  # session is dropped (otherwise it keeps streaming silently into a
+  # muted sink).
+  # - id: airplay
+  #   label: AirPlay
+  #   type: internal
+  #   sink: airplaysink
+  #   starting_volume: 50
+  #   volume_controller: external
+  #   pa_calibration: 100
+  #   on_leave_command: "systemctl --user restart shairport-sync-fauxnos.service"
 
 # Logging configuration
 logging:
