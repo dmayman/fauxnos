@@ -14,6 +14,7 @@ import subprocess
 import socket
 import os
 import queue as queue_mod
+import threading
 import time
 import requests as http_requests
 from pathlib import Path
@@ -23,6 +24,7 @@ from typing import Optional
 
 from .config_manager import ConfigManager, ClientConfig
 from .install_runner import InstallManager, InstallAlreadyRunning, DEFAULT_KEY_PATH
+from . import update_manager as um
 from .dac_overlays import (
     ALLOWED_OVERLAYS,
     DAC_OVERLAYS,
@@ -45,6 +47,41 @@ app = Flask(__name__, static_folder=str(WEB_DIR), static_url_path='/static')
 def _sse_event(event_type: str, data) -> str:
     """Format an SSE event the way the spec wants: blank line terminator."""
     return f"event: {event_type}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+def _stream_subprocess(cmd, cwd=None, env=None, timeout: Optional[float] = None):
+    """Run a subprocess and yield SSE `output` events line-by-line.
+
+    Designed for `yield from` inside an SSE generator:
+
+        rc = yield from _stream_subprocess(["git", "pull"], cwd=repo_root)
+
+    Combines stdout + stderr (stderr=STDOUT) so error output streams in
+    line with normal output. Returns the process's exit code via PEP 380
+    generator return.
+
+    `bufsize=1` + `text=True` gives line-buffered iteration; we get each
+    line as it's printed instead of buffered chunks. For typical git
+    output that's responsive enough that the UI feels live.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    )
+    assert proc.stdout is not None
+    try:
+        for line in proc.stdout:
+            yield _sse_event("output", {"line": line.rstrip("\n")})
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        yield _sse_event("output", {"line": f"[killed: exceeded {timeout}s timeout]"})
+    return proc.returncode
 
 
 class FauxnosAPIServer:
@@ -210,6 +247,16 @@ class FauxnosAPIServer:
         @app.route('/api/server/status', methods=['GET'])
         def get_server_status():
             return self.handle_get_server_status()
+
+        # ── Update pipeline (server self-update from github) ──────────────────
+
+        @app.route('/api/server/version', methods=['GET'])
+        def get_server_version():
+            return self.handle_server_version()
+
+        @app.route('/api/server/update', methods=['POST'])
+        def post_server_update():
+            return self.handle_server_update()
 
         # ── Install / onboarding ──────────────────────────────────────────────
 
@@ -1554,6 +1601,175 @@ class FauxnosAPIServer:
         except Exception as e:
             self.log(f"Server status error: {e}", "ERROR")
             return jsonify({"error": "Internal server error"}), 500
+
+    # ── Update pipeline handlers ───────────────────────────────────────────────
+
+    # Class-level guard so we never run two concurrent `git pull` operations
+    # against the same checkout. Acquired non-blocking; concurrent calls 409.
+    _server_update_lock = threading.Lock()
+
+    def handle_server_version(self):
+        """Handle GET /api/server/version.
+
+        Returns the server's git status: HEAD, branch, dirty-ness, and
+        ahead/behind vs origin/main. The endpoint always fetches first
+        (cost: one network round-trip to github, typically <500ms on
+        LAN→WAN→github) so the UI's "Update server" pill is accurate
+        at click time. Sets `fetch_failed=true` on the response if the
+        fetch failed, so the UI can render "(offline)" instead of
+        silently showing stale drift counts.
+        """
+        try:
+            status = um.get_server_git_status(fetch=True)
+            return jsonify(status.to_dict())
+        except RuntimeError as e:
+            # _find_repo_root() raises if there's no .git ancestor — i.e.
+            # the server was deployed via the legacy rsync-only path.
+            return jsonify({
+                "error": "not_a_git_checkout",
+                "message": str(e),
+            }), 503
+        except Exception as e:
+            self.log(f"Server version error: {e}", "ERROR")
+            return jsonify({"error": "Internal server error"}), 500
+
+    def handle_server_update(self):
+        """Handle POST /api/server/update.
+
+        Body (optional JSON): `{"force": bool}`.
+
+        Behavior:
+          1. Pre-flight: refuse with 409 if working tree is dirty and
+             force is not set. Refuse with 409 if another update is in
+             flight. Return 200 no-op if already at origin/main and
+             force is not set.
+          2. Stream the operation via Server-Sent Events:
+             - `phase`  : entering a named step (`fetch`, `pull`, `restart`)
+             - `output` : a line of git/systemctl stdout
+             - `done`   : final status (`succeeded` | `failed`) + new SHA
+          3. After yielding the final `done` event, schedule a 2-second
+             delayed `systemctl --user restart fauxnos-server` in a
+             detached subprocess so SSE buffers flush before the restart
+             kills this very process. The UI's expected pattern: see
+             `done` → wait ~5s → poll GET /api/server/version until it
+             responds with the new SHA.
+        """
+        body = request.get_json(silent=True) or {}
+        force = bool(body.get("force", False))
+
+        # Pre-flight (synchronous, returns plain JSON on error).
+        try:
+            status = um.get_server_git_status(fetch=True)
+        except RuntimeError as e:
+            return jsonify({"error": "not_a_git_checkout", "message": str(e)}), 503
+
+        if status.dirty and not force:
+            return jsonify({
+                "error": "working_tree_dirty",
+                "message": "Server has uncommitted changes. POST {\"force\": true} to override.",
+                "current_sha": status.sha,
+            }), 409
+
+        if status.fetch_failed and not force:
+            return jsonify({
+                "error": "fetch_failed",
+                "message": "Could not reach origin to check for updates. Network issue?",
+                "current_sha": status.sha,
+            }), 503
+
+        if status.behind == 0 and not force:
+            return jsonify({
+                "status": "up_to_date",
+                "current_sha": status.sha,
+                "short_sha": status.short_sha,
+                "message": f"Already at origin/main ({status.short_sha}).",
+            }), 200
+
+        if not FauxnosAPIServer._server_update_lock.acquire(blocking=False):
+            return jsonify({
+                "error": "update_in_progress",
+                "message": "Another server update is already running.",
+            }), 409
+
+        @stream_with_context
+        def gen():
+            try:
+                # --- Phase 1: fetch ------------------------------------------
+                yield _sse_event("phase", {
+                    "name": "fetch",
+                    "message": "Fetching from origin...",
+                })
+                rc = yield from _stream_subprocess(
+                    ["git", "fetch", "origin", "--prune"],
+                    cwd=str(um.REPO_ROOT),
+                )
+                if rc != 0:
+                    yield _sse_event("done", {
+                        "status": "failed",
+                        "phase": "fetch",
+                        "exit_code": rc,
+                        "message": "git fetch failed",
+                    })
+                    return
+
+                # --- Phase 2: pull -------------------------------------------
+                yield _sse_event("phase", {
+                    "name": "pull",
+                    "message": "git pull --ff-only on main branch...",
+                })
+                rc = yield from _stream_subprocess(
+                    ["git", "pull", "--ff-only", "--no-edit"],
+                    cwd=str(um.REPO_ROOT),
+                )
+                if rc != 0:
+                    yield _sse_event("done", {
+                        "status": "failed",
+                        "phase": "pull",
+                        "exit_code": rc,
+                        "message": "git pull failed (non-fast-forward? local commits?)",
+                    })
+                    return
+
+                # --- Phase 3: schedule restart -------------------------------
+                # Read the new HEAD so we can include it in the done event
+                # BEFORE the restart kills us. Fetch=False — we already
+                # fetched in phase 1 and just pulled; no need for another
+                # network round-trip.
+                new_status = um.get_server_git_status(fetch=False)
+                yield _sse_event("phase", {
+                    "name": "restart",
+                    "message": f"Updated to {new_status.short_sha} — restarting fauxnos-server in 2s...",
+                    "new_sha": new_status.sha,
+                    "new_short_sha": new_status.short_sha,
+                })
+
+                # Detached `sleep 2 && systemctl restart` so the SSE response
+                # has time to flush before our own process gets SIGTERM'd.
+                # start_new_session=True so the bash survives our death.
+                subprocess.Popen(
+                    ["bash", "-c", "sleep 2 && systemctl --user restart fauxnos-server"],
+                    start_new_session=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+                yield _sse_event("done", {
+                    "status": "succeeded",
+                    "new_sha": new_status.sha,
+                    "new_short_sha": new_status.short_sha,
+                    "message": "Server restarting. Refresh in ~5 seconds.",
+                })
+            finally:
+                FauxnosAPIServer._server_update_lock.release()
+
+        return Response(
+            stream_with_context(gen()),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # ── Install / onboarding handlers ──────────────────────────────────────────
 
