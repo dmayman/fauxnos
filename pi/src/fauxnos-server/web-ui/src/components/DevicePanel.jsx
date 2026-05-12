@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   X, Settings2, Plus, ChevronDown, ChevronRight, Check, Trash2,
-  Music, Airplay, AudioLines, Plug,
+  Music, AudioLines, Plug,
 } from 'lucide-react'
 import VolumeSlider from './VolumeSlider'
 import { apiFetch } from '../api'
@@ -16,12 +16,11 @@ const FALLBACK_DAC_OVERLAYS = [
   { id: 'iqaudio-dacplus',             label: 'IQaudIO Pi-DAC+' },
 ]
 
-// Built-in source definitions. Spotify/AirPlay are always shown; Analog is
-// gated by has_adc and can be added/removed via the + menu — clicking
-// + Analog In flips has_adc=true server-side and re-renders.
+// Built-in source definitions. Spotify is always shown; Analog is gated by
+// has_adc and can be added/removed via the + menu — clicking + Analog In
+// flips has_adc=true server-side and re-renders.
 const BUILTIN_DEFS = [
   { id: 'spotify', label: 'Spotify', vc: 'snapcast', alwaysOn: true },
-  { id: 'airplay', label: 'AirPlay', vc: 'snapcast', alwaysOn: true },
   { id: 'analog',  label: 'Analog In', vc: 'self',  gatedBy: 'has_adc' },
 ]
 
@@ -34,7 +33,6 @@ function SourceIcon({ source, size = 16 }) {
   const id = source?.id
   const Icon =
     id === 'spotify' ? Music :
-    id === 'airplay' ? Airplay :
     id === 'analog'  ? AudioLines :
     Plug
   return <Icon size={size} aria-hidden />

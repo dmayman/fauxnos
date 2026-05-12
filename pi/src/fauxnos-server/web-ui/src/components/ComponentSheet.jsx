@@ -400,7 +400,7 @@ function Segmented() {
     >
       <div className="fx-card fx-stack">
         <div className="fx-segmented" role="radiogroup" aria-label="Source">
-          {['spotify', 'airplay', 'analog'].map(s => (
+          {['spotify', 'analog'].map(s => (
             <button
               key={s}
               role="radio"
@@ -408,13 +408,12 @@ function Segmented() {
               className={`fx-segmented-btn${val === s ? ' active' : ''}`}
               onClick={() => setVal(s)}
             >
-              {s === 'spotify' ? 'Spotify' : s === 'airplay' ? 'AirPlay' : 'Analog In'}
+              {s === 'spotify' ? 'Spotify' : 'Analog In'}
             </button>
           ))}
         </div>
         <div className="fx-segmented">
           <button className="fx-segmented-btn active">Spotify</button>
-          <button className="fx-segmented-btn">AirPlay</button>
           <button className="fx-segmented-btn">Analog In</button>
           <button className="fx-segmented-btn">Vinyl</button>
           <button className="fx-segmented-btn">Aux In</button>
@@ -520,7 +519,7 @@ function GroupCardSingle({ name, source, vol }) {
           <button className="fx-icon-btn sm" aria-label="Device settings"><Settings2 size={14} /></button>
         </div>
         <div className="fx-segmented" style={{ marginBottom: 'var(--fx-3)' }}>
-          {['Spotify', 'AirPlay', 'Analog In'].map(s => (
+          {['Spotify', 'Analog In'].map(s => (
             <button key={s} className={`fx-segmented-btn${source === s ? ' active' : ''}`}>{s}</button>
           ))}
         </div>
@@ -546,7 +545,6 @@ function GroupCardMulti() {
         </div>
         <div className="fx-segmented" style={{ marginBottom: 'var(--fx-3)' }}>
           <button className="fx-segmented-btn active">Spotify</button>
-          <button className="fx-segmented-btn">AirPlay</button>
           <button className="fx-segmented-btn">Analog In</button>
         </div>
         <VolumeRow label="Group" defaultValue={64} variant="lg accent" />
@@ -684,7 +682,6 @@ function SourceRowPreviews() {
           expanded={expanded === 'spotify'}
           onToggle={() => setExpanded(expanded === 'spotify' ? null : 'spotify')}
         />
-        <SourceRow label="AirPlay"   kind="internal" />
         <SourceRow label="Analog In" kind="internal" removable />
 
         <div className="fx-section-label" style={{ marginTop: 'var(--fx-4)' }}>
@@ -726,13 +723,6 @@ function DevicePanelPreview() {
           <div className="fx-row" style={{ justifyContent: 'space-between', padding: 'var(--fx-2) 0' }}>
             <div>
               <div style={{ fontWeight: 500 }}>Spotify</div>
-              <span className="fx-badge accent">internal · snapcast</span>
-            </div>
-            <button className="fx-icon-btn sm" aria-label="Configure"><Settings2 size={14} /></button>
-          </div>
-          <div className="fx-row" style={{ justifyContent: 'space-between', padding: 'var(--fx-2) 0' }}>
-            <div>
-              <div style={{ fontWeight: 500 }}>AirPlay</div>
               <span className="fx-badge accent">internal · snapcast</span>
             </div>
             <button className="fx-icon-btn sm" aria-label="Configure"><Settings2 size={14} /></button>
