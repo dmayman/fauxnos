@@ -81,6 +81,15 @@ class FauxnosClient:
             on_external_volume_change=self._on_source_external_volume,
         )
 
+        # NOTE: AirPlay has NO fauxnos-side volume mirror. shairport-sync
+        # owns the volume entirely (iPhone slider drives its software
+        # attenuation on the PCM stream). We surface that in the UI by
+        # locking the slider and hiding the percentage — see GroupCard.
+        # No metadata-pipe reader, no MQTT volume status for the airplay
+        # source. The `volume_controller: external` branch in
+        # source_manager._set_source_volume still applies so any
+        # fauxnos-side write (UI, IR remote) is a no-op on audio.
+
         # IR listener (hardware-remote support). Constructed BEFORE the
         # MQTT client so we can hand its enable/clear/state-getter to
         # the MQTT layer's IR callbacks. The on_learn_event hook fires
@@ -209,6 +218,7 @@ class FauxnosClient:
             if src.volume_controller == 'go_librespot':
                 return sid
         return None
+
 
     # ---- IR command handlers ----
     #

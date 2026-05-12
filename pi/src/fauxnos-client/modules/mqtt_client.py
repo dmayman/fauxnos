@@ -164,9 +164,19 @@ class MQTTClient:
         payload = msg.payload.decode('utf-8')
         logger.debug(f"MQTT message: {topic} -> {payload}")
 
-        # Broadcast discovery
+        # Broadcast discovery. The UI fires this on every connect to
+        # bootstrap state for all clients. We send hello AND republish
+        # the retained status topics — retain alone is enough in theory,
+        # but this is the explicit "I just connected, what's current"
+        # path and republishing here makes the bootstrap deterministic
+        # (no dependence on broker retain behavior or message ordering).
         if topic == "get/clients/all/status":
             self._send_hello()
+            self.publish_mode()
+            self.publish_volume()
+            self.publish_activity()
+            self.publish_calibrations()
+            self.publish_ir_state()
             return
 
         # Parse topic: {command_type}/clients/{device_id}/{action}[/{sub_action}[/{cmd_id}]]
@@ -425,7 +435,11 @@ class MQTTClient:
         if not self.connected:
             return
         payload = json.dumps(self._collect_ir_state())
-        self.client.publish(f"status/clients/{self.device_id}/ir/state", payload)
+        # Retain so a freshly-loaded UI sees current state immediately,
+        # without waiting for the next ir/learn event to fire a publish.
+        self.client.publish(
+            f"status/clients/{self.device_id}/ir/state", payload, retain=True
+        )
 
     def _collect_calibrations(self) -> dict:
         """Build a {source_id: calibration} map for hello + status payloads."""
@@ -445,9 +459,12 @@ class MQTTClient:
             return
         cals = self._collect_calibrations()
         for source_id, value in cals.items():
+            # Retain so a fresh UI tab sees current values without
+            # having to wait for the next user-driven calibration nudge.
             self.client.publish(
                 f"status/clients/{self.device_id}/calibration/{source_id}",
                 str(value),
+                retain=True,
             )
 
     def update_mode(self, mode: str):
@@ -468,17 +485,39 @@ class MQTTClient:
             self.current_activity = activity
             self.publish_activity()
 
+    # `retain=True` on the status/* topics: these are current-state
+    # topics, not event topics, so a late-subscribing UI tab (page
+    # reload, WiFi blip, install-wizard SSE handoff) must be able to
+    # see the latest value immediately. Without retain, the UI's
+    # `mqtt.modes[clientId]` stayed undefined after a reconnect, which
+    # collapsed the airplay slider's `readOnly` check to false — the
+    # iPhone-controlled slider became user-draggable mid-session (and
+    # those drags then no-op'd because the source was still airplay).
+    # Retained messages cost one broker-side store per topic; with a
+    # tiny topic set (4 per client) the overhead is negligible.
     def publish_mode(self):
         if self.connected:
-            self.client.publish(f"status/clients/{self.device_id}/mode", self.current_mode)
+            self.client.publish(
+                f"status/clients/{self.device_id}/mode",
+                self.current_mode,
+                retain=True,
+            )
 
     def publish_volume(self):
         if self.connected:
-            self.client.publish(f"status/clients/{self.device_id}/volume", str(self.current_volume))
+            self.client.publish(
+                f"status/clients/{self.device_id}/volume",
+                str(self.current_volume),
+                retain=True,
+            )
 
     def publish_activity(self):
         if self.connected:
-            self.client.publish(f"status/clients/{self.device_id}/activity", self.current_activity)
+            self.client.publish(
+                f"status/clients/{self.device_id}/activity",
+                self.current_activity,
+                retain=True,
+            )
 
     def publish_all_status(self):
         if self.connected:

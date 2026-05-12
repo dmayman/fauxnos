@@ -6,6 +6,7 @@ Handles audio source switching with smart volume control routing
 """
 
 import logging
+import subprocess
 import requests
 from typing import Callable, Dict, Optional
 from .config_manager import ConfigManager, SourceConfig
@@ -114,6 +115,13 @@ class SourceManager:
                 and self.go_librespot is not None
             ):
                 self.go_librespot.pause()
+            # Run the outgoing source's on_leave_command, if any. For
+            # airplay this restarts shairport-sync, which drops the
+            # iPhone's active RTSP session — otherwise the phone keeps
+            # streaming audio into a muted void, indefinitely. Fire-
+            # and-forget; output discarded.
+            if prev_source is not None and prev_source.on_leave_command:
+                self._run_on_leave_command(prev_source.id, prev_source.on_leave_command)
 
         self.logger.info(f"Switching to source: {source.label} ({source_id})")
 
@@ -221,6 +229,28 @@ class SourceManager:
                 self.logger.debug(f"Set {source.label} volume to {volume}% (snapcast control, PA at 100%)")
             else:
                 self.logger.warning(f"snapcast set_volume failed for client '{client_id}' — is it connected?")
+
+        elif volume_controller == 'external':
+            # Audio is attenuated UPSTREAM of the PA sink by an external
+            # authority — for the airplay source that's shairport-sync,
+            # which does software volume on the PCM stream based on the
+            # iPhone's RAOP slider. So fauxnos has nothing to attenuate
+            # here: pin the sink at 100 (transparent pass-through when
+            # the source is active; mute_sink will still zero it when
+            # inactive via the switch_source mute-all loop) and persist
+            # the value below for the UI's display memory.
+            #
+            # We MUST set the PA volume to 100 here even though it looks
+            # like a no-op — switch_source mutes every non-active sink
+            # to 0, so without this the sink would stay at 0 forever and
+            # the externally-attenuated audio would be silenced. The
+            # 100 is intentional: any fauxnos-side attenuation would
+            # double-attenuate against the iPhone's stage.
+            self.pulse.set_sink_volume(sink_name, 100)
+            self.logger.debug(
+                f"Set {source.label} sink to 100% (external authority "
+                f"owns attenuation); stored display value = {volume}%"
+            )
 
         elif volume_controller == 'go_librespot':
             # Snapcast is the REAL attenuator here — go-librespot is
@@ -517,6 +547,39 @@ class SourceManager:
         # go-librespot isn't reachable yet (it'll resync on the next
         # `active` WS event).
         self.resync_go_librespot_volume()
+
+    def _run_on_leave_command(self, source_id: str, command: str):
+        """
+        Run an outgoing source's `on_leave_command` asynchronously.
+
+        Fire-and-forget by design: we never want a slow cleanup
+        (e.g. shairport-sync's restart of ~1-2s) to gate the source
+        switch — the user's main intent is "play audio from the new
+        source NOW," not "wait for the previous source to wind down."
+        Output is discarded; failures are logged at warning level.
+
+        We use shell=True so the value in YAML can be a one-liner
+        with pipes/redirects if needed (e.g. `dbus-send … | head -1`),
+        not just an argv list. Trust boundary: the YAML is operator-
+        owned config on the device, same trust level as the daemon
+        itself, so command injection is not a vulnerability here.
+        """
+        try:
+            subprocess.Popen(
+                command,
+                shell=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                start_new_session=True,  # don't tie to our process group
+            )
+            self.logger.info(
+                f"on_leave_command for {source_id}: spawned `{command}`"
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"on_leave_command for {source_id} failed to spawn: {e}"
+            )
 
     def _trigger_external_switch(self, url: str, payload: Dict, content_type: str = 'json') -> bool:
         """

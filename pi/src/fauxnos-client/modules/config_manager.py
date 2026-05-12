@@ -39,7 +39,16 @@ class SourceConfig:
 
     # Internal source fields
     sink: Optional[str] = None
-    volume_controller: str = 'self'  # 'self', 'snapcast', or 'go_librespot'
+    # 'self'         — fauxnos owns the PA sink volume directly.
+    # 'snapcast'     — PA pinned at 100%, attenuation happens in snapcast (legacy mode).
+    # 'go_librespot' — single-stage spotify; snapcast attenuates, go-librespot HTTP push mirrors phone slider.
+    # 'external'     — audio is attenuated upstream of the PA sink by an
+    #                  external authority (currently: shairport-sync software
+    #                  volume driven by the iPhone slider). fauxnos UI writes
+    #                  are persisted to state for display only — no audio side
+    #                  effect. The sink is pinned at 100% so the externally-
+    #                  attenuated PCM passes through transparently.
+    volume_controller: str = 'self'
     external_switch: Optional[ExternalSwitchConfig] = None
 
     # PulseAudio loopback calibration (0-100). Applied to the
@@ -52,6 +61,16 @@ class SourceConfig:
     # External source fields
     control_url: Optional[str] = None
     control_payload: Optional[Dict[str, Any]] = None
+
+    # Optional shell command to run when fauxnos switches AWAY from
+    # this source. Fired async by source_manager.switch_source on the
+    # outgoing source; output is discarded. Primary use today: airplay
+    # uses this to restart shairport-sync, which drops the iPhone's
+    # RTSP session cleanly (iOS does not auto-reconnect AirPlay, so
+    # the device falls back to phone speaker until the user manually
+    # re-targets fauxnos). Reusable for any source that needs cleanup
+    # — analog could pulse an "amp off" external API, etc.
+    on_leave_command: Optional[str] = None
 
 
 @dataclass
@@ -160,10 +179,10 @@ class ConfigManager:
                     raise ValueError(f"Internal source {source_id}: 'sink' field is required")
 
                 volume_controller = source_data.get('volume_controller', 'self')
-                if volume_controller not in ['self', 'snapcast', 'go_librespot']:
+                if volume_controller not in ['self', 'snapcast', 'go_librespot', 'external']:
                     raise ValueError(
                         f"Source {source_id}: volume_controller must be "
-                        f"'self', 'snapcast', or 'go_librespot'"
+                        f"'self', 'snapcast', 'go_librespot', or 'external'"
                     )
 
             # Create source config
@@ -177,7 +196,8 @@ class ConfigManager:
                 external_switch=external_switch,
                 pa_calibration=int(source_data.get('pa_calibration', 100)),
                 control_url=source_data.get('control_url'),
-                control_payload=source_data.get('control_payload')
+                control_payload=source_data.get('control_payload'),
+                on_leave_command=source_data.get('on_leave_command'),
             )
 
         return sources
