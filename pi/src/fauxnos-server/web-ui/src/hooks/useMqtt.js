@@ -50,6 +50,14 @@ export function useMqtt() {
 
         setVolumes(prev => ({ ...prev, [deviceId]: parseInt(msg.toString(), 10) }))
       } else if (action === 'mode') {
+        // Mode change = new source context. fauxnos-client republishes
+        // the new source's stored volume right after the mode message
+        // (mqtt_client.py phase 4), but that volume status would land
+        // inside the ECHO_SUPPRESS_MS window if the user was dragging
+        // the slider just before the source switch — and get dropped.
+        // Clear the suppression timestamp here so the next volume
+        // status message wins.
+        lastPublishRef.current[deviceId] = 0
         setModes(prev => ({ ...prev, [deviceId]: msg.toString() }))
       } else if (action === 'calibration' && parts.length >= 5) {
         const sourceId = parts[4]
