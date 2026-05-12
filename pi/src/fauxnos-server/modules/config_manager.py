@@ -266,9 +266,27 @@ class ConfigManager:
         fifo_base = os.path.expanduser(self.server_config['server']['paths']['fifo_base'])
         fifo_path = f"{fifo_base}/spotify_{client.id}"
 
+        # `external_volume: true` means go-librespot does NOT
+        # attenuate its audio output at all — it pipes Spotify audio
+        # to the FIFO at full level and treats its own /player/volume
+        # value as a label that's echoed to/from Spotify Connect.
+        # Audio attenuation happens downstream at snapcast (single
+        # stage there; the client side pins PA at 100). The brief
+        # described this as "go-librespot does all attenuation" but
+        # that would actually require external_volume:false, which
+        # forces attenuation to happen before the FIFO buffer and
+        # adds ~1s of buffer lag to every slider move. Mirroring
+        # value to go-librespot via HTTP is what keeps the Spotify
+        # mobile-app slider in sync with fauxnos UI.
+        #
+        # `volume_steps: 100` rescales the HTTP API + WebSocket event
+        # volume range from the default 0-65535 to 0-100 so the wire
+        # contract matches fauxnos's UI scale. (initial_volume is also
+        # interpreted in that range.)
         config = {
             'device_name': client.name,
             'initial_volume': 50,
+            'volume_steps': 100,
             'external_volume': True,
             'device_type': 'speaker',
             'audio_backend': 'pipe',
