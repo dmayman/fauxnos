@@ -16,6 +16,7 @@ from pathlib import Path
 # Import our modules
 from modules.config_manager import ConfigManager
 from modules import logger as logger_module
+from modules.go_librespot import GoLibrespotController
 from modules.source_manager import SourceManager
 from modules.mqtt_client import MQTTClient
 from modules.ir_listener import IRListener, COMMAND_IDS as IR_COMMAND_IDS
@@ -43,8 +44,40 @@ class FauxnosClient:
 
         self.logger.info(f"Fauxnos Client starting for device: {self.config_manager.device_config.display_name}")
 
-        # Initialize source manager
-        self.source_manager = SourceManager(self.config_manager)
+        # Construct the go-librespot controller if any source on this
+        # client uses `volume_controller: go_librespot`. The wrapper
+        # is cheap (one requests session + dormant WS thread until
+        # start()), so we always build it when it's relevant rather
+        # than lazy-creating it. Host/port come from config_manager —
+        # derived from fauxnos<NNN> + server_host by default, with
+        # YAML overrides supported. See brief_spotify_volume_sync.md.
+        self.go_librespot = None
+        if any(
+            src.volume_controller == 'go_librespot'
+            for src in self.config_manager.get_internal_sources().values()
+        ):
+            self.go_librespot = GoLibrespotController(
+                host=self.config_manager.go_librespot_host,
+                port=self.config_manager.go_librespot_port,
+                on_volume=self._on_spotify_external_volume,
+                on_active=self._on_spotify_active,
+                on_inactive=None,
+            )
+            self.logger.info(
+                f"go-librespot controller: "
+                f"{self.config_manager.go_librespot_host}:"
+                f"{self.config_manager.go_librespot_port}"
+            )
+
+        # Initialize source manager. The on_external_volume_change
+        # callback is the bridge that lets a Spotify-mobile-app slider
+        # nudge propagate to MQTT (web UI) — source_manager owns the
+        # state save; we own the publish.
+        self.source_manager = SourceManager(
+            self.config_manager,
+            go_librespot=self.go_librespot,
+            on_external_volume_change=self._on_source_external_volume,
+        )
 
         # IR listener (hardware-remote support). Constructed BEFORE the
         # MQTT client so we can hand its enable/clear/state-getter to
@@ -86,8 +119,57 @@ class FauxnosClient:
         self.logger.info(f"Received signal {sig}, shutting down...")
         self.running = False
         self.ir_listener.stop()
+        if self.go_librespot:
+            self.go_librespot.stop()
         self.mqtt_client.stop()
         sys.exit(0)
+
+    # ---- go-librespot WS callbacks ----
+    #
+    # These fire from the GoLibrespotController's reader thread. They
+    # bridge daemon-detected Spotify events into the same code paths
+    # an IR or web-UI change takes, so all surfaces stay in lockstep.
+    # Echo prevention is handled inside the controller, not here.
+
+    def _on_spotify_external_volume(self, volume: int):
+        """
+        Spotify mobile app moved the volume slider. Find the
+        go-librespot-controlled source and route through
+        SourceManager.on_external_volume_change so state persists and
+        MQTT publishes.
+        """
+        spotify_source_id = self._go_librespot_source_id()
+        if spotify_source_id is None:
+            return
+        self.source_manager.on_external_volume_change(spotify_source_id, volume)
+
+    def _on_spotify_active(self):
+        """
+        Spotify Connect session became active on go-librespot. Re-push
+        our stored volume so the audio (and the phone's slider, which
+        go-librespot will sync to whatever value it's at) matches
+        what the user last set in fauxnos. Without this, the phone
+        slider snaps to go-librespot's `initial_volume: 50` regardless
+        of what fauxnos says it should be.
+        """
+        self.source_manager.resync_go_librespot_volume()
+
+    def _on_source_external_volume(self, source_id: str, volume: int):
+        """
+        SourceManager → MQTT publish bridge for externally-driven
+        volume changes. Routed back through `update_volume` so the
+        de-dup + publish path is identical to a web-UI or IR-driven
+        change.
+        """
+        self.mqtt_client.update_volume(volume)
+
+    def _go_librespot_source_id(self):
+        """First (and conventionally only) source whose
+        volume_controller is go_librespot. Returns None if none."""
+        for sid, src in self.config_manager.get_internal_sources().items():
+            if src.volume_controller == 'go_librespot':
+                return sid
+        return None
 
     # ---- IR command handlers ----
     #
@@ -265,7 +347,8 @@ class FauxnosClient:
         """Run in daemon mode (background service)"""
         self.logger.info("Running in daemon mode")
 
-        # Initialize audio system
+        # Initialize audio system (also kicks the initial resync of
+        # go-librespot's volume to our stored value, if applicable).
         self.source_manager.initialize_audio_system()
 
         # Start MQTT client (subscribes to control topics, publishes status)
@@ -275,6 +358,13 @@ class FauxnosClient:
         # No-op + warning if disabled, so the daemon comes up cleanly
         # on devices without IR configured.
         self.ir_listener.start()
+
+        # Start the go-librespot WebSocket reader. The HTTP side
+        # works whether or not this starts — but without WS we miss
+        # Spotify-mobile-app slider changes. Soft-fails if the
+        # daemon isn't reachable yet (reconnect loop handles it).
+        if self.go_librespot:
+            self.go_librespot.start()
 
         # Publish initial state
         current = self.source_manager.get_current_source()
@@ -291,6 +381,8 @@ class FauxnosClient:
             pass
 
         self.ir_listener.stop()
+        if self.go_librespot:
+            self.go_librespot.stop()
         self.mqtt_client.stop()
         self.logger.info("Daemon shutting down")
 

@@ -39,7 +39,7 @@ class SourceConfig:
 
     # Internal source fields
     sink: Optional[str] = None
-    volume_controller: str = 'self'  # 'self' or 'snapcast'
+    volume_controller: str = 'self'  # 'self', 'snapcast', or 'go_librespot'
     external_switch: Optional[ExternalSwitchConfig] = None
 
     # PulseAudio loopback calibration (0-100). Applied to the
@@ -85,6 +85,7 @@ class ConfigManager:
         self.logging_config = self._parse_logging_config()
         self.state_file = self._parse_state_file()
         self.server_host = self.config.get('server_host', 'fauxnos000.local')
+        self.go_librespot_host, self.go_librespot_port = self._parse_go_librespot_endpoint()
 
     def _load_config(self) -> Dict[str, Any]:
         """Load YAML configuration file"""
@@ -159,9 +160,10 @@ class ConfigManager:
                     raise ValueError(f"Internal source {source_id}: 'sink' field is required")
 
                 volume_controller = source_data.get('volume_controller', 'self')
-                if volume_controller not in ['self', 'snapcast']:
+                if volume_controller not in ['self', 'snapcast', 'go_librespot']:
                     raise ValueError(
-                        f"Source {source_id}: volume_controller must be 'self' or 'snapcast'"
+                        f"Source {source_id}: volume_controller must be "
+                        f"'self', 'snapcast', or 'go_librespot'"
                     )
 
             # Create source config
@@ -196,6 +198,32 @@ class ConfigManager:
         """Parse state file path"""
         state_file = self.config.get('state_file', '~/.config/fauxnos/client_state.json')
         return Path(state_file).expanduser()
+
+    def _parse_go_librespot_endpoint(self) -> (str, int):
+        """
+        Resolve where the client's go-librespot daemon listens for
+        HTTP + WebSocket. Convention: go-librespot runs ON THE SERVER
+        (one instance per client), each on `3600 + N` where N is the
+        client number parsed from `fauxnos<NNN>`. Host is the fauxnos
+        server. An explicit `go_librespot:` block in YAML overrides
+        either field — useful for unusual topologies or testing.
+
+        Falls back to (server_host, 3600) if the device name doesn't
+        match the fauxnosNNN convention so the client still boots; in
+        that case spotify-controlled volume just won't work until the
+        operator fills in the override.
+        """
+        override = self.config.get('go_librespot', {}) or {}
+
+        # Derive port from device name suffix: fauxnos001 → 3601.
+        derived_port = 3600
+        name = self.device_config.name
+        if name.startswith('fauxnos') and name[7:].isdigit():
+            derived_port = 3600 + int(name[7:])
+
+        host = override.get('host', self.server_host)
+        port = int(override.get('port', derived_port))
+        return host, port
 
     def get_source(self, source_id: str) -> Optional[SourceConfig]:
         """Get source configuration by ID"""

@@ -11,6 +11,15 @@ device:
 # Server hostname (for snapcast and registration)
 server_host: fauxnos000.local
 
+# go-librespot HTTP+WebSocket endpoint (optional). go-librespot runs
+# on the server, one instance per client, on port 3600+N where N is
+# the client number parsed from `fauxnos<NNN>`. If absent, derived:
+# host = server_host, port = 3600 + N. Override here for non-standard
+# topologies or testing.
+# go_librespot:
+#   host: fauxnos000.local
+#   port: 3601
+
 # Audio sources
 #
 # pa_calibration (0-100, default 100): a fixed pre-amp ceiling on the
@@ -19,13 +28,18 @@ server_host: fauxnos000.local
 # analog input from a turntable might be quiet, etc.). Sources sharing
 # a sink share the calibration. See docs/VOLUME.md.
 sources:
-  # Internal source - Spotify via Snapcast
+  # Internal source - Spotify via go-librespot
+  #
+  # volume_controller=go_librespot: single-stage. go-librespot
+  # attenuates (so the Spotify mobile-app slider mirrors what fauxnos
+  # shows); snapcast + the PA sink both stay at 100% for this source.
+  # See brief_spotify_volume_sync.md.
   - id: spotify
     label: Spotify
     type: internal
     sink: snapsink                   # PulseAudio sink name
     starting_volume: 50              # Default volume (0-100)
-    volume_controller: snapcast      # 'self' or 'snapcast'
+    volume_controller: go_librespot  # 'self', 'snapcast', or 'go_librespot'
     pa_calibration: 100              # Loopback ceiling 0-100; tune in UI later
 
   # Internal source - AirPlay via Snapcast
