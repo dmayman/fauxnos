@@ -267,8 +267,7 @@ class FauxnosClient:
             'mute':         self._ir_mute_toggle,
             'source_cycle': self._ir_source_cycle,
             # Transport controls are stubbed for phase 2. Phase 3 will
-            # wire these to playerctl (Spotify) and shairport DBUS
-            # (AirPlay), no-op for analog/vinyl/aux.
+            # wire these to playerctl (Spotify), no-op for analog/vinyl/aux.
             'play_pause':   lambda: self.logger.info("IR play_pause (stub — phase 3)"),
             'next':         lambda: self.logger.info("IR next (stub — phase 3)"),
             'previous':     lambda: self.logger.info("IR previous (stub — phase 3)"),

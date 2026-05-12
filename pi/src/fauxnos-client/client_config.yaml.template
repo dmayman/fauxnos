@@ -42,15 +42,6 @@ sources:
     volume_controller: go_librespot  # 'self', 'snapcast', or 'go_librespot'
     pa_calibration: 100              # Loopback ceiling 0-100; tune in UI later
 
-  # Internal source - AirPlay via Snapcast
-  - id: airplay
-    label: AirPlay
-    type: internal
-    sink: snapsink
-    starting_volume: 50
-    volume_controller: snapcast
-    pa_calibration: 100              # Shares snapsink loopback with Spotify
-
   # Internal source - Analog input (only for devices with ADC hardware)
   # Remove this section if your device doesn't have an analog input
   - id: analog

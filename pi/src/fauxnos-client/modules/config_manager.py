@@ -45,8 +45,8 @@ class SourceConfig:
     # PulseAudio loopback calibration (0-100). Applied to the
     # <sink>.monitor → alsa_output loopback as a fixed pre-amp ceiling.
     # Lets the user normalize different sources (Spotify-via-snapcast vs
-    # Analog vs AirPlay) without violating the single-stage user-control
-    # rule. See docs/VOLUME.md. Default 100 = no attenuation.
+    # Analog) without violating the single-stage user-control rule.
+    # See docs/VOLUME.md. Default 100 = no attenuation.
     pa_calibration: int = 100
 
     # External source fields

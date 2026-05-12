@@ -338,10 +338,10 @@ class SourceManager:
 
         # Apply snapcast attenuation if this source uses go_librespot
         # mirror mode. Only relevant when this source is currently
-        # active — if the user is on AirPlay and the Spotify phone
-        # slider moves, we want to remember the new level for next
-        # time we switch back to spotify, but we must NOT clobber
-        # AirPlay's snapcast attenuation while it's playing.
+        # active — if the user has switched to another source and the
+        # Spotify phone slider moves, we want to remember the new
+        # level for next time we switch back to spotify, but we must
+        # NOT clobber the active source's attenuation while it's playing.
         source = self.config_manager.get_source(source_id)
         if (
             source is not None
@@ -405,9 +405,8 @@ class SourceManager:
         """
         Convention: each <sink>.monitor → alsa_output loopback gets a
         media.role of f'fauxnos-{sink_name}-out' in default.pa. This is
-        what we calibrate. Multiple sources may share a sink (e.g.
-        spotify and airplay both target snapsink), so they share the
-        same calibration loopback.
+        what we calibrate. Multiple sources may share a sink, in which
+        case they share the same calibration loopback.
         """
         return f"fauxnos-{sink_name}-out"
 
