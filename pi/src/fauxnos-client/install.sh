@@ -51,6 +51,21 @@ log_section() {
     echo -e "\n${BOLD}${BLUE}=== $1 ===${NC}" | tee -a "$LOG_FILE"
 }
 
+# Reboot-needed marker. Touched by mark_reboot_needed() whenever something
+# reboot-sensitive changes (dtparam= line, dtoverlay= line, newly-installed
+# apt packages). The update orchestrator (server side) reads this file over
+# SSH after install.sh completes to decide whether to prompt for a reboot.
+# Cleared at start of every run so a stale marker from a previous install
+# never causes a false reboot prompt.
+NEEDS_REBOOT_MARKER=/tmp/fauxnos-install-needs-reboot
+rm -f "$NEEDS_REBOOT_MARKER"
+
+mark_reboot_needed() {
+    local reason="$1"
+    touch "$NEEDS_REBOOT_MARKER"
+    log_warning "Reboot will be needed: $reason"
+}
+
 # Error handling
 cleanup_on_error() {
     log_error "Installation failed! Check log at: $LOG_FILE"
@@ -104,6 +119,13 @@ install_system_dependencies() {
     log "Updating package lists..."
     sudo apt update -y
 
+    # Count installed packages before + after so we can mark reboot-needed
+    # if anything new actually landed. apt-installed packages occasionally
+    # bring in kernel modules or systemd-units that only activate on next
+    # boot, so when we're in update mode we want the orchestrator to know.
+    local pkg_count_before pkg_count_after
+    pkg_count_before=$(dpkg -l 2>/dev/null | awk '/^ii/{n++} END{print n+0}')
+
     log "Installing core dependencies..."
     sudo apt install -y \
         snapclient \
@@ -127,6 +149,11 @@ install_system_dependencies() {
 
     log "Installing Python packages..."
     pip3 install --user requests pyyaml paho-mqtt websocket-client --break-system-packages
+
+    pkg_count_after=$(dpkg -l 2>/dev/null | awk '/^ii/{n++} END{print n+0}')
+    if [ "$pkg_count_after" -gt "$pkg_count_before" ]; then
+        mark_reboot_needed "$((pkg_count_after - pkg_count_before)) new apt package(s) installed"
+    fi
 
     log_success "System dependencies installed"
 }
@@ -193,43 +220,65 @@ configure_system() {
         if ! grep -q "^dtparam=audio=off" "$config_txt"; then
             echo "dtparam=audio=off" | sudo tee -a "$config_txt" > /dev/null
             log "Disabled onboard audio"
+            mark_reboot_needed "added dtparam=audio=off"
         fi
 
         # Strip every overlay we manage so re-running install with a
         # different overlay choice doesn't leave stragglers behind, then
-        # write the chosen one. Idempotent.
-        sudo sed -i '/^dtoverlay=hifiberry/d; /^dtoverlay=allo-/d; /^dtoverlay=iqaudio-/d' "$config_txt"
-        echo "dtoverlay=$overlay" | sudo tee -a "$config_txt" > /dev/null
+        # write the chosen one. Idempotent — and on an update run we only
+        # mark reboot-needed if the active overlay actually changed.
+        local existing_dac_line new_dac_line
+        existing_dac_line=$(grep -m1 -E '^dtoverlay=(hifiberry|allo-|iqaudio-)' "$config_txt" || true)
+        new_dac_line="dtoverlay=$overlay"
 
-        log_success "DAC overlay set to '$overlay' in $config_txt"
+        if [ "$existing_dac_line" != "$new_dac_line" ]; then
+            sudo sed -i '/^dtoverlay=hifiberry/d; /^dtoverlay=allo-/d; /^dtoverlay=iqaudio-/d' "$config_txt"
+            echo "$new_dac_line" | sudo tee -a "$config_txt" > /dev/null
+            mark_reboot_needed "DAC overlay changed: '${existing_dac_line:-<none>}' → '$new_dac_line'"
+            log_success "DAC overlay set to '$overlay' in $config_txt"
+        else
+            log "DAC overlay already set to '$overlay' — no change"
+        fi
     else
         log_error "Could not find config.txt file"
     fi
 
-    # Set temporary hostname using the first non-loopback MAC. The previous
-    # `cat /sys/class/net/*/address | head -1` matched lo first (all-zero
-    # MAC), producing a useless temp hostname like `fauxnos-temp-0000` and a
-    # `sudo: unable to resolve host fauxnos-temp-0000` warning. setup-client.py
-    # renames to fauxnosNNN later anyway, but we want this name to actually
-    # identify the device while it's installing.
-    local mac_suffix=""
-    for iface_addr in /sys/class/net/*/address; do
-        local iface=$(basename "$(dirname "$iface_addr")")
-        [ "$iface" = "lo" ] && continue
-        local mac=$(cat "$iface_addr" 2>/dev/null)
-        [ -z "$mac" ] || [ "$mac" = "00:00:00:00:00:00" ] && continue
-        mac_suffix=$(echo "$mac" | sed 's/://g' | tail -c 5)
-        break
-    done
-    [ -z "$mac_suffix" ] && mac_suffix="$$"  # fall back to PID
-    local temp_hostname="${TEMP_HOSTNAME_PREFIX}-${mac_suffix}"
+    # On an update run (install.sh re-invoked against a device that's
+    # already provisioned), the hostname is already fauxnosNNN. Bouncing
+    # it through fauxnos-temp-XXXX and back is pointless and leaves the
+    # device in a temp state if the server becomes unreachable mid-install.
+    # Only rename if we're starting from a non-fauxnos hostname (fresh
+    # install path).
+    local current_hostname
+    current_hostname=$(hostname)
+    if [[ "$current_hostname" =~ ^fauxnos[0-9]{3}$ ]]; then
+        log "Hostname already configured as $current_hostname — skipping temp-hostname rename"
+    else
+        # Set temporary hostname using the first non-loopback MAC. The previous
+        # `cat /sys/class/net/*/address | head -1` matched lo first (all-zero
+        # MAC), producing a useless temp hostname like `fauxnos-temp-0000` and a
+        # `sudo: unable to resolve host fauxnos-temp-0000` warning. setup-client.py
+        # renames to fauxnosNNN later anyway, but we want this name to actually
+        # identify the device while it's installing.
+        local mac_suffix=""
+        for iface_addr in /sys/class/net/*/address; do
+            local iface=$(basename "$(dirname "$iface_addr")")
+            [ "$iface" = "lo" ] && continue
+            local mac=$(cat "$iface_addr" 2>/dev/null)
+            [ -z "$mac" ] || [ "$mac" = "00:00:00:00:00:00" ] && continue
+            mac_suffix=$(echo "$mac" | sed 's/://g' | tail -c 5)
+            break
+        done
+        [ -z "$mac_suffix" ] && mac_suffix="$$"  # fall back to PID
+        local temp_hostname="${TEMP_HOSTNAME_PREFIX}-${mac_suffix}"
 
-    log "Setting temporary hostname to: $temp_hostname"
-    sudo hostnamectl set-hostname "$temp_hostname"
-    sudo sed -i "s/127.0.1.1.*/127.0.1.1\t$temp_hostname/" /etc/hosts
-    # Add the new name to /etc/hosts so sudo doesn't warn about unresolvable
-    # host on subsequent commands in this same install run.
-    grep -q "127.0.1.1.*$temp_hostname" /etc/hosts || echo "127.0.1.1 $temp_hostname" | sudo tee -a /etc/hosts > /dev/null
+        log "Setting temporary hostname to: $temp_hostname"
+        sudo hostnamectl set-hostname "$temp_hostname"
+        sudo sed -i "s/127.0.1.1.*/127.0.1.1\t$temp_hostname/" /etc/hosts
+        # Add the new name to /etc/hosts so sudo doesn't warn about unresolvable
+        # host on subsequent commands in this same install run.
+        grep -q "127.0.1.1.*$temp_hostname" /etc/hosts || echo "127.0.1.1 $temp_hostname" | sudo tee -a /etc/hosts > /dev/null
+    fi
 
     log_success "System configuration completed"
 }
@@ -269,10 +318,20 @@ configure_ir_receiver() {
     # Idempotent: drop any prior gpio-ir line (so re-runs with a future
     # different pin replace cleanly) and re-add. Pin 17 is the rc-core
     # default; the userspace listener doesn't currently expose pin
-    # selection in the UI.
-    sudo sed -i '/^dtoverlay=gpio-ir/d' "$config_txt"
-    echo "dtoverlay=gpio-ir,gpio_pin=17" | sudo tee -a "$config_txt" > /dev/null
-    log "Added: dtoverlay=gpio-ir,gpio_pin=17 → $config_txt"
+    # selection in the UI. On an update run we only mark reboot-needed
+    # when the active line actually changes.
+    local existing_ir_line new_ir_line
+    existing_ir_line=$(grep -m1 '^dtoverlay=gpio-ir' "$config_txt" || true)
+    new_ir_line="dtoverlay=gpio-ir,gpio_pin=17"
+
+    if [ "$existing_ir_line" != "$new_ir_line" ]; then
+        sudo sed -i '/^dtoverlay=gpio-ir/d' "$config_txt"
+        echo "$new_ir_line" | sudo tee -a "$config_txt" > /dev/null
+        mark_reboot_needed "gpio-ir overlay changed: '${existing_ir_line:-<none>}' → '$new_ir_line'"
+        log "Added: $new_ir_line → $config_txt"
+    else
+        log "gpio-ir overlay already configured — no change"
+    fi
 
     # ir-keytable enables individual protocol decoders on the rc-core
     # receiver at runtime. Without this, /dev/lirc0 exists but
@@ -650,7 +709,24 @@ main() {
     validate_installation
     print_completion_message
 
-    # Ask about reboot
+    # Reboot decision:
+    #   - FAUXNOS_NO_REBOOT=1 (set by the update orchestrator on the server)
+    #     means "hand the decision back to me — I'll inspect the marker
+    #     file and reboot over SSH if it's there." We exit cleanly here so
+    #     the SSE stream gets a clean termination.
+    #   - Unset (the interactive `curl | bash` first-install path) means
+    #     "auto-reboot after a 30s countdown" — preserves the original
+    #     behavior so nothing changes for users running install.sh directly.
+    if [ "${FAUXNOS_NO_REBOOT:-0}" = "1" ]; then
+        if [ -f "$NEEDS_REBOOT_MARKER" ]; then
+            log_warning "FAUXNOS_NO_REBOOT=1 — skipping reboot, but install touched reboot-sensitive state"
+            log_warning "Orchestrator can read $NEEDS_REBOOT_MARKER to decide whether to reboot the device"
+        else
+            log "FAUXNOS_NO_REBOOT=1 and no reboot-sensitive changes detected — exiting without reboot"
+        fi
+        exit 0
+    fi
+
     echo -e "\n${YELLOW}The system needs to reboot to complete the installation.${NC}"
     echo "This will happen automatically in 30 seconds..."
     echo "Press Ctrl+C to cancel the reboot (you can reboot manually later)"
