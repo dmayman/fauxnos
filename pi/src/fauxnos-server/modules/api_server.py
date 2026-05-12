@@ -330,8 +330,6 @@ class FauxnosAPIServer:
                 default_sources = [
                     {"id": "spotify", "label": "Spotify", "type": "internal", "category": "default",
                      "sink": "snapsink", "starting_volume": 50, "volume_controller": "snapcast"},
-                    {"id": "airplay", "label": "AirPlay", "type": "internal", "category": "default",
-                     "sink": "snapsink", "starting_volume": 50, "volume_controller": "snapcast"},
                 ]
                 if has_adc:
                     default_sources.append(
@@ -1021,9 +1019,6 @@ class FauxnosAPIServer:
         {"id": "spotify", "label": "Spotify", "type": "internal",
          "category": "default", "sink": "snapsink",
          "starting_volume": 50, "volume_controller": "snapcast"},
-        {"id": "airplay", "label": "AirPlay", "type": "internal",
-         "category": "default", "sink": "snapsink",
-         "starting_volume": 50, "volume_controller": "snapcast"},
     ]
     _DEFAULT_ANALOG_SOURCE = {
         "id": "analog", "label": "Analog In", "type": "internal",
@@ -1034,7 +1029,7 @@ class FauxnosAPIServer:
     def _effective_client_sources(self, client_id: str) -> list:
         """Return the sources we expose to the UI for `client_id`.
 
-        We always include the built-in defaults (spotify, airplay, plus
+        We always include the built-in defaults (spotify, plus
         analog if has_adc=true) and merge the explicit `sources` array
         from server_config.json on top. Explicit entries override
         synthesized ones by id (so a user can store external_switch
@@ -1241,9 +1236,9 @@ class FauxnosAPIServer:
                     group["available_streams"] = stream_list
 
                 # Include home client's configured sources. Falls back to
-                # synthesized built-ins (spotify/airplay/+analog) when the
-                # client has no explicit sources array, so the dropdown
-                # always reflects what the SourcesPanel shows.
+                # synthesized built-ins (spotify/+analog) when the client
+                # has no explicit sources array, so the dropdown always
+                # reflects what the SourcesPanel shows.
                 if home_cid:
                     group["sources"] = self._effective_client_sources(home_cid)
                 else:

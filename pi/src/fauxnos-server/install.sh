@@ -121,7 +121,6 @@ install_system_dependencies() {
         mosquitto-clients \
         avahi-daemon \
         avahi-utils \
-        shairport-sync \
         ir-keytable \
         python3 \
         python3-pip \
@@ -905,15 +904,7 @@ sources:
     sink: snapsink
     starting_volume: 50
     volume_controller: snapcast
-    pa_calibration: 50           # snap loopback ceiling — Spotify is loud out of the box
-
-  - id: airplay
-    label: AirPlay
-    type: internal
-    sink: snapsink
-    starting_volume: 50
-    volume_controller: snapcast
-    pa_calibration: 50           # shares snapsink loopback with Spotify$analog_section
+    pa_calibration: 50           # snap loopback ceiling — Spotify is loud out of the box$analog_section
 
 logging:
   file: ~/logs/fauxnos-client.log
