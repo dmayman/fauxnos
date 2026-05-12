@@ -505,6 +505,10 @@ configure_system() {
     log "Configuring HiFiBerry audio..."
     _configure_hifiberry
 
+    # Enable IR kernel decoders at boot (NEC for the fauxnos remote)
+    log "Installing IR decoder boot service..."
+    _install_ir_decoders_service
+
     # Register avahi _fauxnos._tcp service for client auto-discovery
     log "Registering fauxnos mDNS service..."
     _register_avahi_service
@@ -605,6 +609,55 @@ _configure_hifiberry() {
     echo "dtoverlay=gpio-ir,gpio_pin=17" | sudo tee -a "$config_txt" > /dev/null
     log "Added: dtoverlay=gpio-ir,gpio_pin=17 → $config_txt"
     log_success "HiFiBerry overlay set to $dtoverlay in $config_txt"
+}
+
+# The gpio-ir overlay creates /sys/class/rc/rcN, but the kernel defaults to
+# [rc-6] + [lirc] active — neither matches the fauxnos remote (NEC extended).
+# Without this, `ir-keytable -t` reads from the device but the kernel emits no
+# scancodes and the remote silently does nothing. fauxnos-client's IR listener
+# uses `-t` test mode which does NOT touch protocols, so the protocol bit has
+# to be set elsewhere. We install a system oneshot that writes `+nec` to the
+# protocols file for whichever rc device is a gpio_ir_recv (rc0 on a no-CEC
+# Pi, sometimes rc1 if HDMI CEC claimed rc0 first).
+_install_ir_decoders_service() {
+    local helper="/usr/local/bin/fauxnos-ir-enable-decoders.sh"
+    local unit="/etc/systemd/system/fauxnos-ir-decoders.service"
+
+    sudo tee "$helper" > /dev/null <<'IR_ENABLE_SH'
+#!/bin/sh
+# Enable NEC decoder on whichever rc-core device is a gpio_ir_recv.
+# Idempotent: writing "+nec" to /sys/class/rc/rcN/protocols is additive and
+# safe to re-run.
+set -e
+for d in /sys/class/rc/rc*; do
+    [ -e "$d/uevent" ] || continue
+    if grep -q "DRV_NAME=gpio_ir_recv" "$d/uevent"; then
+        echo +nec > "$d/protocols"
+        echo "fauxnos-ir: enabled nec on $d"
+    fi
+done
+IR_ENABLE_SH
+    sudo chmod +x "$helper"
+
+    sudo tee "$unit" > /dev/null <<UNIT
+[Unit]
+Description=Fauxnos: enable IR kernel decoders on gpio_ir_recv
+After=systemd-modules-load.service
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$helper
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable fauxnos-ir-decoders.service
+    sudo systemctl start fauxnos-ir-decoders.service || true
+    log_success "fauxnos-ir-decoders.service installed and started"
 }
 
 _register_avahi_service() {
