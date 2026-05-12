@@ -52,23 +52,22 @@ sources:
     volume_controller: self          # Use PA sink for volume control
     pa_calibration: 100
 
-  # Internal source - AirPlay (only for devices with shairport-sync +
-  # airplaysink configured in default.pa). Uncomment to enable.
+  # Internal source - AirPlay (always installed on every fauxnos device).
   # volume_controller=external puts the iPhone in sole control:
   # shairport-sync software-attenuates the PCM, fauxnos pins the PA
   # sink at 100% when active, and the UI surfaces a "Volume controlled
   # by iPhone" caption (fauxnos slider drags are no-ops on this source).
   # on_leave_command restarts shairport on switch-away so the iPhone's
-  # session is dropped (otherwise it keeps streaming silently into a
-  # muted sink).
-  # - id: airplay
-  #   label: AirPlay
-  #   type: internal
-  #   sink: airplaysink
-  #   starting_volume: 50
-  #   volume_controller: external
-  #   pa_calibration: 100
-  #   on_leave_command: "systemctl --user restart shairport-sync-fauxnos.service"
+  # RTSP session is dropped cleanly (otherwise it keeps streaming into
+  # a muted sink indefinitely).
+  - id: airplay
+    label: AirPlay
+    type: internal
+    sink: airplaysink
+    starting_volume: 50
+    volume_controller: external
+    pa_calibration: 100
+    on_leave_command: "systemctl --user restart shairport-sync-fauxnos.service"
 
 # Logging configuration
 logging:
