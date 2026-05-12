@@ -24,6 +24,7 @@ from typing import Optional
 
 from .config_manager import ConfigManager, ClientConfig
 from .install_runner import InstallManager, InstallAlreadyRunning, DEFAULT_KEY_PATH
+from .update_runner import UpdateManager, UpdateAlreadyRunning
 from . import update_manager as um
 from .dac_overlays import (
     ALLOWED_OVERLAYS,
@@ -97,6 +98,17 @@ class FauxnosAPIServer:
             client_status_fn=self._list_clients_for_runner,
             snapcast_status_fn=self._get_snapcast_client_status,
             on_install_succeeded=self._cleanup_after_install,
+        )
+        # Update pipeline manager: handles per-client updates over SSH, with
+        # automatic reboot if install.sh's marker file is present afterward.
+        # record_deploy_fn writes the deployed SHA back into server_config
+        # so the UI's "N commits behind" badge updates.
+        self.update_manager = UpdateManager(
+            server_host="fauxnos000.local",
+            snapcast_status_fn=self._get_snapcast_client_status,
+            record_deploy_fn=lambda cid, sha, nr, lp: um.record_client_deploy(
+                self.config_manager, cid, sha, nr, lp,
+            ),
         )
         # IR learn pub/sub: per-client list of SSE subscriber queues
         # + last-seen event payload (delivered as a snapshot when a new
@@ -257,6 +269,22 @@ class FauxnosAPIServer:
         @app.route('/api/server/update', methods=['POST'])
         def post_server_update():
             return self.handle_server_update()
+
+        @app.route('/api/clients/<client_id>/version', methods=['GET'])
+        def get_client_version(client_id):
+            return self.handle_client_version(client_id)
+
+        @app.route('/api/clients/<client_id>/update', methods=['POST'])
+        def post_client_update(client_id):
+            return self.handle_client_update(client_id)
+
+        @app.route('/api/clients/<client_id>/update/stream', methods=['GET'])
+        def get_client_update_stream(client_id):
+            return self.handle_client_update_stream(client_id)
+
+        @app.route('/api/clients/update-all', methods=['POST'])
+        def post_clients_update_all():
+            return self.handle_clients_update_all()
 
         # ── Install / onboarding ──────────────────────────────────────────────
 
@@ -461,6 +489,18 @@ class FauxnosAPIServer:
             snapcast_status = self._get_snapcast_client_status()
             raw_map = {c.get("id"): c for c in self.config_manager.server_config.get("clients", [])}
 
+            # Enrich with deploy info per client (for the UI's "N commits
+            # behind" badge + last-updated timestamp). One git rev-list call
+            # per client behind the scenes — cheap on a local checkout, but
+            # we could batch later if the client count grows past a dozen.
+            deploy_map = {}
+            for c in clients:
+                try:
+                    info = um.get_client_deploy_info(c.id, self.config_manager.server_config)
+                    deploy_map[c.id] = info.to_dict()
+                except Exception:
+                    deploy_map[c.id] = None  # never blocks the list response
+
             return jsonify({
                 "clients": [
                     {
@@ -481,6 +521,10 @@ class FauxnosAPIServer:
                             else (raw_map.get(client.id, {}).get("dac_overlay") or DEFAULT_OVERLAY)
                         ),
                         "dac_overlay_locked": client.id == "fauxnos000",
+                        # Update-pipeline state: short SHA, behind count,
+                        # needs_reboot, deployed_at. None-fields render as
+                        # "unknown — first update will sync".
+                        "deploy": deploy_map.get(client.id),
                     }
                     for client in clients
                 ]
@@ -1839,6 +1883,289 @@ class FauxnosAPIServer:
                 "X-Accel-Buffering": "no",
             },
         )
+
+    # ── Per-client update handlers ─────────────────────────────────────────────
+
+    def _build_update_env(self, client_raw: dict, server_url: str) -> dict:
+        """Assemble the env vars install.sh needs when invoked as an update.
+
+        The orchestrator always passes these — install.sh's defaults are
+        calibrated for first-install via firstrun.sh + GitHub fallback,
+        which is wrong for updates of an already-provisioned device.
+        See the Phase A test postmortem in brief_update_pipeline.md
+        ("Lessons learned during Phase A test") for the specifics.
+        """
+        env = {
+            "FAUXNOS_SERVER_URL": server_url,
+            "FAUXNOS_NO_REBOOT": "1",
+            "DISPLAY_NAME": client_raw.get("name", "") or client_raw.get("display_name", "") or "",
+        }
+        # DAC overlay: server's per-client record wins. fauxnos000 is locked
+        # to the SERVER_OVERLAY; everything else falls back to DEFAULT_OVERLAY
+        # if no explicit per-device choice has been made (which is the same
+        # logic the Devices-tab UI uses).
+        if client_raw.get("id") == "fauxnos000":
+            env["FAUXNOS_DAC_OVERLAY"] = SERVER_OVERLAY
+        else:
+            env["FAUXNOS_DAC_OVERLAY"] = (
+                client_raw.get("dac_overlay") or DEFAULT_OVERLAY
+            )
+        return env
+
+    def _sse_subscribe_runner(self, runner) -> "Response":
+        """Subscribe to an UpdateRunner and stream its events as SSE.
+
+        Shape mirrors `handle_install_stream`: snapshot first, then live
+        events, `done` terminates the stream, `:keepalive` every 15s.
+        Reused by both `handle_client_update` (kicks off + streams) and
+        `handle_client_update_stream` (subscribe to an in-flight or
+        recently-finished runner).
+        """
+        sub = runner.subscribe()
+        terminal = runner.status in ("succeeded", "failed", "cancelled")
+
+        def gen(rnr=runner, q=sub, already_done=terminal):
+            try:
+                if already_done:
+                    yield _sse_event("done", rnr.snapshot())
+                    return
+                last_keepalive = time.time()
+                while True:
+                    try:
+                        ev = q.get(timeout=15)
+                    except queue_mod.Empty:
+                        yield ": keepalive\n\n"
+                        last_keepalive = time.time()
+                        continue
+                    yield _sse_event(ev["type"], ev["data"])
+                    if ev["type"] == "done":
+                        return
+                    if time.time() - last_keepalive > 15:
+                        yield ": keepalive\n\n"
+                        last_keepalive = time.time()
+            finally:
+                rnr.unsubscribe(q)
+
+        return Response(
+            stream_with_context(gen()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    def handle_client_version(self, client_id: str):
+        """Handle GET /api/clients/<id>/version.
+
+        Returns deploy state for this client: `{deployed_sha, deployed_at,
+        deploy_needs_reboot, behind_server, …}`. Clients registered before
+        the update pipeline get all-None fields (UI renders as "unknown").
+        """
+        if self._get_client_raw(client_id) is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+        try:
+            info = um.get_client_deploy_info(client_id, self.config_manager.server_config)
+            return jsonify(info.to_dict())
+        except Exception as e:
+            self.log(f"Client version error for {client_id}: {e}", "ERROR")
+            return jsonify({"error": "Internal server error"}), 500
+
+    def handle_client_update(self, client_id: str):
+        """Handle POST /api/clients/<id>/update.
+
+        Body (optional JSON):
+            target_host : override the mDNS hostname (defaults to <id>.local)
+
+        Behavior:
+            1. Look up the client in server_config; 404 if not found.
+            2. Compute the SHA we're deploying (current HEAD on this server).
+            3. Assemble env vars (display_name, dac_overlay, no-reboot).
+            4. Kick off an UpdateRunner; refuse 409 if one is already
+               running for this client.
+            5. Stream events for the lifetime of the runner. If the SSE
+               connection drops, the runner keeps going server-side; the
+               UI can re-subscribe via GET /api/clients/<id>/update/stream.
+        """
+        client_raw = self._get_client_raw(client_id)
+        if client_raw is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+
+        body = request.get_json(silent=True) or {}
+        target_host = body.get("target_host") or f"{client_id}.local"
+
+        # Get server's HEAD as the SHA we're deploying. We fetch first so
+        # the recorded SHA is current with origin/main (not silently stale
+        # after a recent push the server hasn't pulled).
+        try:
+            git_status = um.get_server_git_status(fetch=False)
+        except RuntimeError as e:
+            return jsonify({
+                "error": "server_not_a_git_checkout",
+                "message": str(e),
+            }), 503
+
+        server_url = f"http://fauxnos000.local:8080"
+        env = self._build_update_env(client_raw, server_url)
+
+        try:
+            runner = self.update_manager.start(
+                client_id=client_id,
+                target_host=target_host,
+                env=env,
+                server_sha=git_status.sha,
+            )
+        except UpdateAlreadyRunning as e:
+            return jsonify({
+                "error": "update_in_progress",
+                "message": str(e),
+                "update_id": e.runner.update_id,
+            }), 409
+
+        self.log(
+            f"Starting update for {client_id} → {target_host} "
+            f"(server_sha={git_status.short_sha}, update_id={runner.update_id[:8]})",
+            "INFO",
+        )
+        return self._sse_subscribe_runner(runner)
+
+    def handle_client_update_stream(self, client_id: str):
+        """Handle GET /api/clients/<id>/update/stream.
+
+        Lets the UI re-attach to an in-flight or recently-finished update
+        (e.g. after a tab reload). If no runner exists for this client
+        yet, returns an idle SSE stream (just heartbeats) so EventSource
+        stays open and the caller can poll status separately.
+        """
+        runner = self.update_manager.current_or_last(client_id)
+        if runner is None:
+            def empty_stream():
+                while True:
+                    yield ": keepalive\n\n"
+                    time.sleep(15)
+            return Response(
+                stream_with_context(empty_stream()),
+                mimetype="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+        return self._sse_subscribe_runner(runner)
+
+    def handle_clients_update_all(self):
+        """Handle POST /api/clients/update-all.
+
+        Sequentially update every registered client. Events from each
+        runner are forwarded into a single SSE stream, with per-client
+        `client_start` / `client_done` boundary events around each.
+        Updating fauxnos000 itself is SKIPPED — it updates via
+        /api/server/update which is a different mechanism (git pull,
+        not install.sh-via-SSH).
+        """
+        body = request.get_json(silent=True) or {}
+        skip_ids = set(body.get("skip", [])) | {"fauxnos000"}
+
+        # Snapshot the client list up front so any concurrent registration
+        # doesn't change what we're iterating.
+        all_clients = self.config_manager.server_config.get("clients", [])
+        targets = [c for c in all_clients if c.get("id") not in skip_ids]
+
+        try:
+            git_status = um.get_server_git_status(fetch=False)
+        except RuntimeError as e:
+            return jsonify({
+                "error": "server_not_a_git_checkout",
+                "message": str(e),
+            }), 503
+
+        # Acquire a coarse lock so two update-all requests can't
+        # interleave. Single update-per-client is already guarded by
+        # UpdateManager.
+        if not FauxnosAPIServer._update_all_lock.acquire(blocking=False):
+            return jsonify({
+                "error": "update_all_in_progress",
+                "message": "An update-all is already running.",
+            }), 409
+
+        @stream_with_context
+        def gen():
+            try:
+                yield _sse_event("update_all_start", {
+                    "server_sha": git_status.sha,
+                    "server_short_sha": git_status.short_sha,
+                    "client_ids": [c.get("id") for c in targets],
+                    "skipped_ids": sorted(skip_ids),
+                })
+
+                for client_raw in targets:
+                    cid = client_raw.get("id")
+                    if cid is None:
+                        continue
+                    yield _sse_event("client_start", {
+                        "client_id": cid,
+                        "name": client_raw.get("name"),
+                    })
+                    server_url = "http://fauxnos000.local:8080"
+                    env = self._build_update_env(client_raw, server_url)
+                    try:
+                        runner = self.update_manager.start(
+                            client_id=cid,
+                            target_host=f"{cid}.local",
+                            env=env,
+                            server_sha=git_status.sha,
+                        )
+                    except UpdateAlreadyRunning:
+                        yield _sse_event("client_done", {
+                            "client_id": cid,
+                            "status": "skipped",
+                            "reason": "update_already_running",
+                        })
+                        continue
+
+                    # Forward every event from this runner into our stream.
+                    sub = runner.subscribe()
+                    try:
+                        last_keepalive = time.time()
+                        while True:
+                            try:
+                                ev = sub.get(timeout=15)
+                            except queue_mod.Empty:
+                                yield ": keepalive\n\n"
+                                last_keepalive = time.time()
+                                continue
+                            # Re-tag the event with client context so the
+                            # consumer can distinguish per-client output.
+                            data = dict(ev["data"])
+                            data["client_id"] = cid
+                            yield _sse_event(f"client_{ev['type']}", data)
+                            if ev["type"] == "done":
+                                break
+                            if time.time() - last_keepalive > 15:
+                                yield ": keepalive\n\n"
+                                last_keepalive = time.time()
+                    finally:
+                        runner.unsubscribe(sub)
+
+                    yield _sse_event("client_done", {
+                        "client_id": cid,
+                        "status": runner.status,
+                        "needs_reboot": runner.needs_reboot,
+                        "rebooted": runner.rebooted,
+                        "deployed_sha": runner.deployed_sha,
+                        "error": runner.error,
+                    })
+
+                yield _sse_event("update_all_done", {
+                    "server_sha": git_status.sha,
+                    "count": len(targets),
+                })
+            finally:
+                FauxnosAPIServer._update_all_lock.release()
+
+        return Response(
+            stream_with_context(gen()),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    # Class-level lock for the update-all coordinator. Per-client locking
+    # is handled by UpdateManager (one runner per client at a time).
+    _update_all_lock = threading.Lock()
 
     # ── Install / onboarding handlers ──────────────────────────────────────────
 
