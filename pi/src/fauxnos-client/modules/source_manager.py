@@ -119,15 +119,19 @@ class SourceManager:
         Returns:
             True if successful
         """
-        # Step 1: Fade out all other internal sources
-        self.logger.debug("Fading out other sources...")
+        # Step 1: Mute all other internal sources
+        self.logger.debug("Muting other sources...")
         for other_id, other_source in self.config_manager.get_internal_sources().items():
             if other_id != source.id:
                 self.pulse.mute_sink(other_source.sink)
 
-        # Step 2: Fade in the new source with appropriate volume control
+        # Step 2: Apply the new source's stored volume via its
+        # configured controller (self/snapcast/go_librespot). Direct
+        # set, no fade — the fade ramp was a step-loop that blocked
+        # this thread for ~1s on every switch, making the UI lag
+        # behind every action with no audible benefit.
         target_volume = self.source_volumes[source.id]
-        self._set_source_volume(source, target_volume, fade=True)
+        self._set_source_volume(source, target_volume)
 
         # Step 3: Trigger external switch if configured
         if source.external_switch and source.external_switch.enabled:
@@ -168,14 +172,13 @@ class SourceManager:
         self.logger.info(f"Switched to external source: {source.label}")
         return True
 
-    def _set_source_volume(self, source: SourceConfig, volume: int, fade: bool = False):
+    def _set_source_volume(self, source: SourceConfig, volume: int):
         """
         Set volume for a source using appropriate controller
 
         Args:
             source: Source configuration
             volume: Target volume (0-100)
-            fade: Whether to fade to volume
         """
         if source.type != 'internal':
             self.logger.warning(f"Cannot set volume for external source {source.id}")
@@ -186,21 +189,12 @@ class SourceManager:
 
         if volume_controller == 'self':
             # Use PulseAudio sink for volume control
-            if fade:
-                current_vol = self.pulse.get_sink_volume(sink_name) or 0
-                self.pulse.fade_volume(sink_name, current_vol, volume)
-            else:
-                self.pulse.set_sink_volume(sink_name, volume)
-
+            self.pulse.set_sink_volume(sink_name, volume)
             self.logger.debug(f"Set {source.label} volume to {volume}% (PA sink control)")
 
         elif volume_controller == 'snapcast':
             # Keep PA sink at 100%, control via snapcast
-            if fade:
-                current_vol = self.pulse.get_sink_volume(sink_name) or 0
-                self.pulse.fade_volume(sink_name, current_vol, 100)
-            else:
-                self.pulse.set_sink_volume(sink_name, 100)
+            self.pulse.set_sink_volume(sink_name, 100)
 
             # Use the device name as the snapcast client_id. We always launch
             # snapclient with `--hostID <device.name>` (e.g. fauxnos000), so
@@ -233,15 +227,10 @@ class SourceManager:
             # the buffer), go-librespot HTTP push moves the phone
             # slider, WS events from the phone come back through
             # on_external_volume_change which applies the same dual
-            # action.
-            #
-            # PA snapsink stays pinned at 100 — pinned on `fade=True`
-            # transitions in case a previous source had attenuated
-            # it, trusted between drags.
+            # action. PA snapsink stays pinned at 100 (defensive —
+            # idempotent set; same instruction cost as a no-op check).
             client_id = self.config_manager.device_config.name
-            if fade:
-                current_vol = self.pulse.get_sink_volume(sink_name) or 0
-                self.pulse.fade_volume(sink_name, current_vol, 100)
+            self.pulse.set_sink_volume(sink_name, 100)
 
             if not self.snapcast.set_volume(volume, client_id):
                 self.logger.debug(
@@ -297,8 +286,7 @@ class SourceManager:
             self.logger.warning(f"Cannot control volume for external source {source.label}")
             return False
 
-        # Set volume without fading
-        self._set_source_volume(source, volume, fade=False)
+        self._set_source_volume(source, volume)
 
         # Save state
         self._save_state()

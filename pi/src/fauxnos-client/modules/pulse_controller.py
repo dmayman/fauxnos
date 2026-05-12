@@ -2,21 +2,17 @@
 """
 PulseAudio Controller
 
-Handles all PulseAudio sink operations including volume control and fading
+Handles PulseAudio sink operations: volume set/get, mute, loopback
+calibration, and one-shot sound playback.
 """
 
 import logging
 import subprocess
-import time
 from typing import Optional
 
 
 class PulseAudioController:
     """Controls PulseAudio sinks via pactl commands"""
-
-    # Volume fading parameters
-    FADE_STEP = 5  # Volume change per step (%)
-    FADE_DELAY = 0.05  # Delay between steps (seconds)
 
     def __init__(self):
         """Initialize PulseAudio controller"""
@@ -114,58 +110,6 @@ class PulseAudioController:
         """
         return self.set_sink_volume(sink_name, 0)
 
-    def fade_volume(self, sink_name: str, from_volume: int, to_volume: int) -> int:
-        """
-        Smoothly fade sink volume from one level to another
-
-        Args:
-            sink_name: Name of the sink
-            from_volume: Starting volume (0-100)
-            to_volume: Target volume (0-100)
-
-        Returns:
-            Final volume level reached
-        """
-        # Clamp volumes
-        from_volume = max(0, min(100, from_volume))
-        to_volume = max(0, min(100, to_volume))
-
-        if from_volume == to_volume:
-            return from_volume
-
-        self.logger.debug(f"Fading {sink_name}: {from_volume}% → {to_volume}%")
-
-        # Determine direction and step
-        if to_volume > from_volume:
-            step = self.FADE_STEP
-        else:
-            step = -self.FADE_STEP
-
-        current = from_volume
-
-        # Fade volume step by step
-        while True:
-            # Check if we've reached or passed the target
-            if step > 0 and current >= to_volume:
-                break
-            if step < 0 and current <= to_volume:
-                break
-
-            # Take a step
-            current += step
-            current = max(0, min(100, current))  # Clamp
-
-            # Set volume
-            self.set_sink_volume(sink_name, current)
-
-            # Wait before next step
-            time.sleep(self.FADE_DELAY)
-
-        # Ensure we end exactly at target
-        self.set_sink_volume(sink_name, to_volume)
-
-        self.logger.debug(f"Fade complete: {sink_name} at {to_volume}%")
-        return to_volume
 
     def sink_exists(self, sink_name: str) -> bool:
         """
@@ -368,11 +312,9 @@ if __name__ == '__main__':
     )
 
     parser = argparse.ArgumentParser(description='Test PulseAudio controller')
-    parser.add_argument('command', choices=['list', 'volume', 'fade', 'mute'])
+    parser.add_argument('command', choices=['list', 'volume', 'mute'])
     parser.add_argument('--sink', help='Sink name')
     parser.add_argument('--volume', type=int, help='Volume level (0-100)')
-    parser.add_argument('--from-volume', type=int, help='Start volume for fade')
-    parser.add_argument('--to-volume', type=int, help='End volume for fade')
 
     args = parser.parse_args()
 
@@ -391,13 +333,6 @@ if __name__ == '__main__':
                 print(f"Set {args.sink} to {args.volume}%")
             else:
                 print(f"Failed to set volume")
-
-    elif args.command == 'fade':
-        if not args.sink or args.from_volume is None or args.to_volume is None:
-            print("Error: --sink, --from-volume, and --to-volume required")
-        else:
-            final = controller.fade_volume(args.sink, args.from_volume, args.to_volume)
-            print(f"Faded {args.sink} to {final}%")
 
     elif args.command == 'mute':
         if not args.sink:

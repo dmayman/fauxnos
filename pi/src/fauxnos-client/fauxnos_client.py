@@ -296,13 +296,14 @@ class FauxnosClient:
         except ValueError:
             idx = -1
         nxt = sources[(idx + 1) % len(sources)]
-        # Sound BEFORE the switch — switch_source() does a blocking
-        # fade_volume() loop (~1s for a 0→100 snapcast fade), so if we
-        # played the sound after, the user would wait the full fade
-        # before hearing anything. Single tone for any source change,
-        # distinct from per-notch volume + mute/unmute sounds. IR-only
-        # by design; web/MQTT source switches go through
-        # SourceManager.switch_source() directly and stay silent.
+        # Sound BEFORE the switch — switch_source() is now near-
+        # instant (the old blocking fade was removed), but keeping
+        # the sound-first ordering preserves the rule from the IR
+        # latency fix and stays robust against future regressions.
+        # Single tone for any source change, distinct from per-notch
+        # volume + mute/unmute sounds. IR-only by design; web/MQTT
+        # source switches go through SourceManager.switch_source()
+        # directly and stay silent.
         self._play_feedback_sound('source_switch.wav')
         if self.source_manager.switch_source(nxt):
             self.mqtt_client.update_mode(nxt)
