@@ -1019,6 +1019,18 @@ class FauxnosAPIServer:
         {"id": "spotify", "label": "Spotify", "type": "internal",
          "category": "default", "sink": "snapsink",
          "starting_volume": 50, "volume_controller": "snapcast"},
+        # AirPlay ships on every fauxnos device — shairport-sync is
+        # installed unconditionally by install.sh, the airplaysink PA
+        # null-sink is in the default.pa template, and the iPhone is
+        # the sole volume authority (volume_controller=external pins
+        # the PA sink at 100 so shairport's software volume passes
+        # through transparently). on_leave_command restarts shairport
+        # on switch-away so an idle iPhone session doesn't keep the
+        # phone "connected to fauxnos" indefinitely with no audio.
+        {"id": "airplay", "label": "AirPlay", "type": "internal",
+         "category": "default", "sink": "airplaysink",
+         "starting_volume": 50, "volume_controller": "external",
+         "on_leave_command": "systemctl --user restart shairport-sync-fauxnos.service"},
     ]
     _DEFAULT_ANALOG_SOURCE = {
         "id": "analog", "label": "Analog In", "type": "internal",

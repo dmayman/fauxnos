@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Settings2, GripVertical, X, Music, AudioLines, Plug } from 'lucide-react'
+import { Settings2, GripVertical, X, Music, AudioLines, Plug, Cast } from 'lucide-react'
 import VolumeSlider from './VolumeSlider'
 
 /**
@@ -10,6 +10,7 @@ function SourceIcon({ source, size = 14 }) {
   const id = source?.id
   const Icon =
     id === 'spotify' ? Music :
+    id === 'airplay' ? Cast :
     id === 'analog'  ? AudioLines :
     Plug
   return <Icon size={size} aria-hidden />

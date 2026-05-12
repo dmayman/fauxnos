@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   X, Settings2, Plus, ChevronDown, ChevronRight, Check, Trash2,
-  Music, AudioLines, Plug,
+  Music, AudioLines, Plug, Cast,
 } from 'lucide-react'
 import VolumeSlider from './VolumeSlider'
 import { apiFetch } from '../api'
@@ -16,12 +16,15 @@ const FALLBACK_DAC_OVERLAYS = [
   { id: 'iqaudio-dacplus',             label: 'IQaudIO Pi-DAC+' },
 ]
 
-// Built-in source definitions. Spotify is always shown; Analog is gated by
-// has_adc and can be added/removed via the + menu — clicking + Analog In
+// Built-in source definitions. Spotify + AirPlay are always shown
+// (shairport-sync is installed on every fauxnos device by install.sh,
+// so AirPlay is a first-class default). Analog is gated by has_adc
+// and can be added/removed via the + menu — clicking + Analog In
 // flips has_adc=true server-side and re-renders.
 const BUILTIN_DEFS = [
-  { id: 'spotify', label: 'Spotify', vc: 'snapcast', alwaysOn: true },
-  { id: 'analog',  label: 'Analog In', vc: 'self',  gatedBy: 'has_adc' },
+  { id: 'spotify', label: 'Spotify',   vc: 'snapcast', alwaysOn: true },
+  { id: 'airplay', label: 'AirPlay',   vc: 'external', alwaysOn: true },
+  { id: 'analog',  label: 'Analog In', vc: 'self',     gatedBy: 'has_adc' },
 ]
 
 /**
@@ -33,6 +36,7 @@ function SourceIcon({ source, size = 16 }) {
   const id = source?.id
   const Icon =
     id === 'spotify' ? Music :
+    id === 'airplay' ? Cast :
     id === 'analog'  ? AudioLines :
     Plug
   return <Icon size={size} aria-hidden />
