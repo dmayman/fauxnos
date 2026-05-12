@@ -10,10 +10,13 @@ Future: Add proportional group volume scaling.
 """
 
 import json
+import os
 import threading
 import logging
 import asyncio
 import websockets
+import yaml
+from pathlib import Path
 from typing import Dict, Optional
 import paho.mqtt.client as mqtt
 from .config_manager import ConfigManager
@@ -71,7 +74,24 @@ class VolumeManager:
             self.logger.warning(f"MQTT publish failed for {client_id}: {e}")
 
     def start(self):
-        """Start WebSocket listeners for all clients"""
+        """Start WebSocket listeners for all clients.
+
+        Skips any client whose go-librespot config has
+        `volume_steps: 100` — that's the marker of a single-stage
+        client (brief_spotify_volume_sync.md). On those clients,
+        fauxnos-client owns the WS event flow end-to-end:
+        - phone slider → go-librespot WS → fauxnos client →
+          snapcast Client.SetVolume + source_manager state save +
+          MQTT publish.
+        - fauxnos-client's volume_controller=go_librespot already
+          calls snapcast.set_volume(N) on every drag, so this server-
+          side mirror would just re-issue the same Client.SetVolume
+          with the same value — at best redundant chatter; at worst
+          races with the client's write or, paired with an earlier
+          mid-development design that pinned snapcast=100 between
+          drags, caused an audible UP-then-DOWN blip on every UI move
+          (bug discovered 2026-05-11 on fauxnos000).
+        """
         if self.running:
             self.logger.warning("Volume manager already running")
             return
@@ -79,8 +99,16 @@ class VolumeManager:
         self.running = True
         clients = self.config_manager.list_clients()
 
+        started = 0
+        skipped = 0
         for client in clients:
-            # Start a thread for each client's WebSocket connection
+            if self._client_is_single_stage(client.id):
+                self.logger.info(
+                    f"VolumeManager: skipping {client.id} — single-stage "
+                    f"(volume_steps:100); fauxnos-client owns WS flow"
+                )
+                skipped += 1
+                continue
             thread = threading.Thread(
                 target=self._run_websocket_listener,
                 args=(client.id, client.server_port),
@@ -88,8 +116,25 @@ class VolumeManager:
             )
             thread.start()
             self.threads.append(thread)
+            started += 1
 
-        self.logger.info(f"Volume manager started for {len(clients)} clients")
+        self.logger.info(
+            f"Volume manager started for {started} client(s), "
+            f"skipped {skipped} single-stage client(s)"
+        )
+
+    def _client_is_single_stage(self, client_id: str) -> bool:
+        """Return True if this client's go-librespot config has
+        `volume_steps: 100` — the marker we write when the client is
+        in single-stage spotify mode. Best-effort: any read error or
+        missing file is treated as 'not single-stage' so we fall back
+        to the old mirroring behavior."""
+        cfg_path = Path.home() / ".config" / "go-librespot" / client_id / "config.yml"
+        try:
+            cfg = yaml.safe_load(cfg_path.read_text()) or {}
+            return cfg.get('volume_steps') == 100
+        except Exception:
+            return False
 
     def stop(self):
         """Stop all WebSocket listeners"""
