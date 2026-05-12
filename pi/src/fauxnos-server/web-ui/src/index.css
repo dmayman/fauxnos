@@ -641,6 +641,33 @@ a { color: var(--accent); }
 .fx-volume.accent .fx-volume-fill { background: var(--fx-accent); opacity: 1; }
 .fx-volume.accent .fx-volume-thumb { background: var(--fx-accent); }
 
+/* External-authority mode: source whose volume lives outside fauxnos
+   (currently: AirPlay's iPhone slider). We keep the track shape for
+   visual continuity with non-external sliders — same height, same
+   row layout — but the thumb and fill are hidden and the input is
+   gone. The "Volume controlled by iPhone" caption lives elsewhere
+   (in the group-card header, see .fx-group-name-subtitle) so the
+   slider area itself stays a constant height regardless of source. */
+.fx-volume-external { cursor: default; }
+.fx-volume-external .fx-volume-track {
+  cursor: default;
+  opacity: 0.55;
+}
+/* Reserve a percentage-label-sized slot so external sliders have the
+   same WIDTH and HEIGHT footprint as normal ones — keeps the track
+   length, right-edge alignment, and card height stable on source
+   switch. The non-breaking-space content matches a real label's
+   one-line text height; visibility:hidden keeps it invisible while
+   it still contributes to flex sizing. */
+.fx-volume-external::after {
+  content: "\00A0";
+  flex-shrink: 0;
+  width: 32px;
+  font-size: var(--fx-text-xs);
+  font-variant-numeric: tabular-nums;
+  visibility: hidden;
+}
+
 /* ── Spinner ───────────────────────────────────────────────────────────────── */
 .fx-spinner {
   width: 14px; height: 14px;
@@ -1066,12 +1093,38 @@ body {
   margin-bottom: var(--fx-3);
 }
 .fx-group-name {
+  position: relative;
   font-size: var(--fx-text-md);
   font-weight: 500;
   color: var(--fx-text);
+  /* No overflow: hidden here — that would clip the absolute subtitle.
+     The ellipsis-on-overflow lives on .fx-group-name-main below. */
+}
+.fx-group-name-main {
+  display: block;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* Caption for externally-controlled sources (e.g. AirPlay). Floats
+   into the header's existing margin-bottom gap via absolute
+   positioning so card height is unchanged whether the caption is
+   present or not. Truncates with ellipsis if the device name is
+   very long and the caption would clip. */
+.fx-group-name-subtitle {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 5px;       /* ≈4px visual gap above the subtitle's text */
+  font-size: 11px;
+  line-height: 1;
+  font-weight: 400;
+  color: var(--fx-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
 }
 
 .fx-group-vol {

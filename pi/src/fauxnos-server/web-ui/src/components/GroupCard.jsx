@@ -66,6 +66,9 @@ function DeviceRow({ client, isHome, nameMap, mqtt, onReturnHome, onDragStart, o
   const name = nameMap[client.id] || client.host?.name || client.id
   const vol = mqtt.volumes[client.id] ?? client.config?.volume?.percent ?? 0
   const rowRef = useRef(null)
+  // AirPlay's volume is owned by the iPhone — we display, but cannot
+  // push back without a DACP client. Slider becomes read-only.
+  const isAirplay = mqtt.modes[client.id] === 'airplay'
 
   return (
     <div className="fx-group-member" ref={rowRef}>
@@ -103,7 +106,14 @@ function DeviceRow({ client, isHome, nameMap, mqtt, onReturnHome, onDragStart, o
         )}
       </span>
       <div className="fx-group-member-slider">
-        <VolumeSlider clientId={client.id} value={vol} mqtt={mqtt} hideIcon ariaLabel={`${name} volume`} />
+        <VolumeSlider
+          clientId={client.id}
+          value={vol}
+          mqtt={mqtt}
+          hideIcon
+          ariaLabel={`${name} volume`}
+          external={isAirplay}
+        />
       </div>
     </div>
   )
@@ -128,6 +138,10 @@ export default function GroupCard({
 
   const homeClient = sorted.find(c => c.id === homeClientId) || sorted[0]
   const homeVol = mqtt.volumes[homeClient?.id] ?? homeClient?.config?.volume?.percent ?? 0
+  // AirPlay's volume is owned by the iPhone slider — we display the
+  // current value (mirrored in via shairport metadata pipe → MQTT)
+  // but cannot push back. So lock the fauxnos slider on this source.
+  const isAirplayHome = mqtt.modes[homeClient?.id] === 'airplay'
 
   const groupName = sorted
     .map(c => nameMap[c.id] || c.host?.name || c.id)
@@ -174,7 +188,18 @@ export default function GroupCard({
         onDrop={(e) => { e.preventDefault(); onDropOnGroup() }}
       >
         <div className="fx-group-head">
-          <span className="fx-group-name">{groupName}</span>
+          <span className="fx-group-name">
+            {/* The name text and the subtitle are siblings, NOT nested:
+                the ellipsis-clipping `overflow: hidden` lives on
+                .fx-group-name-main only, so it doesn't clip the
+                absolutely-positioned subtitle that sits below. */}
+            <span className="fx-group-name-main">{groupName}</span>
+            {isAirplayHome && !isMulti && (
+              <span className="fx-group-name-subtitle">
+                Volume controlled by iPhone
+              </span>
+            )}
+          </span>
           <SourceButtons
             sources={group.sources || []}
             currentStream={group.stream_id}
@@ -201,6 +226,7 @@ export default function GroupCard({
               mqtt={mqtt}
               variant="accent"
               ariaLabel={`${groupName} volume`}
+              external={isAirplayHome}
             />
           </div>
         )}

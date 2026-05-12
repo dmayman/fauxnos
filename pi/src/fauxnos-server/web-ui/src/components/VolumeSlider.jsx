@@ -17,6 +17,14 @@ import { Volume1, Volume2, VolumeX } from 'lucide-react'
  *   - "lg"     — taller track (used for group-level slider in multi cards)
  *   - hideIcon — skip the leading speaker glyph (row-level sliders that
  *                already carry a name + status dot)
+ *
+ * `external` mode: for sources whose volume is owned outside fauxnos
+ * (the airplay source — iPhone slider drives shairport's software
+ * volume). We render the track shape for visual continuity but hide
+ * the fill, thumb, value label, and disable input. The "Volume
+ * controlled by iPhone" caption is rendered by the parent card
+ * (see GroupCard's .fx-group-name-subtitle) so the slider area
+ * height stays invariant across source switches.
  */
 export default function VolumeSlider({
   clientId, value, mqtt,
@@ -24,6 +32,7 @@ export default function VolumeSlider({
   hideIcon = false,
   hideLabel = false,
   ariaLabel,
+  external = false,
 }) {
   const [localVal, setLocalVal] = useState(value)
   const draggingRef = useRef(false)
@@ -40,6 +49,20 @@ export default function VolumeSlider({
   const pct = Math.max(0, Math.min(100, localVal))
   const pctStr = `${pct}%`
   const Icon = pct === 0 ? VolumeX : pct < 40 ? Volume1 : Volume2
+
+  if (external) {
+    return (
+      <div className={`fx-volume fx-volume-external ${variant}`}>
+        {!hideIcon && (
+          <span className="fx-volume-icon"><Icon size={16} /></span>
+        )}
+        {/* Empty track for shape continuity — no fill, no thumb, no input.
+            The ::after pseudo on the parent reserves a 32px right slot
+            that keeps the track length matched to the normal slider. */}
+        <div className="fx-volume-track" aria-disabled="true" />
+      </div>
+    )
+  }
 
   return (
     <div className={`fx-volume ${variant}`}>
