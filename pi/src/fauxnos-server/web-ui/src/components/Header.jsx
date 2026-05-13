@@ -72,7 +72,7 @@ function UpdateChip({ serverVersion, clients, onUpdateFauxnos }) {
     if (!c.connected) return false
     const d = c.deploy
     if (!d) return false
-    return d.deployed_sha === null || (d.behind_server !== null && d.behind_server > 0)
+    return d.deployed_client_sha === null || (d.commits_behind !== null && d.commits_behind > 0)
   })
   // Even if no client is behind THIS server, if the server itself is
   // behind origin/main, those clients will be behind after the server

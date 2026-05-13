@@ -186,7 +186,7 @@ class UpdateRunner:
         self.error: Optional[str] = None
         self.needs_reboot: Optional[bool] = None  # set after marker check
         self.rebooted: bool = False               # True if we actually rebooted it
-        self.deployed_sha: Optional[str] = None   # set on success
+        self.deployed_client_sha: Optional[str] = None   # set on success (renamed in Phase F1)
 
         # Subscriber queues + cancel flag.
         self._subscribers: list[queue.Queue] = []
@@ -240,7 +240,7 @@ class UpdateRunner:
                 "status": self.status,
                 "needs_reboot": self.needs_reboot,
                 "rebooted": self.rebooted,
-                "deployed_sha": self.deployed_sha,
+                "deployed_client_sha": self.deployed_client_sha,
                 "server_sha": self.server_sha,
                 "error": self.error,
                 "started_at": self._iso(self.started_at),
@@ -353,7 +353,7 @@ class UpdateRunner:
                 # bookkeeping failure is annoying but not catastrophic.
                 self._output("record_client_deploy returned False (see server log)")
 
-            self.deployed_sha = self.server_sha
+            self.deployed_client_sha = self.server_sha
             self._finish("succeeded", None)
         except Exception as e:
             logger.exception("UpdateRunner crashed")

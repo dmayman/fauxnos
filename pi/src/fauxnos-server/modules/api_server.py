@@ -1664,7 +1664,7 @@ class FauxnosAPIServer:
         silently showing stale drift counts.
         """
         try:
-            status = um.get_server_git_status(fetch=True)
+            status = um.get_server_git_status(fetch=True, server_config=self.config_manager.server_config)
             return jsonify(status.to_dict())
         except RuntimeError as e:
             # _find_repo_root() raises if there's no .git ancestor — i.e.
@@ -1703,7 +1703,7 @@ class FauxnosAPIServer:
 
         # Pre-flight (synchronous, returns plain JSON on error).
         try:
-            status = um.get_server_git_status(fetch=True)
+            status = um.get_server_git_status(fetch=True, server_config=self.config_manager.server_config)
         except RuntimeError as e:
             return jsonify({"error": "not_a_git_checkout", "message": str(e)}), 503
 
@@ -1843,12 +1843,20 @@ class FauxnosAPIServer:
                         })
                         return
 
-                # --- Phase 3: schedule restart -------------------------------
+                # --- Phase 3: record + schedule restart ----------------------
                 # Read the new HEAD so we can include it in the done event
                 # BEFORE the restart kills us. Fetch=False — we already
                 # fetched in phase 1 and just pulled; no need for another
                 # network round-trip.
-                new_status = um.get_server_git_status(fetch=False)
+                new_status = um.get_server_git_status(fetch=False, server_config=self.config_manager.server_config)
+
+                # Persist `server_deployed_sha` BEFORE the restart fires.
+                # The post-restart server reads it back to compute
+                # server_path_behind, so the "Update server" pill clears
+                # immediately on reload instead of waiting for someone
+                # to do another update. Phase F1.
+                um.record_server_deploy(self.config_manager, new_status.sha)
+
                 yield _sse_event("phase", {
                     "name": "restart",
                     "message": f"Updated to {new_status.short_sha} — restarting fauxnos-server in 2s...",
@@ -1995,7 +2003,7 @@ class FauxnosAPIServer:
         # the recorded SHA is current with origin/main (not silently stale
         # after a recent push the server hasn't pulled).
         try:
-            git_status = um.get_server_git_status(fetch=False)
+            git_status = um.get_server_git_status(fetch=False, server_config=self.config_manager.server_config)
         except RuntimeError as e:
             return jsonify({
                 "error": "server_not_a_git_checkout",
@@ -2066,7 +2074,7 @@ class FauxnosAPIServer:
         targets = [c for c in all_clients if c.get("id") not in skip_ids]
 
         try:
-            git_status = um.get_server_git_status(fetch=False)
+            git_status = um.get_server_git_status(fetch=False, server_config=self.config_manager.server_config)
         except RuntimeError as e:
             return jsonify({
                 "error": "server_not_a_git_checkout",
@@ -2146,7 +2154,7 @@ class FauxnosAPIServer:
                         "status": runner.status,
                         "needs_reboot": runner.needs_reboot,
                         "rebooted": runner.rebooted,
-                        "deployed_sha": runner.deployed_sha,
+                        "deployed_client_sha": runner.deployed_client_sha,
                         "error": runner.error,
                     })
 

@@ -293,10 +293,10 @@ function ConnectedChip({ connected }) {
 function VersionSection({ client, serverVersion, onUpdateClient }) {
   if (client.client_id === 'fauxnos000') return null
   const deploy = client.deploy
-  const deployedShort = deploy?.deployed_sha_short
+  const deployedShort = deploy?.deployed_client_sha_short
   const deployedAt = deploy?.deployed_at
-  const behind = deploy?.behind_server
-  const everDeployed = !!deploy?.deployed_sha
+  const behind = deploy?.commits_behind
+  const everDeployed = !!deploy?.deployed_client_sha
   const serverShort = serverVersion?.short_sha
   const canUpdate = !!onUpdateClient && client.connected
   const needsUpdate = !everDeployed || (behind !== null && behind > 0)

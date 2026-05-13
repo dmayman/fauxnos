@@ -65,13 +65,56 @@ class ConfigManager:
         """Load server configuration from JSON file"""
         try:
             with open(self.config_file, 'r') as f:
-                return json.load(f)
+                cfg = json.load(f)
         except FileNotFoundError:
             self.logger.error(f"Server config file not found: {self.config_file}")
             return self._create_default_config()
         except json.JSONDecodeError as e:
             self.logger.error(f"Invalid JSON in config file: {e}")
             raise
+
+        if self._migrate_legacy_deployed_sha(cfg):
+            # Write the migrated shape back so subsequent loads are
+            # no-ops and any consumer reading the file directly sees
+            # the new field names.
+            try:
+                with open(self.config_file, 'w') as f:
+                    json.dump(cfg, f, indent=2)
+                self.logger.info("server_config: migrated legacy deployed_sha → deployed_client_sha")
+            except Exception as e:
+                # Persistence failure is non-fatal — the in-memory dict is
+                # already migrated, so the server runs correctly this
+                # session; the migration will retry on next load.
+                self.logger.warning(f"server_config: migration save failed (will retry next load): {e}")
+        return cfg
+
+    @staticmethod
+    def _migrate_legacy_deployed_sha(cfg: Dict[str, Any]) -> bool:
+        """Rename per-client `deployed_sha` → `deployed_client_sha`.
+
+        Phase F1 (2026-05-13) split the single `deployed_sha` field into
+        a server-wide `server_deployed_sha` (top-level) and a per-client
+        `deployed_client_sha`. This migration handles the rename only;
+        the server-wide field starts None and is filled on first server
+        self-update.
+
+        Idempotent and additive: only renames when the old field is
+        present AND the new isn't. Never deletes the new field. Returns
+        True if any change was made (caller should persist).
+        """
+        changed = False
+        for client in cfg.get("clients", []) or []:
+            if not isinstance(client, dict):
+                continue
+            if "deployed_sha" in client and "deployed_client_sha" not in client:
+                client["deployed_client_sha"] = client.pop("deployed_sha")
+                changed = True
+            elif "deployed_sha" in client and "deployed_client_sha" in client:
+                # Both present (shouldn't happen but be defensive). Trust
+                # the new field, drop the stale duplicate.
+                client.pop("deployed_sha", None)
+                changed = True
+        return changed
 
     def _create_default_config(self) -> Dict[str, Any]:
         """Create default server configuration"""

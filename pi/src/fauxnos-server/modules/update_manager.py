@@ -81,7 +81,7 @@ REPO_ROOT = _find_repo_root()
 class ServerGitStatus:
     """Snapshot of this server's checkout state vs origin/main.
 
-    Field meanings:
+    Whole-repo fields:
         sha          : full HEAD sha (40 hex)
         short_sha    : 7-char short for display
         branch       : current branch name (`main` in the canonical state;
@@ -94,14 +94,29 @@ class ServerGitStatus:
         origin_sha   : `origin/main` HEAD (full sha), or None if origin
                        hasn't been fetched / is unreachable.
         behind       : how many commits on origin/main are not in HEAD
-                       (= "Update server" badge count when > 0).
-        ahead        : how many commits on HEAD are not in origin/main
-                       (rare on a server, but possible during a hot dev
-                       iteration where rsync brought changes that were
-                       then committed locally on the server).
+                       (whole-repo; kept for legacy callers).
+        ahead        : how many commits on HEAD are not in origin/main.
         fetch_failed : True if the fetch step we attempted didn't succeed.
                        Surfaced so the UI can show "(offline)" instead of
                        silently presenting stale drift counts.
+
+    Per-component drift (Phase F1, 2026-05-13). The UI compares these
+    against the deployed SHAs in server_config.json to decide whether
+    to light up "Update server" / "Update clients (N)" pills independently:
+
+        server_path_tip   : sha of the most-recent origin/main commit
+                            touching pi/src/fauxnos-server/ (the "server tip")
+        server_path_behind: commits from server_deployed_sha to
+                            server_path_tip, filtered to that subtree.
+                            None if server_deployed_sha is unset or
+                            unreachable.
+        server_deployed_sha: the SHA the running fauxnos-server is using,
+                             persisted to server_config.json top-level.
+                             None on a server that never self-updated via
+                             /api/server/update (e.g. dev-iteration rsync).
+        client_path_tip   : sha of the most-recent origin/main commit
+                            touching pi/src/fauxnos-client/. Same purpose
+                            for the client subtree.
     """
     sha: str
     short_sha: str
@@ -111,6 +126,10 @@ class ServerGitStatus:
     behind: int
     ahead: int
     fetch_failed: bool
+    server_path_tip: Optional[str] = None
+    server_path_behind: Optional[int] = None
+    server_deployed_sha: Optional[str] = None
+    client_path_tip: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -124,18 +143,21 @@ class ClientDeployInfo:
     pipeline existed have no deploy record — the UI surfaces those as
     "unknown, first update will sync."
 
-    `behind_server` is computed (not stored): it's the commit count from
-    the stored `deployed_sha` to the server's current HEAD. It can also
-    be None if the stored SHA isn't reachable in our object DB (e.g.
-    after a force-push that orphaned it).
+    Phase F1 (2026-05-13): the single `deployed_sha` was renamed to
+    `deployed_client_sha` to make the per-component intent explicit
+    (the recorded SHA reflects the state of pi/src/fauxnos-client/ on
+    the device, not the whole repo). `commits_behind` is now computed
+    against the client-subtree tip on origin/main, not whole-repo HEAD —
+    so a server-only commit no longer lights up the client-update button.
     """
     client_id: str
-    deployed_sha: Optional[str]            # full SHA stored in server_config
-    deployed_sha_short: Optional[str]      # convenience, 7-char
-    deployed_at: Optional[str]             # ISO-8601 with timezone
-    deploy_needs_reboot: bool              # last deploy touched reboot-sensitive state
-    deploy_log_path: Optional[str]         # filesystem path to install log
-    behind_server: Optional[int]           # commits between deployed_sha and HEAD
+    deployed_client_sha: Optional[str]       # full SHA stored in server_config (renamed from deployed_sha)
+    deployed_client_sha_short: Optional[str] # convenience, 7-char
+    deployed_at: Optional[str]               # ISO-8601 with timezone
+    deploy_needs_reboot: bool                # last deploy touched reboot-sensitive state
+    deploy_log_path: Optional[str]           # filesystem path to install log
+    commits_behind: Optional[int]            # commits touching pi/src/fauxnos-client/
+                                              # between deployed_client_sha and client_path_tip
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -160,9 +182,70 @@ def _git(*args: str, check: bool = True, timeout: float = 30.0) -> subprocess.Co
     )
 
 
+# ── public: path-filtered tip helpers ─────────────────────────────────────────
+
+# The subtree roots whose commits we count separately. If the repo
+# layout moves, update these in one place.
+SERVER_SUBTREE_PATH = "pi/src/fauxnos-server"
+CLIENT_SUBTREE_PATH = "pi/src/fauxnos-client"
+
+
+def _path_tip(path: str) -> Optional[str]:
+    """SHA of the most-recent origin/main commit touching `path`.
+
+    Returns None if origin/main isn't reachable (never fetched) or if
+    no commit has ever touched the path. Caller should treat None the
+    same as "unknown" — UI renders it as such.
+    """
+    try:
+        result = _git(
+            "log", "-1", "--format=%H", "origin/main", "--", path,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        sha = result.stdout.strip()
+        return sha or None
+    except subprocess.CalledProcessError:
+        return None
+
+
+def get_server_path_tip() -> Optional[str]:
+    """SHA of the most-recent origin/main commit touching the server subtree."""
+    return _path_tip(SERVER_SUBTREE_PATH)
+
+
+def get_client_path_tip() -> Optional[str]:
+    """SHA of the most-recent origin/main commit touching the client subtree."""
+    return _path_tip(CLIENT_SUBTREE_PATH)
+
+
+def _commits_in_path_range(from_sha: str, to_sha: str, path: str) -> Optional[int]:
+    """Count commits touching `path` in the range from_sha..to_sha.
+
+    Returns None on any error (orphaned SHA after force-push, unreachable
+    ref). 0 is a valid value meaning "no path-relevant commits between
+    the two SHAs."
+    """
+    try:
+        result = _git(
+            "rev-list", "--count", f"{from_sha}..{to_sha}", "--", path,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        return int(result.stdout.strip() or "0")
+    except (subprocess.CalledProcessError, ValueError):
+        return None
+
+
 # ── public: server self-status ────────────────────────────────────────────────
 
-def get_server_git_status(fetch: bool = True, fetch_timeout: float = 15.0) -> ServerGitStatus:
+def get_server_git_status(
+    fetch: bool = True,
+    fetch_timeout: float = 15.0,
+    server_config: Optional[Dict[str, Any]] = None,
+) -> ServerGitStatus:
     """Inspect this server's git checkout and return a structured status.
 
     `fetch=True` (default) runs `git fetch origin` first so `origin/main`
@@ -172,6 +255,12 @@ def get_server_git_status(fetch: bool = True, fetch_timeout: float = 15.0) -> Se
     elsewhere periodically. The endpoint that drives the "Update server"
     button should always pass fetch=True so the badge is accurate at
     click time.
+
+    `server_config` (optional): the live dict from
+    `ConfigManager.server_config`. When supplied, populates the
+    server-side per-component fields (`server_deployed_sha`,
+    `server_path_behind`). Pass None on early-init paths where the
+    config isn't loaded yet — the path-tip fields are still populated.
     """
     fetch_failed = False
     if fetch:
@@ -207,6 +296,27 @@ def get_server_git_status(fetch: bool = True, fetch_timeout: float = 15.0) -> Se
         # origin/main not present (no remote, or never fetched).
         pass
 
+    # Per-component drift (Phase F1).
+    server_path_tip = get_server_path_tip() if origin_sha else None
+    client_path_tip = get_client_path_tip() if origin_sha else None
+
+    server_deployed_sha: Optional[str] = None
+    server_path_behind: Optional[int] = None
+    if server_config is not None:
+        server_deployed_sha = server_config.get("server_deployed_sha") or None
+
+    if server_deployed_sha and server_path_tip:
+        server_path_behind = _commits_in_path_range(
+            server_deployed_sha, server_path_tip, SERVER_SUBTREE_PATH,
+        )
+    elif server_path_tip and not server_deployed_sha:
+        # No record of what the server was last started from — fall back
+        # to "current HEAD vs path tip" so the UI still has a usable
+        # signal until the first server self-update writes the field.
+        # Using HEAD here is correct: the running fauxnos-server process
+        # IS at HEAD if it was started from this working tree.
+        server_path_behind = _commits_in_path_range(sha, server_path_tip, SERVER_SUBTREE_PATH)
+
     return ServerGitStatus(
         sha=sha,
         short_sha=short_sha,
@@ -216,12 +326,20 @@ def get_server_git_status(fetch: bool = True, fetch_timeout: float = 15.0) -> Se
         behind=behind,
         ahead=ahead,
         fetch_failed=fetch_failed,
+        server_path_tip=server_path_tip,
+        server_path_behind=server_path_behind,
+        server_deployed_sha=server_deployed_sha,
+        client_path_tip=client_path_tip,
     )
 
 
 # ── public: per-client deploy info ────────────────────────────────────────────
 
-def get_client_deploy_info(client_id: str, server_config: Dict[str, Any]) -> ClientDeployInfo:
+def get_client_deploy_info(
+    client_id: str,
+    server_config: Dict[str, Any],
+    client_path_tip: Optional[str] = None,
+) -> ClientDeployInfo:
     """Read deploy state for a given client out of `server_config.json`.
 
     `server_config` is the live dict from `ConfigManager.server_config` —
@@ -230,10 +348,19 @@ def get_client_deploy_info(client_id: str, server_config: Dict[str, Any]) -> Cli
     is a relatively low-level module and we want update_manager callable
     from it indirectly if needed).
 
-    Missing fields are treated as "never deployed via the pipeline" — the
-    function returns a ClientDeployInfo with deployed_sha=None, which the
-    UI renders as an "unknown / never updated" state. The first update
-    via the new pipeline sets the fields for the first time.
+    `client_path_tip`: pass a pre-computed value when calling this in a
+    loop over many clients (one `git log` instead of N). When None, the
+    function looks it up once locally; cheap for one-off calls.
+
+    Missing deploy fields are treated as "never deployed via the pipeline"
+    — the function returns deployed_client_sha=None, which the UI renders
+    as an "unknown / never updated" state. The first update via the
+    pipeline sets the fields for the first time.
+
+    `commits_behind` is computed against the client subtree on origin/main,
+    not whole-repo HEAD. So a server-only commit no longer makes clients
+    "look behind" — only commits actually touching pi/src/fauxnos-client/
+    count toward this device's update need.
     """
     client_dict: Dict[str, Any] = {}
     for c in server_config.get("clients", []):
@@ -244,38 +371,32 @@ def get_client_deploy_info(client_id: str, server_config: Dict[str, Any]) -> Cli
     # UI loading the device list) get back a deploy-info object with the
     # client_id echoed and all-None fields, which renders cleanly.
 
-    deployed_sha: Optional[str] = client_dict.get("deployed_sha")
+    deployed_client_sha: Optional[str] = client_dict.get("deployed_client_sha")
     deployed_at: Optional[str] = client_dict.get("deployed_at")
     deploy_needs_reboot: bool = bool(client_dict.get("deploy_needs_reboot", False))
     deploy_log_path: Optional[str] = client_dict.get("deploy_log_path")
 
-    deployed_sha_short: Optional[str] = None
-    if deployed_sha:
-        deployed_sha_short = deployed_sha[:7]
+    deployed_client_sha_short: Optional[str] = None
+    if deployed_client_sha:
+        deployed_client_sha_short = deployed_client_sha[:7]
 
-    behind_server: Optional[int] = None
-    if deployed_sha:
-        try:
-            result = _git(
-                "rev-list", "--count", f"{deployed_sha}..HEAD",
-                check=False,
-            )
-            if result.returncode == 0:
-                behind_server = int(result.stdout.strip() or "0")
-            # else: the stored SHA isn't in our object DB (force-push
-            # orphaned it, or it's from a deleted branch). behind_server
-            # stays None — UI shows "?".
-        except (subprocess.CalledProcessError, ValueError):
-            behind_server = None
+    if client_path_tip is None:
+        client_path_tip = get_client_path_tip()
+
+    commits_behind: Optional[int] = None
+    if deployed_client_sha and client_path_tip:
+        commits_behind = _commits_in_path_range(
+            deployed_client_sha, client_path_tip, CLIENT_SUBTREE_PATH,
+        )
 
     return ClientDeployInfo(
         client_id=client_id,
-        deployed_sha=deployed_sha,
-        deployed_sha_short=deployed_sha_short,
+        deployed_client_sha=deployed_client_sha,
+        deployed_client_sha_short=deployed_client_sha_short,
         deployed_at=deployed_at,
         deploy_needs_reboot=deploy_needs_reboot,
         deploy_log_path=deploy_log_path,
-        behind_server=behind_server,
+        commits_behind=commits_behind,
     )
 
 
@@ -306,7 +427,7 @@ def record_client_deploy(
 
     for c in server_config.get("clients", []):
         if c.get("id") == client_id:
-            c["deployed_sha"] = sha
+            c["deployed_client_sha"] = sha
             c["deployed_at"] = now_iso
             c["deploy_needs_reboot"] = bool(needs_reboot)
             if log_path is not None:
@@ -314,7 +435,7 @@ def record_client_deploy(
             try:
                 config_manager.save_server_config()
                 logger.info(
-                    "Recorded deploy: client=%s sha=%s needs_reboot=%s",
+                    "Recorded client deploy: client=%s sha=%s needs_reboot=%s",
                     client_id, sha[:7], needs_reboot,
                 )
                 return True
@@ -330,6 +451,28 @@ def record_client_deploy(
         client_id,
     )
     return False
+
+
+def record_server_deploy(config_manager, sha: str) -> bool:
+    """Persist the SHA the running fauxnos-server is now using.
+
+    Called from the success path of `/api/server/update` after the git
+    pull but before the systemd restart fires — so the new SHA is on
+    disk in `server_config.json` before the process gets SIGTERM'd.
+    The post-restart server reads it back via `get_server_git_status`
+    to compute server_path_behind.
+
+    Stored at the top level (one server, one SHA — not per-client).
+    Returns True on success, False on persistence failure.
+    """
+    config_manager.server_config["server_deployed_sha"] = sha
+    try:
+        config_manager.save_server_config()
+        logger.info("Recorded server deploy: sha=%s", sha[:7])
+        return True
+    except Exception as e:
+        logger.error("Failed to persist server deploy record: %s", e)
+        return False
 
 
 # ── smoke test when run directly ──────────────────────────────────────────────

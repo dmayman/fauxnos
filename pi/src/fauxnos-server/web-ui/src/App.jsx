@@ -100,7 +100,7 @@ export default function App() {
       ? candidates  // server is updating → all connected clients lag after
       : candidates.filter(c => {
           const d = c.deploy
-          return d && (d.deployed_sha === null || (d.behind_server !== null && d.behind_server > 0))
+          return d && (d.deployed_client_sha === null || (d.commits_behind !== null && d.commits_behind > 0))
         })
     for (const c of filtered) {
       steps.push({
