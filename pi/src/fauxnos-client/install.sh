@@ -560,6 +560,23 @@ download_client_code() {
         "modules/state_manager.py"
     )
 
+    # Feedback WAVs for the IR remote / GPIO buttons. fauxnos_client.py
+    # plays these from <INSTALL_DIR>/sounds/ (see IR_SOUNDS_DIR there).
+    # Missing files soft-fail in play_sound() so a partial set is OK,
+    # but the default install should ship every notch + the named
+    # mute/unmute/source_switch cues so the remote feels right out of
+    # the box. The 21 volume-NNN.wav files cover 0–100 in 5% steps,
+    # matching IR_VOLUME_STEP in fauxnos_client.py.
+    local sound_files=(
+        "sounds/README.md"
+        "sounds/mute.wav"
+        "sounds/unmute.wav"
+        "sounds/source_switch.wav"
+    )
+    for n in $(seq 0 5 100); do
+        sound_files+=("$(printf 'sounds/volume-%03d.wav' "$n")")
+    done
+
     for file in "${files[@]}"; do
         local url="${base_url}/$file"
         if curl -fsSL "$url" -o "$file" 2>/dev/null; then
@@ -569,7 +586,7 @@ download_client_code() {
         fi
     done
 
-    for file in "${config_files[@]}" "${module_files[@]}"; do
+    for file in "${config_files[@]}" "${module_files[@]}" "${sound_files[@]}"; do
         local url="${base_url}/$file"
         local dir
         dir=$(dirname "$file")
