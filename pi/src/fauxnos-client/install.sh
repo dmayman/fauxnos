@@ -609,6 +609,7 @@ download_client_code() {
         "configs/shairport-sync/fauxnos.conf"
         "configs/shairport-sync/claim-source.sh"
         "configs/camilladsp/config.yml.template"
+        "configs/systemd/camilladsp.service"
     )
 
     # Python modules
@@ -719,6 +720,51 @@ setup_camilladsp_config() {
         log_error "Rendered config failed --check!"
         /usr/local/bin/camilladsp --check "$config_file"
         return 1
+    fi
+}
+
+# Deploy the CamillaDSP user systemd unit
+#
+# Static file (uses %h for home, no template substitution needed). We
+# enable it so it auto-starts on next boot, but we do NOT start it now:
+# the camilla_input null sink it captures from is created by the
+# PulseAudio default.pa, and on first install PA hasn't been restarted
+# yet to pick up that change. A bare `enable` is the right move —
+# Restart=on-failure handles the case where PA is briefly absent later.
+deploy_camilladsp_service() {
+    log_section "Deploying CamillaDSP user service"
+
+    local unit_src="$INSTALL_DIR/configs/systemd/camilladsp.service"
+    local user_units_dir="$HOME/.config/systemd/user"
+    local unit_dst="$user_units_dir/camilladsp.service"
+
+    if [ ! -f "$unit_src" ]; then
+        log_error "Unit template missing: $unit_src"
+        return 1
+    fi
+
+    mkdir -p "$user_units_dir"
+
+    # Bit-identical? skip (so a no-op update doesn't bounce the unit
+    # on every install.sh re-run). cmp returns 0 only on exact match;
+    # anything else (missing dst, content drift) → copy + reload.
+    if cmp -s "$unit_src" "$unit_dst"; then
+        log_success "camilladsp.service already up to date"
+    else
+        cp "$unit_src" "$unit_dst"
+        log "Wrote $unit_dst"
+        systemctl --user daemon-reload
+    fi
+
+    # Enable but don't start. Phase 4 (default.pa loading camilla_input)
+    # is the prerequisite for camilladsp actually being able to run, and
+    # PA needs a restart for that to land. Next boot picks everything up
+    # cleanly; meanwhile this is a no-op enable on re-runs.
+    if systemctl --user is-enabled camilladsp.service >/dev/null 2>&1; then
+        log_success "camilladsp.service already enabled"
+    else
+        systemctl --user enable camilladsp.service
+        log_success "camilladsp.service enabled (will start on next boot)"
     fi
 }
 
@@ -899,6 +945,7 @@ main() {
     setup_pulseaudio_user_services
     download_client_code
     setup_camilladsp_config
+    deploy_camilladsp_service
 
     # Attempt registration (may fail if server not available)
     if register_client; then

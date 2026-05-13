@@ -1,0 +1,26 @@
+[Unit]
+Description=CamillaDSP — Fauxnos per-client end-of-chain equalizer
+Documentation=https://github.com/HEnquist/camilladsp
+# CamillaDSP needs PulseAudio's user-mode socket to capture from
+# camilla_input.monitor (created by ~/.config/pulse/default.pa) and to
+# play to alsa_output. PA is socket-activated, but a cold start where
+# we beat PA to the punch wastes a Restart cycle — gate explicitly.
+After=pulseaudio.service
+Wants=pulseaudio.service
+
+[Service]
+Type=simple
+# -a 127.0.0.1 binds the WebSocket control plane to loopback only
+# (the fauxnos-client process talks to it locally; no remote access
+# needed). -p 1234 is the conventional CamillaDSP port. The YAML is
+# read on start AND written back by camilladsp on every SetConfigJson,
+# so it doubles as runtime persistence (see install.sh's
+# setup_camilladsp_config — install must NOT clobber it on re-runs).
+ExecStart=/usr/local/bin/camilladsp -a 127.0.0.1 -p 1234 %h/.config/camilladsp/config.yml
+# Restart on crash — but with a meaningful backoff so a YAML edit
+# typo doesn't drown the journal.
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
