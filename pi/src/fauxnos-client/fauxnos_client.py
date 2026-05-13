@@ -16,6 +16,7 @@ from pathlib import Path
 # Import our modules
 from modules.config_manager import ConfigManager
 from modules import logger as logger_module
+from modules.eq_controller import EqController
 from modules.go_librespot import GoLibrespotController
 from modules.source_manager import SourceManager
 from modules.mqtt_client import MQTTClient
@@ -116,6 +117,12 @@ class FauxnosClient:
             command_handlers=self._build_ir_handlers(),
         )
 
+        # EQ controller — talks to the local camilladsp WebSocket on
+        # 127.0.0.1:1234 and persists user state to ~/.config/fauxnos/
+        # eq_state.json. No PA / MQTT awareness here; the MQTTClient
+        # below ferries set/get commands to it.
+        self.eq_controller = EqController()
+
         # Initialize MQTT client (connects to broker, routes commands through SourceManager)
         self.mqtt_client = MQTTClient(
             config_manager=self.config_manager,
@@ -130,6 +137,8 @@ class FauxnosClient:
             ir_learn_start_callback=self.ir_listener.start_learning,
             ir_learn_cancel_callback=self.ir_listener.cancel_learning,
             ir_feedback_volume_callback=self._set_ir_feedback_volume,
+            eq_callback=self.eq_controller.set_state,
+            eq_getter=self.eq_controller.get_state,
         )
 
         # Flag for graceful shutdown

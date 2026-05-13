@@ -9,15 +9,20 @@ Topic schema:
   Control (UI → client):
     set/clients/<deviceId>/volume     payload: "75"
     set/clients/<deviceId>/mode       payload: "spotify"
+    set/clients/<deviceId>/eq         payload: {"enabled": true,
+                                                "bands": {"125": 6.0, ...}}
 
   Status (client → UI):
     status/clients/<deviceId>/volume  payload: "75"
     status/clients/<deviceId>/mode    payload: "spotify"
     status/clients/<deviceId>/activity payload: "playing"|"silent"
     status/clients/<deviceId>/hello   payload: {"id","name","sources"}
+    status/clients/<deviceId>/eq      payload: {"enabled": bool,
+                                                "bands": {hz_str: gain_db}}
 
   Discovery:
     get/clients/<deviceId>/volume     → client publishes volume
+    get/clients/<deviceId>/eq         → client publishes eq state
     get/clients/<deviceId>/status     → client publishes hello + mode
     get/clients/all/status            → all clients publish hello
 """
@@ -47,6 +52,8 @@ class MQTTClient:
                  ir_learn_start_callback: Optional[Callable[[str, float], bool]] = None,
                  ir_learn_cancel_callback: Optional[Callable[[], bool]] = None,
                  ir_feedback_volume_callback: Optional[Callable[[int], None]] = None,
+                 eq_callback: Optional[Callable[[bool, Optional[Dict[str, float]]], bool]] = None,
+                 eq_getter: Optional[Callable[[], Dict]] = None,
                  broker_host: Optional[str] = None,
                  broker_port: int = 1883):
         """
@@ -97,6 +104,8 @@ class MQTTClient:
         self.ir_learn_start_callback = ir_learn_start_callback
         self.ir_learn_cancel_callback = ir_learn_cancel_callback
         self.ir_feedback_volume_callback = ir_feedback_volume_callback
+        self.eq_callback = eq_callback
+        self.eq_getter = eq_getter
 
         # MQTT client setup
         self.client = mqtt.Client(client_id=f"fauxnos-{self.device_id}")
@@ -148,11 +157,14 @@ class MQTTClient:
             f"set/clients/{self.device_id}/ir/learn/start",
             f"set/clients/{self.device_id}/ir/learn/cancel",
             f"set/clients/{self.device_id}/ir/feedback_volume",
+            # EQ — JSON payload, see _handle_command's "eq" branch.
+            f"set/clients/{self.device_id}/eq",
             f"get/clients/{self.device_id}/volume",
             f"get/clients/{self.device_id}/status",
             f"get/clients/{self.device_id}/activity",
             f"get/clients/{self.device_id}/calibration",
             f"get/clients/{self.device_id}/ir",
+            f"get/clients/{self.device_id}/eq",
             "get/clients/all/status",
         ]
         for topic in topics:
@@ -177,6 +189,7 @@ class MQTTClient:
             self.publish_activity()
             self.publish_calibrations()
             self.publish_ir_state()
+            self.publish_eq_state()
             return
 
         # Parse topic: {command_type}/clients/{device_id}/{action}[/{sub_action}[/{cmd_id}]]
@@ -277,6 +290,37 @@ class MQTTClient:
                         self.ir_enable_callback(enabled)
                         self.publish_ir_state()
 
+                elif action == "eq":
+                    # set/clients/<id>/eq — payload JSON:
+                    #   {"enabled": bool, "bands": {hz_str: gain_db, ...}}
+                    # Either key may be omitted (e.g. an enable toggle
+                    # sends just "enabled"; a slider drag sends just
+                    # "bands"). EqController.set_state handles the
+                    # partial-update merge against the persisted state.
+                    if self.eq_callback is None:
+                        logger.warning("MQTT eq command but no callback wired")
+                    else:
+                        try:
+                            data = json.loads(payload or "{}")
+                        except Exception:
+                            logger.error(f"MQTT eq: bad JSON payload: {payload!r}")
+                            return
+                        if not isinstance(data, dict):
+                            logger.error(f"MQTT eq: payload must be an object, got {type(data).__name__}")
+                            return
+                        # If 'enabled' is missing, keep whatever the
+                        # controller has now (avoids surprising state
+                        # flips on a band-only message).
+                        current = self.eq_getter() if self.eq_getter else {"enabled": False}
+                        enabled = bool(data.get("enabled", current.get("enabled", False)))
+                        bands = data.get("bands")
+                        if bands is not None and not isinstance(bands, dict):
+                            logger.error(f"MQTT eq: 'bands' must be an object, got {type(bands).__name__}")
+                            return
+                        logger.info(f"MQTT eq command: enabled={enabled} bands={bands}")
+                        if self.eq_callback(enabled, bands):
+                            self.publish_eq_state()
+
                 elif action == "ir" and sub_action == "feedback_volume":
                     # set/clients/<id>/ir/feedback_volume payload: "0".."100"
                     if self.ir_feedback_volume_callback is None:
@@ -312,6 +356,8 @@ class MQTTClient:
                     self.publish_calibrations()
                 elif action == "ir":
                     self.publish_ir_state()
+                elif action == "eq":
+                    self.publish_eq_state()
 
         except ValueError as e:
             logger.error(f"Error parsing command payload: {e}")
@@ -411,10 +457,30 @@ class MQTTClient:
             "sources": self.sources_list,
             "pa_calibrations": self._collect_calibrations(),
             "ir": self._collect_ir_state(),
+            "eq": self._collect_eq_state(),
         }
         topic = f"status/clients/{self.device_id}/hello"
         self.client.publish(topic, json.dumps(hello_payload))
         logger.debug(f"Sent hello: {self.display_name}")
+
+    def _collect_eq_state(self) -> dict:
+        """Snapshot of EqController state for hello + status payloads."""
+        if self.eq_getter is None:
+            return {"enabled": False, "bands": {}}
+        try:
+            return self.eq_getter() or {"enabled": False, "bands": {}}
+        except Exception as e:
+            logger.error(f"eq_getter raised: {e}")
+            return {"enabled": False, "bands": {}}
+
+    def publish_eq_state(self):
+        """Publish status/clients/<id>/eq — retained so a fresh UI sees current state."""
+        if not self.connected:
+            return
+        payload = json.dumps(self._collect_eq_state())
+        self.client.publish(
+            f"status/clients/{self.device_id}/eq", payload, retain=True
+        )
 
     def _collect_ir_state(self) -> dict:
         """Snapshot of the on-device ir block for hello + status payloads."""
