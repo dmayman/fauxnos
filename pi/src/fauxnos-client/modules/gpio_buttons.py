@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# E2E validated 2026-05-13: phase F1 update pipeline shipped the
+# buttons feature to all three Pis via the new "Update clients" pill.
 """
 GPIO Button Handler — hardware-button support for the fauxnos client.
 
