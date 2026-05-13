@@ -198,6 +198,71 @@ install_system_dependencies() {
     log_success "System dependencies installed"
 }
 
+# Install CamillaDSP binary
+#
+# CamillaDSP is the end-of-chain DSP engine for the per-client equalizer.
+# We pin a specific upstream release (no apt package exists on Debian
+# Bookworm) and drop the single static binary at /usr/local/bin. The
+# `pulseaudio-aarch64` build is the one we want: it links against libpulse
+# so capture/playback talk straight to PA, no snd-aloop kernel module in
+# the path.
+#
+# Idempotent: if the binary is already on disk at the pinned version,
+# the function exits immediately (re-runs against an already-provisioned
+# device pay just the `--version` cost).
+install_camilladsp_binary() {
+    log_section "Installing CamillaDSP Binary"
+
+    local target=/usr/local/bin/camilladsp
+    local pinned_version="4.1.3"
+    local arch
+    arch=$(uname -m)
+
+    # Pi Zero 2 W and Pi 4/5 are all aarch64. Bail loudly on anything
+    # else rather than silently install the wrong binary.
+    if [ "$arch" != "aarch64" ]; then
+        log_error "CamillaDSP install: unsupported arch '$arch' (expected aarch64)"
+        return 1
+    fi
+
+    if [ -x "$target" ] && "$target" --version 2>/dev/null | grep -q "$pinned_version"; then
+        log_success "CamillaDSP $pinned_version already installed at $target"
+        return 0
+    fi
+
+    local url="https://github.com/HEnquist/camilladsp/releases/download/v${pinned_version}/camilladsp-linux-pulseaudio-aarch64.tar.gz"
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    log "Downloading CamillaDSP v${pinned_version} (pulseaudio-aarch64)..."
+    if ! curl -fsSL -o "${tmp_dir}/camilladsp.tar.gz" "$url"; then
+        log_error "Failed to download CamillaDSP from $url"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    log "Extracting..."
+    if ! tar -xzf "${tmp_dir}/camilladsp.tar.gz" -C "$tmp_dir"; then
+        log_error "Failed to extract CamillaDSP tarball"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    if [ ! -x "${tmp_dir}/camilladsp" ]; then
+        log_error "Expected ${tmp_dir}/camilladsp after extract — not found"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    log "Installing to $target (requires sudo)..."
+    sudo install -m 0755 "${tmp_dir}/camilladsp" "$target"
+    rm -rf "$tmp_dir"
+
+    # Sanity check the installed binary
+    local installed_version
+    installed_version=$("$target" --version 2>/dev/null | head -1 || true)
+    log_success "Installed: $installed_version"
+}
+
 # Configure system settings
 configure_system() {
     log_section "Configuring System"
@@ -779,6 +844,7 @@ main() {
     check_user
     check_prerequisites
     install_system_dependencies
+    install_camilladsp_binary
     configure_system
     configure_ir_receiver
     setup_pulseaudio_user_services
