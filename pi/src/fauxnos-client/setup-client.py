@@ -263,43 +263,26 @@ class FauxnosClientSetup:
             self.log(f"Registration failed: {e}", "ERROR")
             return None
 
-    # Per-source fields whose source-of-truth is the template, not the
-    # user. When the template changes any of these (e.g. spotify-volume-
-    # sync flipped `volume_controller` from snapcast→go_librespot;
-    # AirPlay local-per-device flipped `sink` from snapsink→airplaysink
-    # and added `on_leave_command`), `migrate_config_from_template`
-    # rewrites the matching field on the user's existing config without
-    # touching user-tunable fields (label, starting_volume,
-    # pa_calibration) or unrelated sources.
+    # Migration rule (single, unified, ADDITIVE ONLY):
     #
-    # Adding a new schema field that needs migration: extend this set,
-    # nothing else.
-    _SOURCE_SCHEMA_FIELDS = frozenset({
-        "volume_controller", "sink", "type", "on_leave_command",
-    })
-
-    # Top-level config sections owned by the template schema. When a key
-    # listed here lives in the template but is missing from the user's
-    # client_config.yaml, `migrate_config_from_template` copies it across
-    # so the feature isn't dead-on-arrival on existing devices. (Surfaced
-    # 2026-05-13 by the GPIO buttons feature: a new top-level `buttons:`
-    # block in the template would otherwise never land on fauxnos000/001/
-    # 002, even though the daemon already knows how to read it.)
+    #   For every top-level key and every per-source field present in the
+    #   template, if the user's config is MISSING it, copy it from the
+    #   template. NEVER modify or delete a value the user already has.
     #
-    # Adding-only semantics — deliberately different from the per-source
-    # _SOURCE_SCHEMA_FIELDS rule. If the user already has the key, we
-    # leave it alone: a top-level section is a larger surface than a
-    # single source field, more likely to contain user-tuned values that
-    # we shouldn't second-guess (button bounce_time tweaks, custom pin
-    # assignments, etc.). Likewise we never DELETE a top-level key that
-    # disappeared from the template — that would be destructive for keys
-    # the user opted into.
-    #
-    # Adding a new schema-owned top-level section: extend this set,
-    # nothing else.
-    _TOP_LEVEL_SCHEMA_KEYS = frozenset({
-        "buttons",
-    })
+    # Previously this code had a two-tiered model: top-level keys were
+    # additive-only, but four specific per-source fields (volume_controller,
+    # sink, type, on_leave_command) were template-owned and got rewritten
+    # whenever the template changed. That asymmetry existed to auto-flip
+    # things like spotify-volume-sync's `volume_controller: snapcast →
+    # go_librespot` on existing devices. Killed 2026-05-13: the carrying
+    # cost of dual-tiered semantics (a year-from-now reader having to
+    # remember which fields are which) outweighs the one-time pain of
+    # writing a manual migration when a rare schema change happens. With
+    # ~3 devices in the fleet and Claude available for one-off migration
+    # scripts, "never overwrite user data" is the simpler rule worth living
+    # with. If the template ever needs to force a value change on existing
+    # devices, write a one-off migration outside this function and run it
+    # by hand on each device.
 
     def initialize_config_from_template(self) -> bool:
         """Copy template config to proper location if it doesn't exist"""
@@ -339,39 +322,29 @@ class FauxnosClientSetup:
             return False
 
     def migrate_config_from_template(self) -> bool:
-        """Bring an existing client_config.yaml up to date with the
-        template's source schema.
+        """Fill in keys/sources the template has but the user's config is
+        missing. NEVER modify or delete values the user already has.
 
-        Why this exists:
-        `initialize_config_from_template` only seeds a config if none
-        exists, so it never touches an already-provisioned device. But
-        the template evolves — spotify-volume-sync flipped spotify's
-        volume_controller (snapcast → go_librespot); the AirPlay local-
-        per-device rewrite changed airplay's sink (snapsink →
-        airplaysink), flipped volume_controller (snapcast → external),
-        and added on_leave_command. Without a migration step, install.sh
-        updates the *code* on existing clients but leaves them with
-        broken source wiring forever. (Surfaced 2026-05-12 when
-        fauxnos001 came back from its first pipeline-updated install
-        with phone-slider→snapcast bridge dead.)
+        Rationale: see the migration-rule comment block above (additive-
+        only, unified rule across all keys). For 3 devices and rare
+        schema changes, "never overwrite user data" is the simpler rule
+        worth living with.
 
-        What this DOESN'T touch (user-tunable):
-            label, starting_volume, pa_calibration, custom sources
-            (any source with an id not in the template), top-level
-            keys (display_name, mac, client_id, mqtt, etc.).
+        What this DOES:
+          - New top-level key in template, missing on user → copy.
+          - New source `id` in template, missing on user → append the
+            whole source wholesale.
+          - New field on an existing source in the template, missing on
+            user → copy the field.
 
-        What this DOES touch (per _SOURCE_SCHEMA_FIELDS):
-            volume_controller, sink, type, on_leave_command — the
-            technical wiring that's part of the platform schema, not a
-            user choice.
+        What this DOES NOT:
+          - Change any value the user already has at any nesting level.
+          - Delete anything from the user's config — not top-level keys,
+            not sources, not source fields, even if they're gone from
+            the template.
 
-        Sources present in template but missing on the user's config
-        get appended wholesale (new built-in sources land cleanly).
-        Sources only on the user's config (custom sources) stay
-        untouched.
-
-        Idempotent: re-running when the config already matches is a
-        no-op.
+        Idempotent: re-running when the config already has everything
+        the template has is a no-op.
 
         Returns True unless we fail catastrophically writing the file.
         Other failures (no PyYAML, no template, parse errors) log a
@@ -398,69 +371,59 @@ class FauxnosClientSetup:
             self.log(f"Failed to load configs for schema migration: {e}", "WARNING")
             return True
 
-        existing_sources = existing.get("sources") or []
-        template_sources = template.get("sources") or []
-        if not isinstance(existing_sources, list) or not isinstance(template_sources, list):
-            self.log("Unexpected `sources` shape in config — skipping schema migration", "WARNING")
-            return True
-
-        existing_by_id = {
-            s.get("id"): s
-            for s in existing_sources
-            if isinstance(s, dict) and s.get("id")
-        }
         changed = False
-        for tmpl_src in template_sources:
-            if not isinstance(tmpl_src, dict):
-                continue
-            sid = tmpl_src.get("id")
-            if not sid:
-                continue
-            existing_src = existing_by_id.get(sid)
-            if existing_src is None:
-                # New built-in source landed in the template. Append it
-                # wholesale; preserves user's earlier source ordering
-                # (new source goes at the end).
-                existing_sources.append(dict(tmpl_src))
-                existing_by_id[sid] = existing_sources[-1]
-                self.log(f"Migration: added new source '{sid}' from template")
-                changed = True
-                continue
 
-            # Existing source — diff the schema fields against the
-            # template and rewrite where they disagree. Removing a
-            # schema field from the template also removes it here
-            # (keeps the schema authoritative).
-            for field in self._SOURCE_SCHEMA_FIELDS:
-                template_has = field in tmpl_src
-                existing_has = field in existing_src
-                if template_has:
-                    if existing_src.get(field) != tmpl_src[field]:
-                        prev = existing_src.get(field, "<absent>")
-                        existing_src[field] = tmpl_src[field]
-                        self.log(
-                            f"Migration: source '{sid}' {field}: {prev!r} → {tmpl_src[field]!r}"
-                        )
-                        changed = True
-                elif existing_has:
-                    existing_src.pop(field, None)
-                    self.log(
-                        f"Migration: source '{sid}' removed field '{field}' (no longer in template)"
-                    )
-                    changed = True
-
-        # Top-level schema sections — additive only. Copy each listed
-        # key from the template if the user is missing it; never touch
-        # one the user already has (they may have tuned it). See the
-        # comment block on _TOP_LEVEL_SCHEMA_KEYS for the rationale.
-        for key in self._TOP_LEVEL_SCHEMA_KEYS:
-            if key not in template:
+        # Pass 1: top-level keys (everything except `sources`, which has
+        # special list-merge semantics handled in pass 2). Additive only.
+        for key, tmpl_value in template.items():
+            if key == "sources":
                 continue
             if key in existing:
                 continue
-            existing[key] = copy.deepcopy(template[key])
-            self.log(f"Migration: added top-level section '{key}' from template")
+            existing[key] = copy.deepcopy(tmpl_value)
+            self.log(f"Migration: added top-level key '{key}' from template")
             changed = True
+
+        # Pass 2: sources. List-of-dicts keyed by `id`. Additive at two
+        # levels: missing source → append; missing field on a present
+        # source → fill in. Both kinds preserve any existing user values.
+        existing_sources = existing.get("sources") or []
+        template_sources = template.get("sources") or []
+        if not isinstance(existing_sources, list) or not isinstance(template_sources, list):
+            self.log("Unexpected `sources` shape in config — skipping sources migration", "WARNING")
+        else:
+            existing_by_id = {
+                s.get("id"): s
+                for s in existing_sources
+                if isinstance(s, dict) and s.get("id")
+            }
+            for tmpl_src in template_sources:
+                if not isinstance(tmpl_src, dict):
+                    continue
+                sid = tmpl_src.get("id")
+                if not sid:
+                    continue
+                existing_src = existing_by_id.get(sid)
+                if existing_src is None:
+                    # New source in the template. Append wholesale at
+                    # the end so the user's source ordering is preserved.
+                    existing_sources.append(copy.deepcopy(tmpl_src))
+                    existing_by_id[sid] = existing_sources[-1]
+                    self.log(f"Migration: added new source '{sid}' from template")
+                    changed = True
+                    continue
+
+                # Existing source — fill in fields the template has but
+                # this source is missing. Never modify a field the user
+                # already has.
+                for field, tmpl_field_value in tmpl_src.items():
+                    if field in existing_src:
+                        continue
+                    existing_src[field] = copy.deepcopy(tmpl_field_value)
+                    self.log(
+                        f"Migration: added field '{field}' to source '{sid}' from template"
+                    )
+                    changed = True
 
         if not changed:
             self.log("Schema migration: no changes needed")
