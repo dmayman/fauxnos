@@ -12,6 +12,7 @@ Test modes available for safe development and testing.
 """
 
 import argparse
+import copy
 import json
 import subprocess
 import sys
@@ -277,6 +278,29 @@ class FauxnosClientSetup:
         "volume_controller", "sink", "type", "on_leave_command",
     })
 
+    # Top-level config sections owned by the template schema. When a key
+    # listed here lives in the template but is missing from the user's
+    # client_config.yaml, `migrate_config_from_template` copies it across
+    # so the feature isn't dead-on-arrival on existing devices. (Surfaced
+    # 2026-05-13 by the GPIO buttons feature: a new top-level `buttons:`
+    # block in the template would otherwise never land on fauxnos000/001/
+    # 002, even though the daemon already knows how to read it.)
+    #
+    # Adding-only semantics — deliberately different from the per-source
+    # _SOURCE_SCHEMA_FIELDS rule. If the user already has the key, we
+    # leave it alone: a top-level section is a larger surface than a
+    # single source field, more likely to contain user-tuned values that
+    # we shouldn't second-guess (button bounce_time tweaks, custom pin
+    # assignments, etc.). Likewise we never DELETE a top-level key that
+    # disappeared from the template — that would be destructive for keys
+    # the user opted into.
+    #
+    # Adding a new schema-owned top-level section: extend this set,
+    # nothing else.
+    _TOP_LEVEL_SCHEMA_KEYS = frozenset({
+        "buttons",
+    })
+
     def initialize_config_from_template(self) -> bool:
         """Copy template config to proper location if it doesn't exist"""
         if self.config_file.exists():
@@ -424,6 +448,19 @@ class FauxnosClientSetup:
                         f"Migration: source '{sid}' removed field '{field}' (no longer in template)"
                     )
                     changed = True
+
+        # Top-level schema sections — additive only. Copy each listed
+        # key from the template if the user is missing it; never touch
+        # one the user already has (they may have tuned it). See the
+        # comment block on _TOP_LEVEL_SCHEMA_KEYS for the rationale.
+        for key in self._TOP_LEVEL_SCHEMA_KEYS:
+            if key not in template:
+                continue
+            if key in existing:
+                continue
+            existing[key] = copy.deepcopy(template[key])
+            self.log(f"Migration: added top-level section '{key}' from template")
+            changed = True
 
         if not changed:
             self.log("Schema migration: no changes needed")
