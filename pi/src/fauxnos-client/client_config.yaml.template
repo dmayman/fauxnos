@@ -82,3 +82,32 @@ mqtt:
   broker_host: fauxnos000.local
   broker_port: 1883
   enabled: true
+
+# GPIO push-button controls (optional).
+#
+# Wire each momentary button between the listed GPIO pin and GND. The
+# Pi's internal pull-up handles the rest — no external resistor needed.
+# Default pin choices stay clear of HiFiBerry I2S/I2C (GPIO 2/3, 18-21)
+# and the gpio-ir-recv overlay (GPIO 17).
+#
+# Flip enabled to true once the buttons are soldered on. Auto-repeat on
+# hold is on for volume (so holding a button ramps the level the same
+# way a held IR button does), off for source_cycle (cycling through
+# sources rapidly is bad UX). Commands must be one of the canonical
+# IR ids: volume_up, volume_down, mute, source_cycle, play_pause, next,
+# previous — buttons share the IR dispatch table so they play the same
+# feedback sounds and publish the same MQTT updates.
+buttons:
+  enabled: false
+  bounce_time_ms: 50           # software debounce window
+  hold_time_ms: 250            # delay before auto-repeat (matches IR repeat rate)
+  pins:
+    - gpio: 5                  # header pin 29
+      command: volume_up
+      hold_repeat: true
+    - gpio: 6                  # header pin 31
+      command: volume_down
+      hold_repeat: true
+    - gpio: 26                 # header pin 37
+      command: source_cycle
+      hold_repeat: false

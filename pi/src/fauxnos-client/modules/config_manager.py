@@ -7,7 +7,7 @@ Handles loading, validation, and management of client configuration from YAML fi
 
 import yaml
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
@@ -74,6 +74,37 @@ class SourceConfig:
 
 
 @dataclass
+class ButtonPinConfig:
+    """
+    A single GPIO push-button → command-id binding.
+
+    command must be one of the canonical IR command ids defined in
+    modules.ir_listener.COMMAND_IDS (volume_up, volume_down, mute,
+    source_cycle, play_pause, next, previous). The button handler
+    looks up the matching callable from fauxnos_client's
+    _build_ir_handlers() dict at start time.
+    """
+    gpio: int
+    command: str
+    hold_repeat: bool = False  # auto-repeat while held — on for volume, off for source_cycle
+
+
+@dataclass
+class ButtonsConfig:
+    """
+    GPIO push-button configuration. Optional — when the section is
+    omitted from client_config.yaml, or when enabled=False, the daemon
+    never claims any GPIO pins. Pins claimed here must be free of the
+    HiFiBerry overlays (I2S on 18-21, I2C on 2/3) and the gpio-ir-recv
+    pin (default GPIO 17).
+    """
+    enabled: bool = False
+    bounce_time_ms: int = 50    # software debounce window
+    hold_time_ms: int = 250     # delay before auto-repeat kicks in; also the repeat interval
+    pins: List[ButtonPinConfig] = field(default_factory=list)
+
+
+@dataclass
 class LoggingConfig:
     """Logging configuration"""
     file: str
@@ -105,6 +136,7 @@ class ConfigManager:
         self.state_file = self._parse_state_file()
         self.server_host = self.config.get('server_host', 'fauxnos000.local')
         self.go_librespot_host, self.go_librespot_port = self._parse_go_librespot_endpoint()
+        self.buttons = self._parse_buttons_config()
 
     def _load_config(self) -> Dict[str, Any]:
         """Load YAML configuration file"""
@@ -244,6 +276,45 @@ class ConfigManager:
         host = override.get('host', self.server_host)
         port = int(override.get('port', derived_port))
         return host, port
+
+    def _parse_buttons_config(self) -> ButtonsConfig:
+        """
+        Parse the optional `buttons:` section.
+
+        Missing section → ButtonsConfig with defaults (enabled=False,
+        empty pin list). The daemon's GPIOButtonHandler treats both
+        forms (missing-section, enabled=False, empty pins) identically
+        — none of them claim a GPIO. This keeps the section truly
+        optional for existing devices whose client_config.yaml was
+        written before the feature existed.
+        """
+        raw = self.config.get('buttons') or {}
+
+        pins: List[ButtonPinConfig] = []
+        for entry in raw.get('pins', []) or []:
+            gpio = entry.get('gpio')
+            command = entry.get('command')
+            if gpio is None or command is None:
+                # Skip malformed entries rather than failing the whole
+                # daemon — same soft-fail philosophy as the GPIO claim
+                # itself. The handler logs at startup what came up.
+                self.logger.warning(
+                    "buttons: skipping malformed pin entry (missing gpio or command): %r",
+                    entry,
+                )
+                continue
+            pins.append(ButtonPinConfig(
+                gpio=int(gpio),
+                command=str(command),
+                hold_repeat=bool(entry.get('hold_repeat', False)),
+            ))
+
+        return ButtonsConfig(
+            enabled=bool(raw.get('enabled', False)),
+            bounce_time_ms=int(raw.get('bounce_time_ms', 50)),
+            hold_time_ms=int(raw.get('hold_time_ms', 250)),
+            pins=pins,
+        )
 
     def get_source(self, source_id: str) -> Optional[SourceConfig]:
         """Get source configuration by ID"""

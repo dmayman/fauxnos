@@ -20,6 +20,7 @@ from modules.go_librespot import GoLibrespotController
 from modules.source_manager import SourceManager
 from modules.mqtt_client import MQTTClient
 from modules.ir_listener import IRListener, COMMAND_IDS as IR_COMMAND_IDS
+from modules.gpio_buttons import GPIOButtonHandler
 
 
 class FauxnosClient:
@@ -103,6 +104,18 @@ class FauxnosClient:
             on_learn_event=self._on_ir_learn_event,
         )
 
+        # GPIO push-button handler (optional hardware buttons soldered
+        # to the Pi header). Reuses the IR handler dispatch table — same
+        # callbacks, same feedback sounds, same MQTT publishes — so a
+        # button press is indistinguishable from a remote press downstream.
+        # See modules/gpio_buttons.py for the wiring (default GPIO 5/6/26).
+        # Soft-fails on missing gpiozero or already-claimed pins; the
+        # daemon comes up without buttons rather than crashing.
+        self.gpio_buttons = GPIOButtonHandler(
+            buttons_config=self.config_manager.buttons,
+            command_handlers=self._build_ir_handlers(),
+        )
+
         # Initialize MQTT client (connects to broker, routes commands through SourceManager)
         self.mqtt_client = MQTTClient(
             config_manager=self.config_manager,
@@ -131,6 +144,7 @@ class FauxnosClient:
         self.logger.info(f"Received signal {sig}, shutting down...")
         self.running = False
         self.ir_listener.stop()
+        self.gpio_buttons.stop()
         if self.go_librespot:
             self.go_librespot.stop()
         self.mqtt_client.stop()
@@ -408,6 +422,11 @@ class FauxnosClient:
         # on devices without IR configured.
         self.ir_listener.start()
 
+        # Start GPIO button handler if buttons.enabled=true in config.
+        # Same no-op-when-disabled pattern as IR; per-pin failures are
+        # logged but don't take down the daemon.
+        self.gpio_buttons.start()
+
         # Start the go-librespot WebSocket reader. The HTTP side
         # works whether or not this starts — but without WS we miss
         # Spotify-mobile-app slider changes. Soft-fails if the
@@ -430,6 +449,7 @@ class FauxnosClient:
             pass
 
         self.ir_listener.stop()
+        self.gpio_buttons.stop()
         if self.go_librespot:
             self.go_librespot.stop()
         self.mqtt_client.stop()

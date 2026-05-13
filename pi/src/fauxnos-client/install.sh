@@ -138,6 +138,7 @@ install_system_dependencies() {
         python3-requests
         ir-keytable
         python3-evdev
+        python3-gpiozero
     )
     local pip_pkgs=(requests pyyaml paho-mqtt websocket-client)
 
