@@ -94,8 +94,10 @@ export default function App() {
     }
     // After a server update, every connected client will be behind. If
     // there's no server update needed, only target clients that are
-    // already behind (or never deployed).
-    const candidates = (clients || []).filter(c => c.client_id !== 'fauxnos000' && c.connected)
+    // already behind (or never deployed). fauxnos000 included — it's
+    // a client like the others now (UpdateRunner uses local subprocess
+    // for it, not SSH).
+    const candidates = (clients || []).filter(c => c.connected)
     const filtered = (steps.length > 0)
       ? candidates  // server is updating → all connected clients lag after
       : candidates.filter(c => {

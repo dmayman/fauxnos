@@ -64,22 +64,22 @@ function UpdateChip({ serverVersion, clients, onUpdateFauxnos }) {
   const { short_sha, dirty, behind, ahead, fetch_failed } = serverVersion
   const serverNeedsUpdate = behind > 0
   // A client needs an update if it's connected AND either (a) never
-  // deployed via the pipeline (deployed_sha === null), or (b) behind
-  // the server. fauxnos000 is excluded — it updates via the server
-  // self-update leg, not via SSH-to-self.
+  // deployed via the pipeline (deployed_client_sha === null), or (b)
+  // behind the client subtree's tip. fauxnos000 is included like any
+  // other client — its client install is updated through the same path
+  // (UpdateRunner uses a local subprocess instead of SSH for it).
   const clientsNeedingUpdate = (clients || []).filter(c => {
-    if (c.client_id === 'fauxnos000') return false
     if (!c.connected) return false
     const d = c.deploy
     if (!d) return false
     return d.deployed_client_sha === null || (d.commits_behind !== null && d.commits_behind > 0)
   })
-  // Even if no client is behind THIS server, if the server itself is
-  // behind origin/main, those clients will be behind after the server
-  // updates. We surface them in the count so the user sees the full
-  // scope of what "Update fauxnos" will do.
+  // Even if no client is currently behind, if the server itself is
+  // behind origin/main, the just-pulled code will land new client-
+  // subtree commits that haven't propagated yet. Surface the count of
+  // connected clients in that case.
   const willBeBehindAfterServerUpdate = serverNeedsUpdate
-    ? (clients || []).filter(c => c.client_id !== 'fauxnos000' && c.connected).length
+    ? (clients || []).filter(c => c.connected).length
     : 0
   const clientsToUpdate = Math.max(clientsNeedingUpdate.length, willBeBehindAfterServerUpdate)
   const totalNeedsUpdate = serverNeedsUpdate || clientsNeedingUpdate.length > 0

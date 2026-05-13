@@ -70,6 +70,14 @@ INSTALL_TIMEOUT_SECONDS = 60 * 10        # install.sh takes 1-3 min steady-state
 REBOOT_WAIT_TIMEOUT_SECONDS = 180        # Pi Zero 2W boots in ~30-60s typically
 REBOOT_WAIT_POLL_SECONDS = 3
 
+# The client_id of the device that's also running fauxnos-server. Updates
+# to this client run install.sh as a local subprocess instead of SSH-to-
+# self — that means no SSH-key-to-self bootstrap, no asymmetric reboot
+# handling, and a cleaner mental model where "running install.sh against
+# the local machine" is structurally different from "running install.sh
+# against a remote machine." Phase F1, 2026-05-13.
+LOCAL_CLIENT_ID = "fauxnos000"
+
 
 # ── Helpers (free functions; can be reused if we ever consolidate with
 #    install_runner) ────────────────────────────────────────────────────────────
@@ -286,6 +294,118 @@ class UpdateRunner:
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
     def _run(self):
+        # fauxnos000's client install is updated locally, not over SSH.
+        # Same install.sh, same env vars, same record-deploy step — just
+        # a subprocess instead of paramiko. See _run_local. Keeps the
+        # SSH-key bootstrap unnecessary on the server itself.
+        if self.client_id == LOCAL_CLIENT_ID:
+            self._run_local()
+            return
+        self._run_ssh()
+
+    def _run_local(self):
+        """Run install.sh as a local subprocess for the server's own client.
+
+        Subprocess vs SSH: same shell command, same env vars, same exit-code
+        handling, same record_deploy step. Stdout/stderr are merged so we
+        get the same chronological log stream as the SSH PTY path. Reboot
+        is omitted (install.sh on fauxnos000 would never need a reboot
+        from a code update; if a real reboot is needed the user does it
+        manually — different from the per-remote-client semantics where
+        we drive the reboot to completion).
+
+        Notably safe even though we're inside fauxnos-server: install.sh's
+        deploy_services step restarts `fauxnos-client-fauxnos000.service`,
+        not `fauxnos-server.service`. We keep running.
+        """
+        try:
+            self._phase("install", "Running install.sh locally (no SSH for fauxnos000)...")
+            rc = self._stream_install_local()
+            if rc != 0:
+                self._finish("failed", f"install.sh exited with code {rc}")
+                return
+            if self._cancel.is_set():
+                self._finish("cancelled", "Cancelled after install completed")
+                return
+
+            self._phase("marker", "Checking /tmp/fauxnos-install-needs-reboot...")
+            self.needs_reboot = Path("/tmp/fauxnos-install-needs-reboot").exists()
+            self._output(
+                f"needs_reboot = {self.needs_reboot}"
+                + (" — manual reboot recommended" if self.needs_reboot else " — no reboot required")
+            )
+            # We deliberately don't auto-reboot fauxnos000. A reboot here
+            # would kill fauxnos-server (us), drop the user's web UI
+            # connection, and could be confusing. If install.sh marks
+            # reboot-needed, surface it as a `needs_reboot=True` done
+            # event and let the user reboot from a shell.
+
+            self._phase("record", "Recording deploy in server_config.json...")
+            ok = self._record_deploy_fn(
+                self.client_id, self.server_sha, bool(self.needs_reboot), None
+            )
+            if not ok:
+                self._output("record_client_deploy returned False (see server log)")
+
+            self.deployed_client_sha = self.server_sha
+            self._finish("succeeded", None)
+        except Exception as e:
+            logger.exception("UpdateRunner crashed (local mode)")
+            self._finish("failed", str(e))
+
+    def _stream_install_local(self) -> int:
+        """Run install.sh in a local subprocess, streaming stdout via _output.
+
+        Mirrors _stream_install's shape (env_prefix + curl|bash) but
+        through Popen instead of an SSH channel.
+        """
+        env_parts = []
+        for k, v in self.env.items():
+            env_parts.append(f"{k}={shlex.quote(str(v))}")
+        env_prefix = " ".join(env_parts)
+        cmd = (
+            f"{env_prefix} bash -c "
+            f"'curl -sSL \"http://{self.server_host}:8080/api/install/client.sh\" | bash'"
+        )
+        self._output(f"$ {cmd}")
+
+        try:
+            proc = subprocess.Popen(
+                ["bash", "-c", cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                bufsize=1,
+                text=True,
+            )
+        except Exception as e:
+            self._output(f"failed to spawn subprocess: {e}")
+            return 255
+
+        deadline = time.time() + INSTALL_TIMEOUT_SECONDS
+        try:
+            while True:
+                if self._cancel.is_set():
+                    proc.terminate()
+                    return 130
+                if time.time() > deadline:
+                    self._output(f"[timeout: install exceeded {INSTALL_TIMEOUT_SECONDS}s]")
+                    proc.terminate()
+                    return 124
+
+                line = proc.stdout.readline() if proc.stdout else ""
+                if line == "" and proc.poll() is not None:
+                    break
+                if line:
+                    text = _strip_ansi(line.rstrip("\r\n"))
+                    if text:
+                        self._output(text)
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+
+        return proc.returncode if proc.returncode is not None else 1
+
+    def _run_ssh(self):
         ssh = None
         try:
             # 1. SSH connect

@@ -2061,12 +2061,16 @@ class FauxnosAPIServer:
         Sequentially update every registered client. Events from each
         runner are forwarded into a single SSE stream, with per-client
         `client_start` / `client_done` boundary events around each.
-        Updating fauxnos000 itself is SKIPPED — it updates via
-        /api/server/update which is a different mechanism (git pull,
-        not install.sh-via-SSH).
+
+        Phase F1 (2026-05-13): fauxnos000 is NO LONGER skipped — its
+        client install is updated through the same /api/clients/<id>/
+        update path as 001/002. The UpdateRunner branches internally on
+        client_id and uses a local subprocess (not SSH) for fauxnos000.
+        Server self-update (git pull + fauxnos-server restart) remains
+        a separate concern at /api/server/update.
         """
         body = request.get_json(silent=True) or {}
-        skip_ids = set(body.get("skip", [])) | {"fauxnos000"}
+        skip_ids = set(body.get("skip", []))
 
         # Snapshot the client list up front so any concurrent registration
         # doesn't change what we're iterating.

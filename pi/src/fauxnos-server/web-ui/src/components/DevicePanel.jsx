@@ -281,17 +281,19 @@ function ConnectedChip({ connected }) {
  * Per-device version + update affordance.
  *
  * Sits between AdvancedSettings and the remove-device footer. Shows what
- * SHA this device was last deployed to, when, and whether it lags the
- * server's current HEAD. fauxnos000 is hidden (the server updates itself
- * via the global "Update fauxnos" header button — there's no SSH-to-self
- * leg for it).
+ * SHA this device's client install was last deployed to (deployed_client_sha),
+ * when, and whether it lags the client-subtree tip on origin/main.
  *
- * The inline Update button kicks off a single-device update via the same
- * orchestrator the header uses. Hidden when the device is offline (we
- * can't SSH to it) or when it's already at the server's SHA.
+ * Phase F1 (2026-05-13): fauxnos000 is rendered here like any other
+ * client — its client install is updated through the same UpdateRunner
+ * orchestrator, just using a local subprocess instead of SSH. The
+ * server's source tree is updated separately via the header "Update
+ * server" button (git pull + fauxnos-server restart).
+ *
+ * The inline Update button kicks off a single-device update. Hidden
+ * when the device is offline or when it's already at the client tip.
  */
 function VersionSection({ client, serverVersion, onUpdateClient }) {
-  if (client.client_id === 'fauxnos000') return null
   const deploy = client.deploy
   const deployedShort = deploy?.deployed_client_sha_short
   const deployedAt = deploy?.deployed_at
