@@ -331,6 +331,100 @@ class IRListener:
         self._reader_thread.start()
         logger.info(f"IR listener: started ({' '.join(cmd)}, pid={self._proc.pid})")
 
+        # Re-arm kernel protocol decoders after test mode resets them.
+        #
+        # Why: `ir-keytable -t -s rcN` switches the device into LIRC
+        # test mode, which clears the kernel rc-core protocol mask to
+        # defaults (e.g. just `rc-6` on Pi). Any protocols set by the
+        # boot-time fauxnos-ir-decoders.service get stripped ~tens of
+        # ms after our subprocess starts, so a NEC remote that worked
+        # at boot stops emitting scancodes for the daemon to read.
+        #
+        # The fix re-runs the same /usr/local/bin/fauxnos-ir-enable-
+        # decoders.sh that the boot service uses, after a brief delay
+        # so test-mode init has settled. Threaded so a sudoers misconfig
+        # can't block subprocess startup; idempotent so it's safe to
+        # repeat across listener restarts. Permission to call this
+        # script without a password is provisioned by install.sh via
+        # /etc/sudoers.d/fauxnos-ir.
+        threading.Thread(
+            target=self._rearm_protocols,
+            name='ir-listener-rearm',
+            daemon=True,
+        ).start()
+
+    # Path to the install.sh-provisioned helper. Kept as a class
+    # constant so tests can monkeypatch a fake path without touching
+    # /usr/local/bin.
+    _REARM_SCRIPT = '/usr/local/bin/fauxnos-ir-enable-decoders.sh'
+    # Delay before the rearm shell-out. The strip-on-start race is
+    # ~tens of ms wide in practice (measured on fauxnos000 2026-05-13);
+    # a one-second delay puts us comfortably past it without the user
+    # perceiving a startup lag.
+    _REARM_DELAY_S = 1.0
+
+    def _rearm_protocols(self):
+        """
+        Re-enable the kernel rc-core decoders the test-mode spawn just
+        stripped. Soft-fails on missing sudo / missing script / missing
+        sudoers grant — IR will still work for whichever protocols the
+        device defaulted to (typically rc-6), and the failure mode is
+        identical to "operator hasn't run the latest install.sh yet".
+        """
+        # Don't run if the subprocess died during the delay window
+        # (e.g. user toggled IR off immediately after enabling it).
+        if not self._wait_settle():
+            return
+        if not Path(self._REARM_SCRIPT).is_file():
+            logger.warning(
+                "IR listener: rearm script %s not present; "
+                "kernel decoders left at boot defaults",
+                self._REARM_SCRIPT,
+            )
+            return
+        # sudo -n: never prompt. If the sudoers grant is missing this
+        # exits with non-zero and we log a warning rather than hang.
+        try:
+            result = subprocess.run(
+                ['sudo', '-n', self._REARM_SCRIPT],
+                capture_output=True,
+                text=True,
+                timeout=10.0,
+            )
+        except FileNotFoundError:
+            logger.warning("IR listener: rearm skipped — sudo not on PATH")
+            return
+        except subprocess.TimeoutExpired:
+            logger.warning("IR listener: rearm timed out after 10s")
+            return
+        except Exception as e:
+            logger.warning(f"IR listener: rearm failed to spawn: {e}")
+            return
+        if result.returncode == 0:
+            # Script echoes its action on stdout — surface it to make
+            # the boot/restart trail self-documenting.
+            msg = (result.stdout or '').strip().splitlines()
+            logger.info(
+                "IR listener: rearmed kernel decoders — %s",
+                msg[-1] if msg else "(no output)",
+            )
+        else:
+            logger.warning(
+                "IR listener: rearm exited %d; stderr=%r",
+                result.returncode,
+                (result.stderr or '').strip(),
+            )
+
+    def _wait_settle(self) -> bool:
+        """
+        Sleep _REARM_DELAY_S but bail early if shutdown is requested.
+        Returns True if the subprocess is still alive after the wait.
+        """
+        self._stop_evt.wait(self._REARM_DELAY_S)
+        if self._stop_evt.is_set():
+            return False
+        return self.is_running()
+
     def _stop_subprocess(self):
         self._stop_evt.set()
         # Tear down any in-flight learn so the watchdog exits cleanly.

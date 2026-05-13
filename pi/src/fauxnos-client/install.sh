@@ -459,6 +459,23 @@ EOF
     # the unit will run cleanly after the post-install reboot.
     sudo systemctl start fauxnos-ir-decoders.service 2>/dev/null || true
 
+    # Sudoers drop-in: allow the fauxnos user to re-run the decoder-enable
+    # script without a password. The Python IR listener invokes this right
+    # after spawning `ir-keytable -t` because test mode resets the kernel
+    # decoders to defaults — undoing what the boot service set. With this
+    # sudoers entry the daemon can self-heal that strip-on-start race
+    # without requiring the user to have a global NOPASSWD policy.
+    log "Installing /etc/sudoers.d/fauxnos-ir..."
+    # visudo -c style check via tee + chmod 0440; same pattern as the
+    # other configs above. Writing through sudo so the file is owned by
+    # root (sudoers refuses to load files that aren't).
+    sudo tee /etc/sudoers.d/fauxnos-ir > /dev/null <<EOF
+# fauxnos: let the client daemon re-arm IR protocol decoders after
+# ir-keytable -t resets them. Installed by fauxnos-client/install.sh.
+$USER ALL=(root) NOPASSWD: /usr/local/bin/fauxnos-ir-enable-decoders.sh
+EOF
+    sudo chmod 0440 /etc/sudoers.d/fauxnos-ir
+
     # The userland listener (modules/ir_listener.py) runs as the regular
     # user and shells out to `ir-keytable -t`, which reads the rc-core
     # device's /dev/input/eventN node. RPi OS udev defaults set that
