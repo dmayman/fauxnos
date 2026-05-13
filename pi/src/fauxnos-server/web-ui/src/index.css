@@ -1910,7 +1910,7 @@ label.fx-source-setting { cursor: pointer; }
   padding: var(--fx-4);
 }
 .fx-modal {
-  background: var(--fx-surface);
+  background: var(--fx-surface-1);
   border: 1px solid var(--fx-line);
   border-radius: var(--fx-r);
   box-shadow: 0 12px 48px rgba(0, 0, 0, 0.4);
@@ -2007,4 +2007,49 @@ label.fx-source-setting { cursor: pointer; }
 .fx-badge.sm.warn {
   background: rgba(234, 179, 8, 0.25);
   color: rgb(250, 204, 21);
+}
+
+/* DevicePanel Version section — between AdvancedSettings and the remove
+ * footer. Shows deployed SHA + behind state + inline "Update this device"
+ * button. */
+.fx-device-version-section {
+  margin-top: var(--fx-3);
+}
+.fx-device-version-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fx-2);
+}
+.fx-device-version-row {
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--fx-2);
+  font-size: var(--fx-text-sm);
+}
+.fx-device-version-label {
+  font-size: var(--fx-text-sm);
+}
+.fx-device-version-value {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fx-1);
+  color: var(--fx-text);
+}
+.fx-device-version-btn {
+  align-self: flex-start;
+  margin-top: var(--fx-2);
+}
+.fx-banner-mute {
+  background: var(--fx-surface-2);
+  color: var(--fx-text-2);
+  padding: var(--fx-2) var(--fx-3);
+  border-radius: var(--fx-r-sm);
+  font-size: var(--fx-text-sm);
+}
+
+/* Modal step counter (used when steps.length > 1 — i.e. server + clients
+ * combined). Sits next to the modal title. */
+.fx-update-step-counter {
+  font-size: var(--fx-text-sm);
+  padding-left: var(--fx-2);
 }

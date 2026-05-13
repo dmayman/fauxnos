@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   X, Settings2, Plus, ChevronDown, ChevronRight, Check, Trash2,
-  Music, AudioLines, Plug, Cast,
+  Music, AudioLines, Plug, Cast, ArrowDownToLine, GitBranch,
 } from 'lucide-react'
 import VolumeSlider from './VolumeSlider'
 import { apiFetch } from '../api'
@@ -51,7 +51,7 @@ function SourceIcon({ source, size = 16 }) {
  *   3. Advanced — DAC overlay (rare, scary)
  *   4. Remove (very rare, terminal)
  */
-export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
+export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdateClient, serverVersion }) {
   const [sources, setSources] = useState([])
   const [hasAdc, setHasAdc] = useState(!!client.has_adc)
   const [loading, setLoading] = useState(true)
@@ -253,6 +253,12 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh }) {
             onRefresh={onRefresh}
           />
 
+          <VersionSection
+            client={client}
+            serverVersion={serverVersion}
+            onUpdateClient={onUpdateClient}
+          />
+
           <div className="fx-device-panel-footer">
             <RemoveDeviceButton client={client} onRemoved={() => { onRefresh?.(); onClose?.() }} />
           </div>
@@ -269,6 +275,107 @@ function ConnectedChip({ connected }) {
       {connected ? 'Connected' : 'Offline'}
     </span>
   )
+}
+
+/**
+ * Per-device version + update affordance.
+ *
+ * Sits between AdvancedSettings and the remove-device footer. Shows what
+ * SHA this device was last deployed to, when, and whether it lags the
+ * server's current HEAD. fauxnos000 is hidden (the server updates itself
+ * via the global "Update fauxnos" header button — there's no SSH-to-self
+ * leg for it).
+ *
+ * The inline Update button kicks off a single-device update via the same
+ * orchestrator the header uses. Hidden when the device is offline (we
+ * can't SSH to it) or when it's already at the server's SHA.
+ */
+function VersionSection({ client, serverVersion, onUpdateClient }) {
+  if (client.client_id === 'fauxnos000') return null
+  const deploy = client.deploy
+  const deployedShort = deploy?.deployed_sha_short
+  const deployedAt = deploy?.deployed_at
+  const behind = deploy?.behind_server
+  const everDeployed = !!deploy?.deployed_sha
+  const serverShort = serverVersion?.short_sha
+  const canUpdate = !!onUpdateClient && client.connected
+  const needsUpdate = !everDeployed || (behind !== null && behind > 0)
+
+  return (
+    <div className="fx-device-version-section">
+      <div className="fx-section-label"><span>Version</span></div>
+      <div className="fx-panel-card fx-device-version-card">
+        <div className="fx-row fx-device-version-row">
+          <span className="fx-mute fx-device-version-label">Deployed</span>
+          <span className="fx-mono fx-device-version-value">
+            <GitBranch size={12} aria-hidden />
+            {deployedShort || '—'}
+          </span>
+        </div>
+        <div className="fx-row fx-device-version-row">
+          <span className="fx-mute fx-device-version-label">Server is at</span>
+          <span className="fx-mono fx-device-version-value">{serverShort || '—'}</span>
+        </div>
+        {deployedAt && (
+          <div className="fx-row fx-device-version-row">
+            <span className="fx-mute fx-device-version-label">Last update</span>
+            <span className="fx-device-version-value">{formatRelativeTime(deployedAt)}</span>
+          </div>
+        )}
+        {everDeployed && behind === null && (
+          <div className="fx-banner fx-banner-mute">
+            Stored SHA isn't in the server's git history (force-push?). Re-deploying will sync it.
+          </div>
+        )}
+        {!everDeployed && (
+          <div className="fx-banner fx-banner-mute">
+            This device has never been deployed via the update pipeline. The first update will pin its SHA.
+          </div>
+        )}
+        {needsUpdate && canUpdate && (
+          <button
+            type="button"
+            className="fx-btn fx-device-version-btn"
+            onClick={() => onUpdateClient(client)}
+          >
+            <ArrowDownToLine size={14} />
+            <span>
+              {everDeployed
+                ? `Update this device${behind > 0 ? ` (${behind} behind)` : ''}`
+                : 'Run first update'}
+            </span>
+          </button>
+        )}
+        {!needsUpdate && everDeployed && (
+          <div className="fx-mute fx-row" style={{ gap: 'var(--fx-1)' }}>
+            <Check size={12} />
+            <span>Up to date with the server.</span>
+          </div>
+        )}
+        {needsUpdate && !canUpdate && (
+          <div className="fx-mute">Device is offline — connect it to update.</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function formatRelativeTime(iso) {
+  try {
+    const then = new Date(iso).getTime()
+    const now = Date.now()
+    const seconds = Math.max(0, Math.round((now - then) / 1000))
+    if (seconds < 60) return `${seconds}s ago`
+    const minutes = Math.round(seconds / 60)
+    if (minutes < 60) return `${minutes}m ago`
+    const hours = Math.round(minutes / 60)
+    if (hours < 24) return `${hours}h ago`
+    const days = Math.round(hours / 24)
+    if (days < 30) return `${days}d ago`
+    return new Date(iso).toLocaleDateString()
+  } catch {
+    return iso
+  }
 }
 
 function DevicePanelHeader({ client, onClose, onRefresh }) {

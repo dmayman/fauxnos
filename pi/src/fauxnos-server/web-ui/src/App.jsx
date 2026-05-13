@@ -69,23 +69,80 @@ export default function App() {
     return () => clearInterval(id)
   }, [loadAll])
 
-  const openServerUpdate = useCallback((opts = {}) => {
-    const { force = false } = opts
-    setUpdateModal({
-      title: force ? 'Force-update server from GitHub' : 'Update server from GitHub',
-      icon: 'server',
-      url: '/api/server/update',
-      body: force ? { force: true } : {},
-    })
-  }, [])
+  // ── Update orchestration ───────────────────────────────────────────────
+  //
+  // The header's "Update fauxnos" button runs a sequence: server first
+  // (if behind origin/main), then each client that's behind the server
+  // (after the server pull). Each step is its own SSE stream; the modal
+  // walks the queue.
+  //
+  // The DevicePanel's per-device "Update this device" button runs just
+  // one step: that single client. Same modal, same SSE consumption logic,
+  // just a one-item queue.
 
-  const openClientUpdate = useCallback((client) => {
+  const openUpdateFauxnos = useCallback((opts = {}) => {
+    const { force = false } = opts
+    const steps = []
+    if (serverVersion?.behind > 0 || force) {
+      steps.push({
+        kind: 'server',
+        label: force ? 'Force-update server from GitHub' : 'Update server from GitHub',
+        url: '/api/server/update',
+        body: force ? { force: true } : {},
+        icon: 'server',
+      })
+    }
+    // After a server update, every connected client will be behind. If
+    // there's no server update needed, only target clients that are
+    // already behind (or never deployed).
+    const candidates = (clients || []).filter(c => c.client_id !== 'fauxnos000' && c.connected)
+    const filtered = (steps.length > 0)
+      ? candidates  // server is updating → all connected clients lag after
+      : candidates.filter(c => {
+          const d = c.deploy
+          return d && (d.deployed_sha === null || (d.behind_server !== null && d.behind_server > 0))
+        })
+    for (const c of filtered) {
+      steps.push({
+        kind: 'client',
+        label: `Update ${c.name || c.client_id}`,
+        url: `/api/clients/${c.client_id}/update`,
+        body: {},
+        icon: 'device',
+        clientId: c.client_id,
+        clientName: c.name || c.client_id,
+      })
+    }
+    if (steps.length === 0) return  // nothing to do — defensive
+
+    setUpdateModal({
+      title: 'Update fauxnos',
+      icon: 'server',
+      steps,
+      // Wait for server restart before the first client step. The SSE
+      // `done` event for /api/server/update fires before the actual
+      // restart, so we poll /api/server/version until it responds
+      // again on a new (or same) SHA, which is the signal that flask
+      // is back up. Modal handles this internally.
+      waitForServerRestartAfterServerStep: true,
+    })
+  }, [serverVersion, clients])
+
+  const openSingleClientUpdate = useCallback((client) => {
     const name = client?.name || client?.client_id || 'client'
     setUpdateModal({
       title: `Update ${name}`,
       icon: 'device',
-      url: `/api/clients/${client.client_id}/update`,
-      body: {},
+      steps: [{
+        kind: 'client',
+        label: `Update ${name}`,
+        url: `/api/clients/${client.client_id}/update`,
+        body: {},
+        icon: 'device',
+        clientId: client.client_id,
+        clientName: name,
+      }],
+      waitForServerRestartAfterServerStep: false,
     })
   }, [])
 
@@ -137,7 +194,6 @@ export default function App() {
           onClose={() => setPopoverOpen(false)}
           onOpenDevice={openDevice}
           onAddDevice={openAddDevice}
-          onUpdateClient={openClientUpdate}
         />
       )}
       <main className="fx-main">
@@ -148,7 +204,8 @@ export default function App() {
           popoverOpen={popoverOpen}
           onToggleDevices={() => setPopoverOpen(v => !v)}
           serverVersion={serverVersion}
-          onUpdateServer={openServerUpdate}
+          clients={clients}
+          onUpdateFauxnos={openUpdateFauxnos}
         />
         <GroupsTab
           groups={groups}
@@ -172,6 +229,8 @@ export default function App() {
           mqtt={mqtt}
           onClose={closeDevice}
           onRefresh={loadAll}
+          onUpdateClient={openSingleClientUpdate}
+          serverVersion={serverVersion}
         />
       )}
 
@@ -192,9 +251,8 @@ export default function App() {
           open={true}
           onClose={closeUpdateModal}
           title={updateModal.title}
-          icon={updateModal.icon}
-          url={updateModal.url}
-          body={updateModal.body}
+          steps={updateModal.steps}
+          waitForServerRestartAfterServerStep={updateModal.waitForServerRestartAfterServerStep}
           onDone={onUpdateDone}
         />
       )}

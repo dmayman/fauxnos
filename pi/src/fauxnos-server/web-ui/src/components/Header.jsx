@@ -3,17 +3,17 @@ import { ChevronDown, ArrowDownToLine, GitBranch } from 'lucide-react'
 
 /**
  * Page header — fauxnos wordmark on the left (sits at the same x as the
- * group cards below, indented past the drag-handle gutter), version chip
- * + devices pill on the right. The devices pill is the entrypoint for the
- * Devices popover; its ref is forwarded so App can wire outside-click
- * detection without bouncing close→open on the same click.
+ * group cards below, indented past the drag-handle gutter), update chip
+ * + devices pill on the right.
  *
- * The version chip sits left of the devices pill. It shows the server's
- * short SHA and, when origin/main is ahead, becomes an "Update server"
- * action button. Hidden entirely when serverVersion is null (loading).
+ * The update chip is ONE button that does ALL the things: server self-
+ * update from github, then sequential per-client update for any client
+ * that lags. Per-device specifics (which SHA each device is on, last
+ * update timestamp, per-device update button) live in the DevicePanel.
+ * Click a device row to open it.
  */
 const Header = forwardRef(function Header(
-  { status, mqttConnected, onToggleDevices, popoverOpen, serverVersion, onUpdateServer },
+  { status, mqttConnected, onToggleDevices, popoverOpen, serverVersion, clients, onUpdateFauxnos },
   ref,
 ) {
   const ok = status?.status === 'running'
@@ -25,7 +25,11 @@ const Header = forwardRef(function Header(
     <header className="fx-header">
       <h1 className="fx-header-wordmark">fauxnos</h1>
       <div className="fx-row" style={{ gap: 'var(--fx-2)', alignItems: 'center' }}>
-        <VersionChip serverVersion={serverVersion} onUpdateServer={onUpdateServer} />
+        <UpdateChip
+          serverVersion={serverVersion}
+          clients={clients}
+          onUpdateFauxnos={onUpdateFauxnos}
+        />
         <button
           ref={ref}
           type="button"
@@ -45,69 +49,63 @@ const Header = forwardRef(function Header(
 })
 
 /**
- * Version state pill — shows the server's deployed git SHA, with action
- * affordance when an update is available.
+ * One-button update affordance.
  *
- * Visual states (matches the design language we use elsewhere):
- *   up-to-date / clean  → ghost button, just shows short SHA
- *   behind > 0          → primary "Update" button, "N behind" badge
- *   dirty (no force)    → ghost with warn-dot, tooltip explains why no button
- *   ahead-only          → ghost, neutral
- *   fetch failed        → ghost with err-dot, tooltip "(offline)"
- *
- * Click only fires `onUpdateServer` when `behind > 0` and not dirty; the
- * dirty case requires explicit force=true which we surface as a tooltip
- * for now (could become a confirm dialog later if needed).
+ * Computes a combined "is anything stale?" signal across the server-vs-
+ * github gap AND every connected client's deployed_sha-vs-server gap.
+ * When stale: orange "Update fauxnos" button. When clean: small ghost
+ * chip showing the server's short SHA + branch. Tooltip exposes the
+ * specifics for anyone curious — the panels surface the per-device
+ * detail.
  */
-function VersionChip({ serverVersion, onUpdateServer }) {
+function UpdateChip({ serverVersion, clients, onUpdateFauxnos }) {
   if (!serverVersion) return null
 
   const { short_sha, dirty, behind, ahead, fetch_failed } = serverVersion
-  const offline = fetch_failed
-  // Three buttonized cases:
-  //   clean + behind     → "Update server" (plain pull)
-  //   dirty + behind     → "Force update"  (reset --hard + clean, for dev
-  //                       iteration cleanup)
-  //   ahead-without-behind, fetch-failed, or zero drift → ghost chip, no
-  //                       button (tooltip explains why)
-  const tooltip = buildVersionTooltip(serverVersion)
+  const serverNeedsUpdate = behind > 0
+  // A client needs an update if it's connected AND either (a) never
+  // deployed via the pipeline (deployed_sha === null), or (b) behind
+  // the server. fauxnos000 is excluded — it updates via the server
+  // self-update leg, not via SSH-to-self.
+  const clientsNeedingUpdate = (clients || []).filter(c => {
+    if (c.client_id === 'fauxnos000') return false
+    if (!c.connected) return false
+    const d = c.deploy
+    if (!d) return false
+    return d.deployed_sha === null || (d.behind_server !== null && d.behind_server > 0)
+  })
+  // Even if no client is behind THIS server, if the server itself is
+  // behind origin/main, those clients will be behind after the server
+  // updates. We surface them in the count so the user sees the full
+  // scope of what "Update fauxnos" will do.
+  const willBeBehindAfterServerUpdate = serverNeedsUpdate
+    ? (clients || []).filter(c => c.client_id !== 'fauxnos000' && c.connected).length
+    : 0
+  const clientsToUpdate = Math.max(clientsNeedingUpdate.length, willBeBehindAfterServerUpdate)
+  const totalNeedsUpdate = serverNeedsUpdate || clientsNeedingUpdate.length > 0
+  const force = dirty && serverNeedsUpdate
 
-  if (behind > 0 && !dirty) {
+  const tooltip = buildTooltip(serverVersion, clientsNeedingUpdate, clientsToUpdate, force)
+
+  if (totalNeedsUpdate) {
+    const totalUnits = (serverNeedsUpdate ? 1 : 0) + clientsToUpdate
     return (
       <button
         type="button"
-        className="fx-btn sm fx-header-version-pill update"
-        onClick={() => onUpdateServer({ force: false })}
+        className={`fx-btn sm fx-header-version-pill update${force ? ' warn' : ''}`}
+        onClick={() => onUpdateFauxnos({ force })}
         title={tooltip}
       >
         <ArrowDownToLine size={13} />
-        <span>Update server</span>
-        <span className="fx-badge sm">{behind}</span>
-      </button>
-    )
-  }
-
-  if (behind > 0 && dirty && ahead === 0) {
-    // The dev-iteration cleanup case: we rsync'd locally, then committed
-    // + pushed, so the working tree has changes that ARE on origin/main
-    // anyway. force=true does reset --hard + clean to converge.
-    return (
-      <button
-        type="button"
-        className="fx-btn sm fx-header-version-pill update warn"
-        onClick={() => onUpdateServer({ force: true })}
-        title={`${tooltip}\n\nClicking will discard local working-tree changes (force=true).`}
-      >
-        <ArrowDownToLine size={13} />
-        <span>Force update</span>
-        <span className="fx-badge sm warn">{behind}</span>
+        <span>{force ? 'Force update fauxnos' : 'Update fauxnos'}</span>
+        {totalUnits > 0 && <span className={`fx-badge sm${force ? ' warn' : ''}`}>{totalUnits}</span>}
       </button>
     )
   }
 
   return (
     <span
-      className={`fx-header-version-pill ghost${dirty ? ' dirty' : ''}${offline ? ' offline' : ''}`}
+      className={`fx-header-version-pill ghost${dirty ? ' dirty' : ''}${fetch_failed ? ' offline' : ''}`}
       title={tooltip}
     >
       <GitBranch size={12} />
@@ -118,14 +116,21 @@ function VersionChip({ serverVersion, onUpdateServer }) {
   )
 }
 
-function buildVersionTooltip(v) {
-  const parts = [`Server at ${v.short_sha} on ${v.branch}`]
-  if (v.fetch_failed) parts.push('(could not reach github)')
-  if (v.dirty) parts.push('working tree has local changes — use force update via API')
-  else if (v.behind > 0) parts.push(`${v.behind} commit${v.behind !== 1 ? 's' : ''} behind origin/main — click to update`)
-  else if (v.ahead > 0) parts.push(`${v.ahead} local commit${v.ahead !== 1 ? 's' : ''} not on origin`)
-  else parts.push('up to date with origin/main')
-  return parts.join('\n')
+function buildTooltip(v, clientsNeedingUpdate, clientsToUpdate, force) {
+  const lines = []
+  if (v.fetch_failed) lines.push('(github unreachable — counts may be stale)')
+  lines.push(`Server: ${v.short_sha} on ${v.branch}`)
+  if (v.dirty) lines.push('Working tree: dirty (local changes)')
+  if (v.behind > 0) lines.push(`Server is ${v.behind} commit${v.behind !== 1 ? 's' : ''} behind origin/main`)
+  else if (v.ahead > 0) lines.push(`Server is ${v.ahead} commit${v.ahead !== 1 ? 's' : ''} ahead of origin/main`)
+  else lines.push('Server is up to date with origin/main')
+  if (clientsToUpdate > 0) {
+    lines.push(`${clientsToUpdate} client${clientsToUpdate !== 1 ? 's' : ''} will be updated`)
+  }
+  if (force) {
+    lines.push('Click will force-update (discards local changes on server)')
+  }
+  return lines.join('\n')
 }
 
 export default Header

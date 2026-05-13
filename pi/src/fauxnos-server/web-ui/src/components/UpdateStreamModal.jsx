@@ -1,105 +1,152 @@
 import { useEffect, useRef, useState } from 'react'
 import { X, CheckCircle2, XCircle, Loader2, Server, Cpu } from 'lucide-react'
-import { sseFetch } from '../api'
+import { sseFetch, getServerVersion } from '../api'
 
 /**
- * SSE-streaming modal used by both the "Update server" pill (server self-
- * update via git pull) and the per-device "Update" buttons in the Devices
- * popover (client update via SSH + install.sh).
+ * Combined "Update fauxnos" modal — also reused for single-device updates
+ * from the DevicePanel. Walks a queue of `steps` (server self-update,
+ * then one per client) and streams the SSE response of each step into
+ * a single scrolling log.
  *
- * Props:
- *   open       — boolean, render when true
- *   onClose    — close handler
- *   title      — string, header label ("Update server", "Update Garage", …)
- *   icon       — 'server' | 'device' — header glyph
- *   url        — POST endpoint to stream
- *   body       — optional request body (will be JSON-stringified)
- *   onDone     — optional callback (data) when a `done` event arrives;
- *                useful for refreshing version state after a successful run
+ * Step shape (built by App.jsx):
  *
- * Renders a sticky header with current phase + status, an auto-scrolling
- * output log, and a single close button. Closing mid-stream does NOT
- * cancel the runner — the backend keeps going; the user can re-open later
- * to attach to the stream endpoint (server side preserves recent state).
+ *   {
+ *     kind: 'server' | 'client',
+ *     label: 'Update Garage',          // shown in the step header
+ *     url:   '/api/server/update',
+ *     body:  { force: true },          // POSTed as JSON
+ *     icon:  'server' | 'device',
+ *     clientId?: 'fauxnos002',         // for client steps, used for the
+ *                                       //   completion hook
+ *     clientName?: 'Garage',
+ *   }
+ *
+ * `waitForServerRestartAfterServerStep`:
+ *   When true, after a `kind: 'server'` step's `done` event we poll
+ *   /api/server/version until it responds again. That's our signal that
+ *   the server's restart completed and we can safely SSH-push to clients
+ *   (the per-client endpoint relies on the same server's record_deploy
+ *   path, so it needs the server alive). Should be true when the queue
+ *   contains both a server step AND client steps; false when only one
+ *   leg is queued.
+ *
+ * Closing the modal mid-queue does NOT cancel the runner — the backend
+ * keeps going. The user can reopen and the runner state will be picked
+ * up via the GET-stream endpoint (not implemented here; a future
+ * iteration could re-attach to in-flight runners).
  */
 export default function UpdateStreamModal({
   open,
   onClose,
   title,
-  icon = 'server',
-  url,
-  body = {},
+  steps = [],
+  waitForServerRestartAfterServerStep = false,
   onDone,
 }) {
-  const [phase, setPhase] = useState(null)        // {name, message, …}
-  const [status, setStatus] = useState('starting') // starting|running|succeeded|failed|already_up_to_date|error
-  const [lines, setLines] = useState([])           // output log
+  const [currentStepIdx, setCurrentStepIdx] = useState(0)
+  const [phase, setPhase] = useState(null)
+  const [status, setStatus] = useState('starting')
+  const [lines, setLines] = useState([])
+  const [stepResults, setStepResults] = useState([])  // {label, status, error?}
   const [errorMessage, setErrorMessage] = useState(null)
-  const [doneData, setDoneData] = useState(null)
   const logRef = useRef(null)
   const cancelledRef = useRef(false)
 
-  // Auto-scroll log to bottom when new lines arrive. `behavior: 'instant'`
-  // (default) keeps the cursor pinned during fast streaming.
+  // Auto-scroll log to bottom on new lines.
   useEffect(() => {
     if (logRef.current) {
       logRef.current.scrollTop = logRef.current.scrollHeight
     }
   }, [lines])
 
-  // Kick off the SSE stream when the modal opens. Re-running this effect
-  // when `url` changes lets the parent reuse the same modal for different
-  // updates (close + reopen with new url).
+  // Walk the step queue when the modal opens. Each step runs to completion
+  // (or failure) before the next starts.
   useEffect(() => {
-    if (!open) return
-    // Reset state for a fresh run.
+    if (!open || steps.length === 0) return
     cancelledRef.current = false
+    setCurrentStepIdx(0)
     setPhase(null)
     setStatus('starting')
     setLines([])
+    setStepResults([])
     setErrorMessage(null)
-    setDoneData(null)
 
     let active = true
+
     ;(async () => {
       try {
-        for await (const ev of sseFetch(url, {
-          method: 'POST',
-          body: JSON.stringify(body),
-        })) {
-          if (!active || cancelledRef.current) break
-          if (ev.type === 'phase') {
-            setPhase(ev.data)
-            setStatus('running')
-          } else if (ev.type === 'output') {
-            setLines((prev) => [...prev, ev.data.line])
-          } else if (ev.type === 'snapshot') {
-            // Client-update endpoint sends a snapshot first; surface its
-            // status so the UI doesn't show "starting" for the whole run.
-            if (ev.data?.status) setStatus(ev.data.status)
-            if (Array.isArray(ev.data?.log_tail)) {
-              setLines(ev.data.log_tail)
+        for (let i = 0; i < steps.length; i++) {
+          if (cancelledRef.current || !active) return
+          const step = steps[i]
+          setCurrentStepIdx(i)
+          appendBoundary(setLines, `── ${step.label} (${i + 1}/${steps.length}) ──`)
+          setPhase({ name: 'starting', message: step.label })
+          setStatus('running')
+
+          let stepStatus = 'failed'
+          let stepError = null
+          try {
+            for await (const ev of sseFetch(step.url, {
+              method: 'POST',
+              body: JSON.stringify(step.body || {}),
+            })) {
+              if (cancelledRef.current || !active) return
+              if (ev.type === 'phase') setPhase(ev.data)
+              else if (ev.type === 'output') {
+                setLines((prev) => [...prev, ev.data.line])
+              } else if (ev.type === 'snapshot') {
+                if (Array.isArray(ev.data?.log_tail)) {
+                  // Don't replace the whole log — just append any tail
+                  // lines we haven't seen yet. Cheap heuristic: append
+                  // every tail line wholesale; duplicates are visible
+                  // but acceptable in the rare reattach case.
+                  setLines((prev) => [...prev, ...ev.data.log_tail])
+                }
+              } else if (ev.type === 'done') {
+                stepStatus = ev.data?.status || 'succeeded'
+                stepError = ev.data?.error || null
+                break
+              }
             }
-          } else if (ev.type === 'done') {
-            const s = ev.data?.status || 'succeeded'
-            setStatus(s)
-            setDoneData(ev.data)
-            if (onDone) onDone(ev.data)
-            break
+          } catch (err) {
+            if (err?.status === 200 && err?.body?.status === 'up_to_date') {
+              stepStatus = 'up_to_date'
+              appendBoundary(setLines, `(${step.label} → already up to date)`)
+            } else {
+              stepStatus = 'failed'
+              stepError = err?.body?.message || err?.message || String(err)
+              appendBoundary(setLines, `(${step.label} → error: ${stepError})`)
+            }
+          }
+
+          setStepResults((prev) => [...prev, { label: step.label, status: stepStatus, error: stepError }])
+
+          if (stepStatus === 'failed' || stepStatus === 'error') {
+            setStatus('failed')
+            setErrorMessage(stepError || `Step "${step.label}" failed`)
+            return
+          }
+
+          // If we just finished a server-update step and there are more
+          // steps queued, wait for the server's restart to complete.
+          if (step.kind === 'server' && waitForServerRestartAfterServerStep && i < steps.length - 1) {
+            appendBoundary(setLines, '(waiting for server to restart…)')
+            const ok = await pollUntilServerBack(8000, 60_000, () => !cancelledRef.current && active)
+            if (!ok) {
+              setStatus('failed')
+              setErrorMessage('Server did not come back online within 60s after restart.')
+              return
+            }
+            appendBoundary(setLines, '(server back online)')
           }
         }
+
+        setStatus('succeeded')
+        if (onDone) onDone()
       } catch (err) {
         if (!active) return
-        // 200 up_to_date isn't an error — the JSON body comes back instead
-        // of an SSE stream. sseFetch treats !res.ok as error, so 200s
-        // without a stream body fall through to here.
-        if (err?.status === 200 && err?.body?.status === 'up_to_date') {
-          setStatus('already_up_to_date')
-          setErrorMessage(err.body.message || null)
-          return
-        }
-        setStatus('error')
-        setErrorMessage(err?.body?.message || err?.message || String(err))
+        setStatus('failed')
+        setErrorMessage(err?.message || String(err))
       }
     })()
 
@@ -108,12 +155,13 @@ export default function UpdateStreamModal({
       cancelledRef.current = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, url])
+  }, [open])
 
   if (!open) return null
 
-  const Icon = icon === 'device' ? Cpu : Server
-  const terminal = status === 'succeeded' || status === 'failed' || status === 'error' || status === 'already_up_to_date'
+  const currentStep = steps[currentStepIdx]
+  const Icon = currentStep?.icon === 'device' ? Cpu : Server
+  const terminal = status === 'succeeded' || status === 'failed'
 
   return (
     <div className="fx-modal-backdrop" onClick={onClose}>
@@ -127,6 +175,11 @@ export default function UpdateStreamModal({
           <div className="fx-row" style={{ gap: 'var(--fx-2)', alignItems: 'center' }}>
             <Icon size={18} />
             <h2 className="fx-update-modal-title">{title}</h2>
+            {steps.length > 1 && (
+              <span className="fx-mute fx-update-step-counter">
+                {currentStepIdx + 1} / {steps.length}
+              </span>
+            )}
           </div>
           <button
             type="button"
@@ -141,7 +194,7 @@ export default function UpdateStreamModal({
         <div className="fx-update-modal-statusbar">
           <StatusBadge status={status} />
           <span className="fx-mute fx-update-phase-text">
-            {phaseLabel(phase, status, errorMessage)}
+            {phaseLabel(phase, status, errorMessage, currentStep)}
           </span>
         </div>
 
@@ -150,23 +203,16 @@ export default function UpdateStreamModal({
             <div className="fx-mute">Waiting for output…</div>
           ) : (
             lines.map((line, i) => (
-              <div key={i} className="fx-update-log-line fx-mono">{line || ' '}</div>
+              <div key={i} className="fx-update-log-line fx-mono">{line || ' '}</div>
             ))
           )}
         </div>
 
         {terminal && (
           <div className="fx-update-modal-footer">
-            {doneData?.new_short_sha && (
-              <span className="fx-mute fx-mono">
-                {doneData.new_short_sha}
-              </span>
-            )}
-            {doneData?.deployed_sha && (
-              <span className="fx-mute fx-mono">
-                deployed → {doneData.deployed_sha.slice(0, 7)}
-              </span>
-            )}
+            <span className="fx-mute">
+              {summarizeResults(stepResults)}
+            </span>
             <button type="button" className="fx-btn" onClick={onClose}>
               Close
             </button>
@@ -177,9 +223,80 @@ export default function UpdateStreamModal({
   )
 }
 
+function appendBoundary(setLines, label) {
+  setLines((prev) => [...prev, '', label, ''])
+}
+
+async function pollUntilServerBack(intervalMs, timeoutMs, stillActive) {
+  // Two-phase wait so we don't catch the pre-restart server still alive.
+  //
+  // The server's restart is triggered by a detached `bash -c "sleep 2 &&
+  // systemctl --user restart fauxnos-server"`. That means: after the SSE
+  // `done` event fires, there's a ~2s window where the OLD server is
+  // still up before the restart actually happens. If we poll naively, we
+  // catch it during that window, declare "back online", fire the next
+  // step's POST, and then the actual restart kills the SSE mid-flight →
+  // browser sees "Failed to fetch."
+  //
+  // Phase 1: wait for the server to GO OFFLINE. We give it up to 10s
+  // (sleep 2 + scheduling jitter + actual restart teardown).
+  // Phase 2: wait for it to come BACK ONLINE on a fresh PID. Once we
+  // see a successful response, we wait an extra 1s before declaring
+  // "ready" so Flask has time to fully bind its routes.
+
+  const deadline = Date.now() + timeoutMs
+
+  // Phase 1: wait for offline.
+  await sleep(1500)  // initial buffer so we don't race the bash subprocess
+  const offlineDeadline = Date.now() + 10_000
+  let sawOffline = false
+  while (Date.now() < offlineDeadline) {
+    if (!stillActive()) return false
+    try {
+      await getServerVersion()
+      // Still up. The restart hasn't happened yet — keep waiting.
+      await sleep(500)
+    } catch {
+      sawOffline = true
+      break
+    }
+  }
+  // If we never saw it go offline within 10s, something's weird (the
+  // restart may have already happened during our initial buffer, or
+  // it's not happening at all). Either way, proceed to phase 2.
+
+  // Phase 2: wait for it to come back online.
+  while (Date.now() < deadline) {
+    if (!stillActive()) return false
+    try {
+      await getServerVersion()
+      // Got a response — give Flask another beat to be fully ready
+      // (routes registered, lock released) before letting the next POST
+      // through.
+      await sleep(1000)
+      // Confirm with a second poll so we know the response wasn't a
+      // glitch (rare on LAN, but cheap insurance).
+      try {
+        await getServerVersion()
+        return true
+      } catch {
+        // Flaky — continue waiting.
+      }
+    } catch {
+      // Still offline.
+    }
+    await sleep(intervalMs)
+  }
+  return false
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
 function StatusBadge({ status }) {
-  if (status === 'succeeded' || status === 'already_up_to_date') {
-    return <span className="fx-badge ok"><CheckCircle2 size={12} /> {status === 'already_up_to_date' ? 'Up to date' : 'Succeeded'}</span>
+  if (status === 'succeeded') {
+    return <span className="fx-badge ok"><CheckCircle2 size={12} /> Succeeded</span>
   }
   if (status === 'failed' || status === 'error') {
     return <span className="fx-badge err"><XCircle size={12} /> Failed</span>
@@ -187,15 +304,17 @@ function StatusBadge({ status }) {
   return <span className="fx-badge"><Loader2 size={12} className="fx-spin" /> Running</span>
 }
 
-function phaseLabel(phase, status, errorMessage) {
-  if (status === 'already_up_to_date') {
-    return errorMessage || 'Already at origin/main.'
-  }
-  if (status === 'error') {
-    return errorMessage || 'Update failed.'
-  }
+function phaseLabel(phase, status, errorMessage, currentStep) {
+  if (status === 'failed' && errorMessage) return errorMessage
   if (phase?.message) return phase.message
+  if (currentStep?.label) return currentStep.label
   if (status === 'starting') return 'Starting…'
-  if (status === 'running') return 'Running…'
   return null
+}
+
+function summarizeResults(results) {
+  if (results.length === 0) return ''
+  const ok = results.filter(r => r.status === 'succeeded' || r.status === 'up_to_date').length
+  const fail = results.filter(r => r.status === 'failed' || r.status === 'error').length
+  return `${ok}/${results.length} succeeded${fail > 0 ? `, ${fail} failed` : ''}`
 }
