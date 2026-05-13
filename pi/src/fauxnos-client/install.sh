@@ -608,6 +608,7 @@ download_client_code() {
         "configs/systemd/shairport-sync-fauxnos.service"
         "configs/shairport-sync/fauxnos.conf"
         "configs/shairport-sync/claim-source.sh"
+        "configs/camilladsp/config.yml.template"
     )
 
     # Python modules
@@ -671,6 +672,54 @@ download_client_code() {
     chmod +x pi-setup.sh 2>/dev/null || true
 
     log_success "Client code downloaded to: $INSTALL_DIR"
+}
+
+# Set up CamillaDSP runtime config
+#
+# The runtime config at ~/.config/camilladsp/config.yml is both the
+# starting state for the EQ and CamillaDSP's persistent state file:
+# when the user moves a slider in the web UI, the client pushes a
+# `SetConfigJson` over WebSocket and CamillaDSP writes the updated
+# YAML back to this same path. install.sh therefore must NOT clobber
+# an existing valid config on re-runs (would erase user EQ tweaks).
+#
+# Re-render only happens when the file is missing or fails --check.
+# Broken files are stashed with a timestamp so we can post-mortem
+# rather than silently lose state.
+setup_camilladsp_config() {
+    log_section "Configuring CamillaDSP"
+
+    local config_dir="$HOME/.config/camilladsp"
+    local config_file="$config_dir/config.yml"
+    local template="$INSTALL_DIR/configs/camilladsp/config.yml.template"
+
+    mkdir -p "$config_dir"
+
+    if [ -f "$config_file" ]; then
+        if /usr/local/bin/camilladsp --check "$config_file" 2>&1 | grep -q "Config is valid"; then
+            log_success "Existing config valid — leaving user EQ state untouched"
+            return 0
+        fi
+        local backup="${config_file}.broken-$(date +%Y%m%d-%H%M%S)"
+        log_warning "Existing config failed --check; stashing at $backup"
+        mv "$config_file" "$backup"
+    fi
+
+    if [ ! -f "$template" ]; then
+        log_error "Template missing: $template"
+        return 1
+    fi
+
+    log "Rendering config from template..."
+    cp "$template" "$config_file"
+
+    if /usr/local/bin/camilladsp --check "$config_file" 2>&1 | grep -q "Config is valid"; then
+        log_success "CamillaDSP config rendered + validated: $config_file"
+    else
+        log_error "Rendered config failed --check!"
+        /usr/local/bin/camilladsp --check "$config_file"
+        return 1
+    fi
 }
 
 # Run client registration
@@ -849,6 +898,7 @@ main() {
     configure_ir_receiver
     setup_pulseaudio_user_services
     download_client_code
+    setup_camilladsp_config
 
     # Attempt registration (may fail if server not available)
     if register_client; then

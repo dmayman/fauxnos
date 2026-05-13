@@ -1,0 +1,120 @@
+# CamillaDSP — Fauxnos per-client end-of-chain equalizer
+#
+# This file is the on-disk state for the device's 10-band graphic EQ.
+# CamillaDSP reads it at startup and (when the equalizer is live-edited
+# via the WebSocket on 127.0.0.1:1234) writes it back on every change,
+# so the EQ survives reboots without needing the fauxnos-server to be up.
+#
+# Architecture:
+#   [4 source null sinks] → [4 loopbacks, calibration stage]
+#                        → camilla_input (null sink, see default.pa)
+#                        → camilladsp captures camilla_input.monitor
+#                        → camilladsp applies the filter pipeline below
+#                        → camilladsp writes to alsa_output (hw:0)
+#                        → DAC
+#
+# The pipeline runs ALWAYS (even when the user "disables" the EQ in the
+# UI — that case just zeroes every band gain). Constant ~23 ms of added
+# latency (one 1024-sample chunk at 44.1 kHz) is dwarfed by snapcast's
+# ~1 s and AirPlay's ~2 s buffers, and it means the toggle is glitch-free.
+
+devices:
+  samplerate: 44100
+  chunksize: 1024
+  capture:
+    type: Pulse
+    channels: 2
+    device: "camilla_input.monitor"
+  playback:
+    type: Pulse
+    channels: 2
+    device: "alsa_output.platform-soc_sound.stereo-fallback"
+
+# 10-band ISO graphic EQ frequencies. Q=1.4 gives ~2/3-octave bands —
+# the standard graphic-EQ feel. All gains start at 0.0 dB (flat).
+filters:
+  band_31:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 31
+      q: 1.4
+      gain: 0.0
+  band_63:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 63
+      q: 1.4
+      gain: 0.0
+  band_125:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 125
+      q: 1.4
+      gain: 0.0
+  band_250:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 250
+      q: 1.4
+      gain: 0.0
+  band_500:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 500
+      q: 1.4
+      gain: 0.0
+  band_1000:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 1000
+      q: 1.4
+      gain: 0.0
+  band_2000:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 2000
+      q: 1.4
+      gain: 0.0
+  band_4000:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 4000
+      q: 1.4
+      gain: 0.0
+  band_8000:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 8000
+      q: 1.4
+      gain: 0.0
+  band_16000:
+    type: Biquad
+    parameters:
+      type: Peaking
+      freq: 16000
+      q: 1.4
+      gain: 0.0
+
+pipeline:
+  - type: Filter
+    channels: [0, 1]
+    names:
+      - band_31
+      - band_63
+      - band_125
+      - band_250
+      - band_500
+      - band_1000
+      - band_2000
+      - band_4000
+      - band_8000
+      - band_16000
