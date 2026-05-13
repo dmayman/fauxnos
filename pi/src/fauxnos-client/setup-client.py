@@ -698,7 +698,20 @@ class FauxnosClientSetup:
                 return False
             shutil.copy(unit_src, user_systemd_dir / "shairport-sync-fauxnos.service")
 
-            # 3. Enable + start (lingering was already enabled by deploy_services).
+            # 3. Enable + (re)start. We use `restart` rather than `start`
+            # because update re-runs hit this path against an
+            # already-running service: install.sh disabled the
+            # competing system shairport (freeing port 5000), which
+            # lets our user service auto-recover from its
+            # port-collision restart loop *before* setup-client.py
+            # has rewritten the conf. A bare `start` is a no-op there
+            # and the process keeps using the stale on-disk conf —
+            # exactly the bug that left fauxnos001/002 advertising as
+            # "fauxnos001"/"fauxnos002" instead of Kitchen/Garage on
+            # the 2026-05-13 update push. `restart` covers both
+            # fresh-install (service not yet running → equivalent to
+            # start) and update (already running → reload conf).
+            # (Lingering was already enabled by deploy_services.)
             self.execute(
                 "systemctl --user daemon-reload",
                 "Reloading user systemd daemon for shairport unit",
@@ -709,8 +722,8 @@ class FauxnosClientSetup:
             ):
                 return False
             if not self.execute(
-                "systemctl --user start shairport-sync-fauxnos.service",
-                "Starting shairport-sync-fauxnos user service",
+                "systemctl --user restart shairport-sync-fauxnos.service",
+                "(Re)starting shairport-sync-fauxnos user service to pick up new conf",
             ):
                 return False
 
