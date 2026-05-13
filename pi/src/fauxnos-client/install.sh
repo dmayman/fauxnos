@@ -177,6 +177,17 @@ configure_system() {
     log "Disabling system snapclient.service (we use the user-level service)..."
     sudo systemctl disable --now snapclient.service 2>/dev/null || true
 
+    # Disable the apt-installed system shairport-sync.service. It binds
+    # port 5000 with the default config (name="%H" = capitalized hostname
+    # like "Fauxnos001", no claim-source hook, no airplaysink routing),
+    # which (a) clutters the iOS AirPlay picker with the wrong name and
+    # (b) prevents our user-level shairport-sync-fauxnos.service from
+    # starting at all (port already in use, fatal exit). The user-level
+    # service is what owns the conf + sessioncontrol hook + PA routing,
+    # so the system one has nothing to contribute.
+    log "Disabling system shairport-sync.service (we use the user-level service)..."
+    sudo systemctl disable --now shairport-sync.service 2>/dev/null || true
+
     # Enable user service lingering for automatic startup
     log "Enabling user service lingering for automatic startup..."
     sudo loginctl enable-linger "$USER"

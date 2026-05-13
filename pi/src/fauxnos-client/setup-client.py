@@ -632,7 +632,7 @@ class FauxnosClientSetup:
             self.log(f"Failed to deploy user services: {e}", "ERROR")
             return False
 
-    def setup_shairport(self) -> bool:
+    def setup_shairport(self, display_name: str) -> bool:
         """Install the shairport-sync user unit + config so this client
         is reachable as an AirPlay receiver. shairport-sync itself is
         installed via apt in install.sh — here we only place the conf,
@@ -640,16 +640,21 @@ class FauxnosClientSetup:
         unit, then enable + start the service.
 
         Idempotent: a re-install can copy fresh copies over existing
-        files. The unit + conf are device-agnostic; the mDNS name comes
-        from `%h = hostname` set inside the conf at runtime."""
+        files. The unit is device-agnostic; the conf has its
+        `__FAUXNOS_NAME__` placeholder substituted with `display_name`
+        so the AirPlay picker shows e.g. "Server" / "Kitchen" / "Garage"
+        instead of the (capitalized-by-iOS) hostname. `display_name` is
+        passed through from run_setup so a fresh install + an update
+        re-run share one source of truth.
+        """
         self.log("Setting up shairport-sync (AirPlay receiver)...")
 
         if self.dry_run or self.test_mode:
-            self.log("Would install shairport-sync config + unit")
+            self.log(f"Would install shairport-sync config + unit (name='{display_name}')")
             return True
 
         try:
-            # 1. Copy fauxnos.conf + claim-source.sh into ~/.config/shairport-sync/
+            # 1. Copy claim-source.sh + render fauxnos.conf into ~/.config/shairport-sync/
             shairport_user_dir = Path.home() / ".config" / "shairport-sync"
             shairport_user_dir.mkdir(parents=True, exist_ok=True)
 
@@ -662,11 +667,24 @@ class FauxnosClientSetup:
                 )
                 return False
 
+            # Render fauxnos.conf with the device's display_name. Escape
+            # double-quotes and backslashes so a display_name like
+            # 'Bedroom "Closet"' or 'C:\Path' can't break out of the
+            # shairport string literal. Newlines are stripped too — they
+            # would otherwise corrupt the conf parser.
+            conf_template = src_conf.read_text(encoding="utf-8")
+            safe_name = (
+                display_name.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ").strip()
+            ) or "Fauxnos"
+            rendered = conf_template.replace("__FAUXNOS_NAME__", safe_name)
+            (shairport_user_dir / "fauxnos.conf").write_text(rendered, encoding="utf-8")
+
             import shutil
-            shutil.copy(src_conf, shairport_user_dir / "fauxnos.conf")
             shutil.copy(src_hook, shairport_user_dir / "claim-source.sh")
             (shairport_user_dir / "claim-source.sh").chmod(0o755)
-            self.log(f"shairport-sync configs deployed to {shairport_user_dir}")
+            self.log(
+                f"shairport-sync configs deployed to {shairport_user_dir} (name='{safe_name}')"
+            )
 
             # 2. Install the user systemd unit. The unit references %h
             # (= the user's home dir as seen by systemd-user), so no
@@ -887,8 +905,9 @@ ctl.!default {
 
         # Step 12: Deploy shairport-sync (AirPlay receiver). Treated
         # as a default capability — every fauxnos device is an AirPlay
-        # target out of the box.
-        if not self.setup_shairport():
+        # target out of the box. The display_name passed here ends up
+        # as the mDNS name in the iOS AirPlay picker.
+        if not self.setup_shairport(display_name):
             self.log("shairport-sync setup failed — AirPlay won't work on this device, "
                      "but the rest of the install will continue", "WARNING")
 
