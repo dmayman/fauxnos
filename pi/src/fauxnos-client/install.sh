@@ -533,6 +533,7 @@ download_client_code() {
         "modules/__init__.py"
         "modules/config_manager.py"
         "modules/go_librespot.py"
+        "modules/gpio_buttons.py"
         "modules/ir_listener.py"
         "modules/logger.py"
         "modules/mqtt_client.py"
