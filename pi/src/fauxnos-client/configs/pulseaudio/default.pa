@@ -42,22 +42,40 @@ load-module module-null-sink sink_name=airplaysink sink_properties="device.descr
 # load — that's harmless.
 load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallback" sink=analogsink latency_msec=20 sink_input_properties=media.role=fauxnos-analog-input
 
-# --- LADSPA Equalizer Sink ---
-# This creates a new sink called 'equalizer' that applies the LADSPA plugin.
-# It *masters* the actual hardware output (alsa_output.platform-soc_sound.stereo-fallback).
-# load-module module-ladspa-sink sink_name=equalizer sink_master=alsa_output.platform-soc_sound.stereo-fallback plugin=mbeq_1197 label=mbeq control=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+# --- CamillaDSP Capture Sink ---
+# Final intermediate sink before audio enters the DSP engine. All
+# per-source loopbacks below write here; CamillaDSP captures
+# camilla_input.monitor (its WebSocket on 127.0.0.1:1234 lets the
+# fauxnos-client push live filter updates), applies the filter pipeline
+# from ~/.config/camilladsp/config.yml, then plays out to alsa_output.
+#
+# A previous attempt used module-ladspa-sink with mbeq_1197; that path
+# is a dead end because PA exposes no DBUS surface for LADSPA controls,
+# so live slider updates would require module reload (audio glitch).
+# module-equalizer-sink is upstream-disowned in PA 16.1 ("currently
+# unsupported, can cause crashes/latency/artifacts" per its own log
+# warning). CamillaDSP is the actively-maintained, designed-for-live-
+# reload alternative.
+#
+# Loading this sink with no consumer attached is harmless: loopback
+# audio just gets dropped at camilla_input until camilladsp.service is
+# up. After=pulseaudio.service + Restart=on-failure on the systemd unit
+# handles the PA-restart → ~10s gap → recovery flow.
+load-module module-null-sink sink_name=camilla_input sink_properties="device.description='CamillaDSP Input'"
 
-# --- Direct Routing to Master ---
-# These lines take the *monitor output* of your virtual sinks and loop them
-# directly into the hardware output, bypassing the equalizer. Each gets a
-# unique sink_input_properties.media.role so SourceManager.set_calibration
-# can locate the corresponding sink-input and treat it as a per-source
-# pre-amp ceiling (see pulse_controller.set_loopback_calibration).
-# load-module module-loopback source=spotifysink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
-load-module module-loopback source=systemsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-systemsink-out
-load-module module-loopback source=analogsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-analogsink-out
-load-module module-loopback source=snapsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-snapsink-out
-load-module module-loopback source=airplaysink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-airplaysink-out
+# --- Per-source loopbacks into CamillaDSP ---
+# These take the *monitor output* of each virtual sink and write into
+# camilla_input (the DSP capture sink above). Each loopback carries a
+# stable sink_input_properties.media.role so
+# pulse_controller.set_loopback_calibration() can find it and use it as
+# a per-source pre-amp ceiling. Routing target is camilla_input rather
+# than alsa_output directly so the end-of-chain EQ touches every
+# source uniformly (snapcast / airplay / system sounds / analog).
+# load-module module-loopback source=spotifysink.monitor sink=camilla_input latency_msec=20
+load-module module-loopback source=systemsink.monitor sink=camilla_input latency_msec=20 sink_input_properties=media.role=fauxnos-systemsink-out
+load-module module-loopback source=analogsink.monitor sink=camilla_input latency_msec=20 sink_input_properties=media.role=fauxnos-analogsink-out
+load-module module-loopback source=snapsink.monitor sink=camilla_input latency_msec=20 sink_input_properties=media.role=fauxnos-snapsink-out
+load-module module-loopback source=airplaysink.monitor sink=camilla_input latency_msec=20 sink_input_properties=media.role=fauxnos-airplaysink-out
 
 # --- Application Routing ---
 # Automatically route specific applications to their designated sinks
