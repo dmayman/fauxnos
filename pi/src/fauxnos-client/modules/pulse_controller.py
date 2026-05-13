@@ -155,13 +155,14 @@ class PulseAudioController:
         Args:
             media_role: media.role of the loopback sink-input
                 (e.g. 'fauxnos-snapsink-out', 'fauxnos-analogsink-out')
-            volume: 0-100 percent
+            volume: 0-200 percent. 100% = unity gain, >100% applies
+                PulseAudio software gain (boost) up to ~+6 dB at 200%.
 
         Returns:
             True if a matching sink-input was found and the volume was set.
         """
-        if not (0 <= volume <= 100):
-            self.logger.error(f"set_loopback_calibration: volume {volume} out of range")
+        if not (0 <= volume <= 200):
+            self.logger.error(f"set_loopback_calibration: volume {volume} out of range 0-200")
             return False
 
         try:

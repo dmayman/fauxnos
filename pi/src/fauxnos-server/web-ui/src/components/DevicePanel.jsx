@@ -462,14 +462,32 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
   }
   const vcLabel = VC_LABELS[source.volume_controller] || source.volume_controller || 'Self'
 
+  // Calibration is stored on the client as PulseAudio percent 0-200
+  // (100 = unity, <100 = cut, >100 = software boost via pactl). The UI
+  // exposes that as a center-notched slider: display value is `cal-100`,
+  // so the user sees -100..0..+100 with 0 meaning "no change". On the
+  // way out we add 100 back to land in PA percent. Snaps to 0 within a
+  // small dead-zone so the notch detents cleanly.
   const calLive = mqtt?.calibrations?.[clientId]?.[source.id]
   const calibration = (typeof calLive === 'number') ? calLive : 100
+  const displayCal = calibration - 100  // -100..+100, 0 = unity
+  // Thumb position 0-100% across the track (calibration 0→0%, 100→50%, 200→100%).
+  const thumbPct = calibration / 2
+  // Center-anchored fill: from 50% outward toward the thumb.
+  const fillLeftPct = calibration >= 100 ? 50 : thumbPct
+  const fillWidthPct = Math.abs(displayCal) / 2
   const handleCalibrationChange = (e) => {
-    const v = parseInt(e.target.value, 10)
-    if (Number.isFinite(v) && mqtt?.publishCalibration) {
-      mqtt.publishCalibration(clientId, source.id, v)
+    let v = parseInt(e.target.value, 10)
+    if (!Number.isFinite(v)) return
+    // Dead-zone snap to 0 (unity) so the notch actually catches.
+    if (Math.abs(v) <= 2) v = 0
+    if (mqtt?.publishCalibration) {
+      mqtt.publishCalibration(clientId, source.id, v + 100)
     }
   }
+  const calLabel = displayCal === 0
+    ? '0'
+    : (displayCal > 0 ? `+${displayCal}` : `${displayCal}`)
 
   const handleSave = async () => {
     setSaving(true)
@@ -531,18 +549,26 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
       {expanded && (
         <div className="fx-source-form">
           <div className="fx-source-setting">
-            <span className="fx-source-setting-label">Volume calibration</span>
+            <span className="fx-source-setting-label">
+              Volume calibration
+              <span className="fx-source-setting-value">{calLabel}</span>
+            </span>
             <div className="fx-volume accent fx-volume-compact">
               <div className="fx-volume-track">
-                <div className="fx-volume-fill" style={{ width: `${calibration}%` }} />
-                <div className="fx-volume-thumb" style={{ left: `${calibration}%` }} />
+                {/* Center notch (0 = unity gain detent). */}
+                <div className="fx-volume-notch" />
+                <div
+                  className="fx-volume-fill"
+                  style={{ left: `${fillLeftPct}%`, right: 'auto', width: `${fillWidthPct}%` }}
+                />
+                <div className="fx-volume-thumb" style={{ left: `${thumbPct}%` }} />
                 <input
                   className="fx-volume-input"
                   type="range"
-                  min={0}
+                  min={-100}
                   max={100}
                   step={1}
-                  value={calibration}
+                  value={displayCal}
                   onChange={handleCalibrationChange}
                   aria-label="Volume calibration"
                 />

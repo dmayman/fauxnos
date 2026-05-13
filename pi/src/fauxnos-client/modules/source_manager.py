@@ -477,8 +477,8 @@ class SourceManager:
         Affects all sources that share the same sink (since they share
         the underlying loopback).
         """
-        if not (0 <= value <= 100):
-            self.logger.error(f"set_calibration: value {value} out of range 0-100")
+        if not (0 <= value <= 200):
+            self.logger.error(f"set_calibration: value {value} out of range 0-200")
             return False
 
         source = self.config_manager.get_source(source_id)

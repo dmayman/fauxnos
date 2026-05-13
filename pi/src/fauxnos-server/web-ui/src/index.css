@@ -1591,6 +1591,15 @@ label.fx-source-setting { cursor: pointer; }
   font-weight: 400;
   color: var(--fx-text);
 }
+/* Small inline value chip beside the setting label, e.g. "+25" on the
+   calibration slider. Tabular nums so the row doesn't reflow as the
+   user drags through ±2-digit values. */
+.fx-source-setting-value {
+  margin-left: var(--fx-2);
+  font-size: var(--fx-text-xs);
+  color: var(--fx-text-2);
+  font-variant-numeric: tabular-nums;
+}
 
 /* Compact slider used only inside .fx-source-setting — fixed-width, no value
    label or icon so the row stays balanced regardless of percentage. */
@@ -1599,6 +1608,21 @@ label.fx-source-setting { cursor: pointer; }
   max-width: 50%;
   flex: 0 0 auto;
   gap: 0;
+}
+/* Center-notch detent for sliders that span ± (calibration: 0 = unity).
+   A 2px vertical tick on the track at 50%, sitting below the fill+thumb
+   so the active range visibly overlaps it from either side. */
+.fx-volume-notch {
+  position: absolute;
+  left: 50%;
+  top: -2px;
+  bottom: -2px;
+  width: 2px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--fx-text-2);
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 /* ── Add built-in dropdown ────────────────────────────────────────────────── */

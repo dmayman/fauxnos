@@ -51,11 +51,13 @@ class SourceConfig:
     volume_controller: str = 'self'
     external_switch: Optional[ExternalSwitchConfig] = None
 
-    # PulseAudio loopback calibration (0-100). Applied to the
-    # <sink>.monitor → alsa_output loopback as a fixed pre-amp ceiling.
-    # Lets the user normalize different sources (Spotify-via-snapcast vs
-    # Analog) without violating the single-stage user-control rule.
-    # See docs/VOLUME.md. Default 100 = no attenuation.
+    # PulseAudio loopback calibration (0-200). Applied to the
+    # <sink>.monitor → alsa_output loopback as a fixed pre-amp/boost.
+    # 100 = unity (default, no change); <100 attenuates, >100 applies
+    # PulseAudio software gain (up to ~+6 dB at 200%). Lets the user
+    # normalize different sources (e.g. boost a quiet TV Analog input)
+    # without violating the single-stage user-control rule.
+    # See docs/VOLUME.md.
     pa_calibration: int = 100
 
     # External source fields

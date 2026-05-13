@@ -115,18 +115,18 @@ class StateManager:
         if v is None:
             return None
         try:
-            return max(0, min(100, int(v)))
+            return max(0, min(200, int(v)))
         except (TypeError, ValueError):
             return None
 
     def set_pa_calibration(self, source_id: str, value: int) -> bool:
         """
         Persist a single source's PA loopback calibration. Other state
-        fields are preserved.
+        fields are preserved. Range: 0-200 (100 = unity, >100 = boost).
         """
         state = self.load_state()
         cals = dict(state.get('pa_calibrations', {}) or {})
-        cals[source_id] = max(0, min(100, int(value)))
+        cals[source_id] = max(0, min(200, int(value)))
         return self.save_state(
             current_source=state.get('current_source'),
             source_volumes=state.get('source_volumes', {}),

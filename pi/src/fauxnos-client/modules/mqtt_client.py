@@ -256,8 +256,8 @@ class MQTTClient:
                         except ValueError:
                             logger.error(f"Invalid calibration value: {payload}")
                             return
-                        if not (0 <= value <= 100):
-                            logger.error(f"Calibration value out of range: {value}")
+                        if not (0 <= value <= 200):
+                            logger.error(f"Calibration value out of range 0-200: {value}")
                             return
                         logger.info(f"MQTT calibration command: {source_id} → {value}%")
                         if self.calibration_callback(source_id, value):
