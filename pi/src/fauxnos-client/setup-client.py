@@ -262,6 +262,21 @@ class FauxnosClientSetup:
             self.log(f"Registration failed: {e}", "ERROR")
             return None
 
+    # Per-source fields whose source-of-truth is the template, not the
+    # user. When the template changes any of these (e.g. spotify-volume-
+    # sync flipped `volume_controller` from snapcast→go_librespot;
+    # AirPlay local-per-device flipped `sink` from snapsink→airplaysink
+    # and added `on_leave_command`), `migrate_config_from_template`
+    # rewrites the matching field on the user's existing config without
+    # touching user-tunable fields (label, starting_volume,
+    # pa_calibration) or unrelated sources.
+    #
+    # Adding a new schema field that needs migration: extend this set,
+    # nothing else.
+    _SOURCE_SCHEMA_FIELDS = frozenset({
+        "volume_controller", "sink", "type", "on_leave_command",
+    })
+
     def initialize_config_from_template(self) -> bool:
         """Copy template config to proper location if it doesn't exist"""
         if self.config_file.exists():
@@ -297,6 +312,130 @@ class FauxnosClientSetup:
 
         except Exception as e:
             self.log(f"Failed to copy template config: {e}", "ERROR")
+            return False
+
+    def migrate_config_from_template(self) -> bool:
+        """Bring an existing client_config.yaml up to date with the
+        template's source schema.
+
+        Why this exists:
+        `initialize_config_from_template` only seeds a config if none
+        exists, so it never touches an already-provisioned device. But
+        the template evolves — spotify-volume-sync flipped spotify's
+        volume_controller (snapcast → go_librespot); the AirPlay local-
+        per-device rewrite changed airplay's sink (snapsink →
+        airplaysink), flipped volume_controller (snapcast → external),
+        and added on_leave_command. Without a migration step, install.sh
+        updates the *code* on existing clients but leaves them with
+        broken source wiring forever. (Surfaced 2026-05-12 when
+        fauxnos001 came back from its first pipeline-updated install
+        with phone-slider→snapcast bridge dead.)
+
+        What this DOESN'T touch (user-tunable):
+            label, starting_volume, pa_calibration, custom sources
+            (any source with an id not in the template), top-level
+            keys (display_name, mac, client_id, mqtt, etc.).
+
+        What this DOES touch (per _SOURCE_SCHEMA_FIELDS):
+            volume_controller, sink, type, on_leave_command — the
+            technical wiring that's part of the platform schema, not a
+            user choice.
+
+        Sources present in template but missing on the user's config
+        get appended wholesale (new built-in sources land cleanly).
+        Sources only on the user's config (custom sources) stay
+        untouched.
+
+        Idempotent: re-running when the config already matches is a
+        no-op.
+
+        Returns True unless we fail catastrophically writing the file.
+        Other failures (no PyYAML, no template, parse errors) log a
+        warning and return True so install.sh doesn't abort over them —
+        this is a hygiene step, not a blocker.
+        """
+        if yaml is None:
+            self.log("PyYAML not available — skipping schema migration", "WARNING")
+            return True
+        if not self.config_file.exists():
+            # initialize_config_from_template handled the seed earlier
+            # in run_setup. Nothing to migrate against.
+            return True
+        template_path = self.client_dir / "client_config.yaml.template"
+        if not template_path.exists():
+            self.log(f"Template missing at {template_path} — skipping schema migration", "WARNING")
+            return True
+        try:
+            with open(self.config_file) as f:
+                existing = yaml.safe_load(f) or {}
+            with open(template_path) as f:
+                template = yaml.safe_load(f) or {}
+        except Exception as e:
+            self.log(f"Failed to load configs for schema migration: {e}", "WARNING")
+            return True
+
+        existing_sources = existing.get("sources") or []
+        template_sources = template.get("sources") or []
+        if not isinstance(existing_sources, list) or not isinstance(template_sources, list):
+            self.log("Unexpected `sources` shape in config — skipping schema migration", "WARNING")
+            return True
+
+        existing_by_id = {
+            s.get("id"): s
+            for s in existing_sources
+            if isinstance(s, dict) and s.get("id")
+        }
+        changed = False
+        for tmpl_src in template_sources:
+            if not isinstance(tmpl_src, dict):
+                continue
+            sid = tmpl_src.get("id")
+            if not sid:
+                continue
+            existing_src = existing_by_id.get(sid)
+            if existing_src is None:
+                # New built-in source landed in the template. Append it
+                # wholesale; preserves user's earlier source ordering
+                # (new source goes at the end).
+                existing_sources.append(dict(tmpl_src))
+                existing_by_id[sid] = existing_sources[-1]
+                self.log(f"Migration: added new source '{sid}' from template")
+                changed = True
+                continue
+
+            # Existing source — diff the schema fields against the
+            # template and rewrite where they disagree. Removing a
+            # schema field from the template also removes it here
+            # (keeps the schema authoritative).
+            for field in self._SOURCE_SCHEMA_FIELDS:
+                template_has = field in tmpl_src
+                existing_has = field in existing_src
+                if template_has:
+                    if existing_src.get(field) != tmpl_src[field]:
+                        prev = existing_src.get(field, "<absent>")
+                        existing_src[field] = tmpl_src[field]
+                        self.log(
+                            f"Migration: source '{sid}' {field}: {prev!r} → {tmpl_src[field]!r}"
+                        )
+                        changed = True
+                elif existing_has:
+                    existing_src.pop(field, None)
+                    self.log(
+                        f"Migration: source '{sid}' removed field '{field}' (no longer in template)"
+                    )
+                    changed = True
+
+        if not changed:
+            self.log("Schema migration: no changes needed")
+            return True
+        existing["sources"] = existing_sources
+        try:
+            with open(self.config_file, "w") as f:
+                yaml.dump(existing, f, default_flow_style=False)
+            self.log("Schema migration: client_config.yaml updated", "SUCCESS")
+            return True
+        except Exception as e:
+            self.log(f"Schema migration: failed to write {self.config_file}: {e}", "ERROR")
             return False
 
     def load_local_config(self) -> Optional[Dict[str, Any]]:
@@ -675,8 +814,16 @@ ctl.!default {
         if not self.install_dependencies():
             return False
 
-        # Step 2: Initialize config from template
+        # Step 2: Initialize config from template (no-op if exists)
         if not self.initialize_config_from_template():
+            return False
+
+        # Step 2b: Migrate any drift between existing config's source
+        # schema fields and the current template. This is where update
+        # pipeline runs against already-provisioned devices catch up
+        # to e.g. spotify-volume-sync's controller flip or AirPlay's
+        # sink/on_leave_command rewrite. Idempotent.
+        if not self.migrate_config_from_template():
             return False
 
         # Step 3: Get display name (from CLI arg, env var, or interactive prompt)
