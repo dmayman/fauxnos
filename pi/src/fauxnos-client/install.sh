@@ -116,39 +116,78 @@ check_prerequisites() {
 install_system_dependencies() {
     log_section "Installing System Dependencies"
 
-    log "Updating package lists..."
-    sudo apt update -y
+    # The apt packages we depend on. Keep in one place so the
+    # "already installed?" check below stays in sync with the install
+    # invocation.
+    local apt_pkgs=(
+        snapclient
+        shairport-sync
+        mosquitto-clients
+        pulseaudio
+        pulseaudio-utils
+        alsa-utils
+        avahi-daemon
+        avahi-utils
+        openssh-server
+        curl
+        jq
+        git
+        python3
+        python3-pip
+        python3-venv
+        python3-requests
+        ir-keytable
+        python3-evdev
+    )
+    local pip_pkgs=(requests pyyaml paho-mqtt websocket-client)
 
-    # Count installed packages before + after so we can mark reboot-needed
-    # if anything new actually landed. apt-installed packages occasionally
-    # bring in kernel modules or systemd-units that only activate on next
-    # boot, so when we're in update mode we want the orchestrator to know.
+    # Fast path for the update pipeline: on a re-run against a device
+    # that's already been installed, every package is present and apt
+    # update + apt install -y still takes minutes on a Pi Zero 2W (apt
+    # update fetches lists; apt install scans dpkg state even when the
+    # set is satisfied). Skip both stages when nothing is missing.
+    # Surfaced 2026-05-12 — second-pass update of fauxnos001 spent
+    # 2-3 min in this function with zero state changes.
+    local missing_apt=""
+    local p
+    for p in "${apt_pkgs[@]}"; do
+        dpkg-query -W -f='${db:Status-Status}\n' "$p" 2>/dev/null \
+            | grep -q '^installed$' \
+            || missing_apt="$missing_apt $p"
+    done
+
+    # pip-installed-as-user packages live under ~/.local/. `pip3 show`
+    # is the canonical "is it importable" check, and it short-circuits
+    # in milliseconds when the metadata is on disk.
+    local missing_pip=""
+    for p in "${pip_pkgs[@]}"; do
+        python3 -m pip show "$p" >/dev/null 2>&1 || missing_pip="$missing_pip $p"
+    done
+
+    if [ -z "$missing_apt" ] && [ -z "$missing_pip" ]; then
+        log_success "All apt + pip dependencies already installed — skipping apt/pip"
+        return 0
+    fi
+
+    # Slow path: at least one package missing. Run the full apt+pip
+    # cycle and mark reboot-needed if dpkg's installed-count went up
+    # (apt-installed packages occasionally bring in kernel modules or
+    # systemd-units that only activate on next boot).
     local pkg_count_before pkg_count_after
     pkg_count_before=$(dpkg -l 2>/dev/null | awk '/^ii/{n++} END{print n+0}')
 
-    log "Installing core dependencies..."
-    sudo apt install -y \
-        snapclient \
-        shairport-sync \
-        mosquitto-clients \
-        pulseaudio \
-        pulseaudio-utils \
-        alsa-utils \
-        avahi-daemon \
-        avahi-utils \
-        openssh-server \
-        curl \
-        jq \
-        git \
-        python3 \
-        python3-pip \
-        python3-venv \
-        python3-requests \
-        ir-keytable \
-        python3-evdev
+    if [ -n "$missing_apt" ]; then
+        log "Missing apt packages:${missing_apt}"
+        log "Updating package lists..."
+        sudo apt update -y
+        log "Installing core dependencies..."
+        sudo apt install -y "${apt_pkgs[@]}"
+    fi
 
-    log "Installing Python packages..."
-    pip3 install --user requests pyyaml paho-mqtt websocket-client --break-system-packages
+    if [ -n "$missing_pip" ]; then
+        log "Missing pip packages:${missing_pip}"
+        pip3 install --user "${pip_pkgs[@]}" --break-system-packages
+    fi
 
     pkg_count_after=$(dpkg -l 2>/dev/null | awk '/^ii/{n++} END{print n+0}')
     if [ "$pkg_count_after" -gt "$pkg_count_before" ]; then

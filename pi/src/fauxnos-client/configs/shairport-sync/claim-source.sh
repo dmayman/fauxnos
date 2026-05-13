@@ -18,8 +18,16 @@
 # is not delayed by this script. The publish is normally <100ms anyway.
 #
 # Mirrors the Spotify auto-switch in fauxnos_client.py:_on_spotify_playing.
+#
+# The literal placeholder __FAUXNOS_MQTT_HOST__ is substituted at install
+# time by setup-client.py setup_shairport() with the MQTT broker host
+# from client_config.yaml (`mqtt.broker_host`, typically `fauxnos000.local`).
+# Hardcoding `localhost` here was wrong: mosquitto only runs on the server,
+# so every non-server client hit "Connection refused" and the auto-switch
+# silently no-op'd — exactly the bug that left fauxnos001 playing Spotify
+# and AirPlay simultaneously after the 2026-05-12 install.
 set -e
 DEVICE_ID="$(/bin/hostname)"
-exec /usr/bin/mosquitto_pub -h localhost \
+exec /usr/bin/mosquitto_pub -h __FAUXNOS_MQTT_HOST__ \
     -t "set/clients/${DEVICE_ID}/mode" \
     -m airplay

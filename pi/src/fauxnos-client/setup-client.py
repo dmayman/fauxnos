@@ -618,12 +618,23 @@ class FauxnosClientSetup:
             if not self.execute("systemctl --user daemon-reload", "Reloading user systemd daemon"):
                 return False
 
-            # Enable and start user services
+            # Enable + (re)start user services. `restart` rather than
+            # `start` for the same reason setup_shairport uses it: this
+            # path runs on BOTH fresh-installs (service not yet running
+            # → restart is equivalent to start) and update re-runs
+            # (service already running with stale on-disk config →
+            # restart forces a reload). A bare `start` was the
+            # 2026-05-12 bug on fauxnos001: setup-client rewrote
+            # client_config.yaml with the new spotify-volume-sync /
+            # AirPlay schema (volume_controller, on_leave_command, …),
+            # then `start` no-op'd against the long-running daemon, so
+            # auto-source-switch, phone-slider sync, and AirPlay
+            # disconnect-on-leave all silently kept using stale config.
             for _, service_name in service_templates:
                 service_name_without_extension = service_name.replace('.service', '')
                 if not self.execute(f"systemctl --user enable {service_name}", f"Enabling user service {service_name_without_extension}"):
                     return False
-                if not self.execute(f"systemctl --user start {service_name}", f"Starting user service {service_name_without_extension}"):
+                if not self.execute(f"systemctl --user restart {service_name}", f"(Re)starting user service {service_name_without_extension}"):
                     return False
 
             return True
@@ -632,7 +643,7 @@ class FauxnosClientSetup:
             self.log(f"Failed to deploy user services: {e}", "ERROR")
             return False
 
-    def setup_shairport(self, display_name: str) -> bool:
+    def setup_shairport(self, display_name: str, mqtt_broker_host: str) -> bool:
         """Install the shairport-sync user unit + config so this client
         is reachable as an AirPlay receiver. shairport-sync itself is
         installed via apt in install.sh — here we only place the conf,
@@ -640,12 +651,20 @@ class FauxnosClientSetup:
         unit, then enable + start the service.
 
         Idempotent: a re-install can copy fresh copies over existing
-        files. The unit is device-agnostic; the conf has its
-        `__FAUXNOS_NAME__` placeholder substituted with `display_name`
-        so the AirPlay picker shows e.g. "Server" / "Kitchen" / "Garage"
-        instead of the (capitalized-by-iOS) hostname. `display_name` is
-        passed through from run_setup so a fresh install + an update
-        re-run share one source of truth.
+        files. The unit is device-agnostic; two files get placeholder
+        substitution so one repo template serves every device:
+
+          * fauxnos.conf: __FAUXNOS_NAME__ → display_name, so the
+            AirPlay picker shows e.g. "Server" / "Kitchen" / "Garage"
+            instead of the (capitalized-by-iOS) hostname.
+          * claim-source.sh: __FAUXNOS_MQTT_HOST__ → mqtt_broker_host,
+            so the sessioncontrol hook publishes to the actual broker
+            (which only runs on the server). Hardcoding `localhost`
+            here was the 2026-05-12 auto-switch bug on fauxnos001.
+
+        Both `display_name` and `mqtt_broker_host` are passed through
+        from run_setup so fresh-install and update re-runs share one
+        source of truth (client_config.yaml).
         """
         self.log("Setting up shairport-sync (AirPlay receiver)...")
 
@@ -679,11 +698,21 @@ class FauxnosClientSetup:
             rendered = conf_template.replace("__FAUXNOS_NAME__", safe_name)
             (shairport_user_dir / "fauxnos.conf").write_text(rendered, encoding="utf-8")
 
-            import shutil
-            shutil.copy(src_hook, shairport_user_dir / "claim-source.sh")
-            (shairport_user_dir / "claim-source.sh").chmod(0o755)
+            import shutil  # used for the user-systemd unit copy below
+
+            # Render claim-source.sh with the MQTT broker host. Fall
+            # back to fauxnos000.local if the caller passed nothing —
+            # the conventional server hostname — but in practice
+            # run_setup always supplies it from client_config.yaml.
+            safe_broker = (mqtt_broker_host or "fauxnos000.local").strip() or "fauxnos000.local"
+            hook_template = src_hook.read_text(encoding="utf-8")
+            hook_rendered = hook_template.replace("__FAUXNOS_MQTT_HOST__", safe_broker)
+            hook_dest = shairport_user_dir / "claim-source.sh"
+            hook_dest.write_text(hook_rendered, encoding="utf-8")
+            hook_dest.chmod(0o755)
             self.log(
-                f"shairport-sync configs deployed to {shairport_user_dir} (name='{safe_name}')"
+                f"shairport-sync configs deployed to {shairport_user_dir} "
+                f"(name='{safe_name}', mqtt_host='{safe_broker}')"
             )
 
             # 2. Install the user systemd unit. The unit references %h
@@ -919,8 +948,11 @@ ctl.!default {
         # Step 12: Deploy shairport-sync (AirPlay receiver). Treated
         # as a default capability — every fauxnos device is an AirPlay
         # target out of the box. The display_name passed here ends up
-        # as the mDNS name in the iOS AirPlay picker.
-        if not self.setup_shairport(display_name):
+        # as the mDNS name in the iOS AirPlay picker; the MQTT broker
+        # host is templated into the sessioncontrol claim-source.sh
+        # hook so it auto-switches the active source on iPhone connect.
+        mqtt_broker_host = (config.get("mqtt") or {}).get("broker_host") or "fauxnos000.local"
+        if not self.setup_shairport(display_name, mqtt_broker_host):
             self.log("shairport-sync setup failed — AirPlay won't work on this device, "
                      "but the rest of the install will continue", "WARNING")
 
