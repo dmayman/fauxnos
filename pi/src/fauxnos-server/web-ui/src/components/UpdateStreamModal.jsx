@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { X, CheckCircle2, XCircle, Loader2, Server, Cpu } from 'lucide-react'
-import { sseFetch, getServerVersion } from '../api'
+import { sseFetch } from '../api'
 
 /**
  * Combined "Update fauxnos" modal — also reused for single-device updates
@@ -228,66 +228,76 @@ function appendBoundary(setLines, label) {
 }
 
 async function pollUntilServerBack(intervalMs, timeoutMs, stillActive) {
-  // Two-phase wait so we don't catch the pre-restart server still alive.
+  // Two-phase wait that handles the offline-then-back transition without
+  // hanging if either side races us.
   //
-  // The server's restart is triggered by a detached `bash -c "sleep 2 &&
-  // systemctl --user restart fauxnos-server"`. That means: after the SSE
-  // `done` event fires, there's a ~2s window where the OLD server is
-  // still up before the restart actually happens. If we poll naively, we
-  // catch it during that window, declare "back online", fire the next
-  // step's POST, and then the actual restart kills the SSE mid-flight →
-  // browser sees "Failed to fetch."
+  // The restart is triggered by a detached `bash -c "sleep 2 && systemctl
+  // --user restart fauxnos-server"`, which means the OLD server is still
+  // up for ~2s after we receive the SSE `done` event. We need to wait
+  // until the restart has actually happened OR confirm it was so fast
+  // we missed it.
   //
-  // Phase 1: wait for the server to GO OFFLINE. We give it up to 10s
-  // (sleep 2 + scheduling jitter + actual restart teardown).
-  // Phase 2: wait for it to come BACK ONLINE on a fresh PID. Once we
-  // see a successful response, we wait an extra 1s before declaring
-  // "ready" so Flask has time to fully bind its routes.
+  // Phase 1 (best-effort, 8s budget): poll for an offline response. If
+  //   we see one, the restart is in progress — move to phase 2 immediately.
+  //   If we never see offline, that means the whole restart happened
+  //   within the 8s window (observed: a graceful systemctl --user
+  //   restart fauxnos-server cycle can complete in under a second). Also
+  //   valid — proceed to phase 2 to confirm the new server is healthy.
+  //
+  // Phase 2: poll until ONE successful response. We use AbortController
+  //   with a short per-fetch timeout so a hung request can't eat the
+  //   whole budget (which was a real bug — the browser's default fetch
+  //   timeout is ~60s and would gobble the entire 60s budget in one
+  //   stuck request).
 
   const deadline = Date.now() + timeoutMs
 
-  // Phase 1: wait for offline.
-  await sleep(1500)  // initial buffer so we don't race the bash subprocess
-  const offlineDeadline = Date.now() + 10_000
-  let sawOffline = false
+  // Phase 1 — wait for offline, but only briefly.
+  await sleep(750)  // small initial buffer for the bash subprocess to fire
+  const offlineDeadline = Date.now() + 8_000
   while (Date.now() < offlineDeadline) {
     if (!stillActive()) return false
     try {
-      await getServerVersion()
-      // Still up. The restart hasn't happened yet — keep waiting.
-      await sleep(500)
+      await fetchVersionWithTimeout(2000)
+      // Still up. Keep waiting briefly.
+      await sleep(400)
     } catch {
-      sawOffline = true
+      // Saw offline — restart is in progress.
       break
     }
   }
-  // If we never saw it go offline within 10s, something's weird (the
-  // restart may have already happened during our initial buffer, or
-  // it's not happening at all). Either way, proceed to phase 2.
 
-  // Phase 2: wait for it to come back online.
+  // Phase 2 — wait for ANY successful response. One is enough; the
+  // existing server-update endpoint releases its lock before exiting,
+  // and the SSE generator already left the `finally` block, so by the
+  // time Flask is responding again all per-request resources are free.
   while (Date.now() < deadline) {
     if (!stillActive()) return false
     try {
-      await getServerVersion()
-      // Got a response — give Flask another beat to be fully ready
-      // (routes registered, lock released) before letting the next POST
-      // through.
-      await sleep(1000)
-      // Confirm with a second poll so we know the response wasn't a
-      // glitch (rare on LAN, but cheap insurance).
-      try {
-        await getServerVersion()
-        return true
-      } catch {
-        // Flaky — continue waiting.
-      }
+      await fetchVersionWithTimeout(4000)
+      return true
     } catch {
-      // Still offline.
+      // Still offline / still starting up.
     }
     await sleep(intervalMs)
   }
   return false
+}
+
+async function fetchVersionWithTimeout(timeoutMs) {
+  // AbortController-bounded fetch so a hung request can't stall the
+  // poll loop. `getServerVersion()` from api.js is a thin wrapper that
+  // doesn't expose AbortSignal yet — inlining the fetch here keeps the
+  // change scoped to the polling case.
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs)
+  try {
+    const res = await fetch('/api/server/version', { signal: ctrl.signal })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return await res.json()
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function sleep(ms) {
