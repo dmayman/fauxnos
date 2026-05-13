@@ -616,6 +616,7 @@ download_client_code() {
     local module_files=(
         "modules/__init__.py"
         "modules/config_manager.py"
+        "modules/eq_controller.py"
         "modules/go_librespot.py"
         "modules/gpio_buttons.py"
         "modules/ir_listener.py"
