@@ -80,26 +80,49 @@ export default function App() {
   // one step: that single client. Same modal, same SSE consumption logic,
   // just a one-item queue.
 
-  const openUpdateFauxnos = useCallback((opts = {}) => {
+  // Server-only update: git pull + (conditional) fauxnos-server restart.
+  // Force variant when the working tree is dirty — discards local edits
+  // and syncs to origin/main.
+  const openUpdateServer = useCallback((opts = {}) => {
     const { force = false } = opts
+    const steps = [{
+      kind: 'server',
+      label: force ? 'Force-update server from GitHub' : 'Update server from GitHub',
+      url: '/api/server/update',
+      body: force ? { force: true } : {},
+      icon: 'server',
+    }]
+    setUpdateModal({
+      title: 'Update server',
+      icon: 'server',
+      steps,
+      waitForServerRestartAfterServerStep: true,
+    })
+  }, [])
+
+  // Clients update: server git pull FIRST when there's anything new on
+  // origin/main, then per-client install.sh runs. The pull-first step is
+  // necessary because clients install.sh-download files from fauxnos000's
+  // checkout — if we skip the pull, they'd grab stale files. fauxnos000
+  // is included in the per-client list (its UpdateRunner uses a local
+  // subprocess for that case).
+  const openUpdateClients = useCallback(() => {
     const steps = []
-    if (serverVersion?.behind > 0 || force) {
+    const repoBehind = (serverVersion?.behind ?? 0) > 0
+    if (repoBehind) {
       steps.push({
         kind: 'server',
-        label: force ? 'Force-update server from GitHub' : 'Update server from GitHub',
+        label: 'Pull latest from GitHub (clients need the new files)',
         url: '/api/server/update',
-        body: force ? { force: true } : {},
+        body: {},
         icon: 'server',
       })
     }
-    // After a server update, every connected client will be behind. If
-    // there's no server update needed, only target clients that are
-    // already behind (or never deployed). fauxnos000 included — it's
-    // a client like the others now (UpdateRunner uses local subprocess
-    // for it, not SSH).
     const candidates = (clients || []).filter(c => c.connected)
-    const filtered = (steps.length > 0)
-      ? candidates  // server is updating → all connected clients lag after
+    // When we're pulling, every connected client will lag after — include
+    // all of them. Otherwise just the ones already flagged behind.
+    const filtered = repoBehind
+      ? candidates
       : candidates.filter(c => {
           const d = c.deploy
           return d && (d.deployed_client_sha === null || (d.commits_behind !== null && d.commits_behind > 0))
@@ -116,17 +139,11 @@ export default function App() {
       })
     }
     if (steps.length === 0) return  // nothing to do — defensive
-
     setUpdateModal({
-      title: 'Update fauxnos',
+      title: filtered.length === 1 ? `Update ${filtered[0].name || filtered[0].client_id}` : 'Update clients',
       icon: 'server',
       steps,
-      // Wait for server restart before the first client step. The SSE
-      // `done` event for /api/server/update fires before the actual
-      // restart, so we poll /api/server/version until it responds
-      // again on a new (or same) SHA, which is the signal that flask
-      // is back up. Modal handles this internally.
-      waitForServerRestartAfterServerStep: true,
+      waitForServerRestartAfterServerStep: repoBehind,
     })
   }, [serverVersion, clients])
 
@@ -207,7 +224,8 @@ export default function App() {
           onToggleDevices={() => setPopoverOpen(v => !v)}
           serverVersion={serverVersion}
           clients={clients}
-          onUpdateFauxnos={openUpdateFauxnos}
+          onUpdateServer={openUpdateServer}
+          onUpdateClients={openUpdateClients}
         />
         <GroupsTab
           groups={groups}
