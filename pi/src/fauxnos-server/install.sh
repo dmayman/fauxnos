@@ -115,6 +115,12 @@ install_system_dependencies() {
     # `ir-keytable` is what fauxnos-client's IR listener spawns to read raw IR
     # scancodes; without it, fauxnos_client.py logs "IR listener: feature
     # disabled, not starting" and the remote is dead.
+    # `python3-dbus` + `python3-gi` back the fauxnos-mdns-alias CNAME publisher
+    # (it talks to avahi's EntryGroup over D-Bus and uses GLib's main loop).
+    # `nftables` provides the `nft` binary and `nftables.service` for the
+    # port-80→8080 redirect that makes `http://fauxnos.local/` work without a
+    # port suffix. Both packages ship on default Debian images but listing them
+    # explicitly avoids silent breakage if a future image trims its baseline.
     sudo apt install -y \
         snapclient \
         mosquitto \
@@ -122,9 +128,12 @@ install_system_dependencies() {
         avahi-daemon \
         avahi-utils \
         ir-keytable \
+        nftables \
         python3 \
         python3-pip \
         python3-yaml \
+        python3-dbus \
+        python3-gi \
         git \
         curl \
         jq \
@@ -508,6 +517,16 @@ configure_system() {
     log "Registering fauxnos mDNS service..."
     _register_avahi_service
 
+    # Publish a `fauxnos.local` mDNS CNAME → `<hostname>.local` so the web UI
+    # is reachable at a bare, port-less hostname.
+    log "Installing fauxnos.local mDNS alias service..."
+    _install_mdns_alias_service
+
+    # Redirect inbound (and self-targeted) port 80 → 8080 so that the bare
+    # `http://fauxnos.local/` URL hits Flask. Companion to the CNAME above.
+    log "Installing port 80 → 8080 nftables redirect..."
+    _install_port80_redirect
+
     # Enable system services
     log "Enabling system services..."
     sudo systemctl enable avahi-daemon
@@ -681,6 +700,174 @@ AVAHI_XML
 
     sudo systemctl restart avahi-daemon || true
     log_success "Fauxnos mDNS service registered"
+}
+
+# Publish a `fauxnos.local` mDNS CNAME pointing at this host's `.local` name,
+# so the web UI is reachable at `http://fauxnos.local/` (no `000`, no port).
+#
+# Why a CNAME and not an A record: `avahi-publish -a` only publishes one
+# address family. macOS/iOS Safari and curl resolve both A and AAAA in
+# parallel; if AAAA is absent they hang waiting for it to time out before
+# falling back to A. A CNAME inherits *all* address families of the canonical
+# host, sidestepping the IPv6-preference stall. avahi has no `publish-cname`
+# CLI, so we use the EntryGroup D-Bus API directly.
+_install_mdns_alias_service() {
+    local script="/usr/local/bin/fauxnos-mdns-alias"
+    local unit="/etc/systemd/system/fauxnos-mdns-alias.service"
+
+    sudo tee "$script" > /dev/null <<'ALIAS_PY'
+#!/usr/bin/env python3
+"""Publish mDNS CNAME alias(es) via Avahi over D-Bus.
+
+Long-lived: avahi tears down the entry group when its D-Bus connection drops,
+so we hold the connection open in a GLib main loop. systemd restarts us on
+exit (e.g. avahi-daemon restart), which re-publishes the CNAME.
+"""
+import signal
+import sys
+
+import dbus
+import dbus.mainloop.glib
+from gi.repository import GLib
+
+# Avahi constants — would normally come from python3-avahi, hardcoded here so
+# we don't add another apt dependency for three integers.
+DBUS_NAME = "org.freedesktop.Avahi"
+DBUS_PATH_SERVER = "/"
+DBUS_INTERFACE_SERVER = "org.freedesktop.Avahi.Server"
+DBUS_INTERFACE_ENTRY_GROUP = "org.freedesktop.Avahi.EntryGroup"
+IF_UNSPEC = -1
+PROTO_UNSPEC = -1
+CLASS_IN = 0x01
+TYPE_CNAME = 0x05
+TTL = 60
+
+ALIASES = ["fauxnos.local"]
+
+
+def encode_dns_name(name: str) -> bytes:
+    """Encode a dotted name as DNS wire-format labels (length-prefixed, null-terminated)."""
+    out = bytearray()
+    for label in name.rstrip(".").split("."):
+        if len(label) > 63:
+            raise ValueError(f"label too long: {label!r}")
+        out.append(len(label))
+        out.extend(label.encode("ascii"))
+    out.append(0)
+    return bytes(out)
+
+
+def main() -> int:
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SystemBus()
+    server = dbus.Interface(
+        bus.get_object(DBUS_NAME, DBUS_PATH_SERVER),
+        DBUS_INTERFACE_SERVER,
+    )
+    target_fqdn = str(server.GetHostNameFqdn())  # e.g. "fauxnos000.local"
+    print(f"target fqdn: {target_fqdn}", flush=True)
+
+    group = dbus.Interface(
+        bus.get_object(DBUS_NAME, server.EntryGroupNew()),
+        DBUS_INTERFACE_ENTRY_GROUP,
+    )
+
+    rdata = dbus.Array(encode_dns_name(target_fqdn), signature="y")
+    for alias in ALIASES:
+        group.AddRecord(
+            IF_UNSPEC, PROTO_UNSPEC, dbus.UInt32(0),
+            alias, CLASS_IN, TYPE_CNAME, TTL, rdata,
+        )
+        print(f"published CNAME {alias} -> {target_fqdn}", flush=True)
+    group.Commit()
+
+    loop = GLib.MainLoop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        GLib.unix_signal_add(GLib.PRIORITY_HIGH, sig, lambda: (group.Reset(), loop.quit()) and False)
+    loop.run()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+ALIAS_PY
+    sudo chmod +x "$script"
+
+    sudo tee "$unit" > /dev/null <<UNIT
+[Unit]
+Description=Publish fauxnos.local mDNS CNAME alias for the web UI
+After=network-online.target avahi-daemon.service
+Wants=network-online.target avahi-daemon.service
+Requires=avahi-daemon.service
+
+[Service]
+Type=simple
+ExecStart=$script
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable fauxnos-mdns-alias.service
+    # `restart` (not `start`) so re-running install.sh picks up edits to the
+    # publisher script — `start` is a no-op against an already-running unit.
+    sudo systemctl restart fauxnos-mdns-alias.service || true
+    log_success "fauxnos-mdns-alias.service installed and started"
+}
+
+# Redirect port 80 to Flask on 8080. PREROUTING covers traffic from phones /
+# laptops; the OUTPUT rule with `fib daddr type local` covers locally-generated
+# packets (curling fauxnos.local from the Pi itself) since PREROUTING does not
+# fire on the loopback path.
+#
+# Note: `dstnat` is a prerouting-only priority symbol — the OUTPUT chain must
+# use the equivalent integer `-100` or nft refuses to load the ruleset.
+_install_port80_redirect() {
+    sudo tee /etc/nftables.conf > /dev/null <<'NFT'
+#!/usr/sbin/nft -f
+
+flush ruleset
+
+# Default Debian scaffolding — empty filter chains so the firewall is wide
+# open (we rely on the home LAN being trusted). Don't delete these; removing
+# them would leave the box with no `inet filter` table at all, which some
+# tooling expects to exist.
+table inet filter {
+	chain input {
+		type filter hook input priority filter;
+	}
+	chain forward {
+		type filter hook forward priority filter;
+	}
+	chain output {
+		type filter hook output priority filter;
+	}
+}
+
+# Fauxnos: redirect port 80 → Flask on 8080 so `http://fauxnos.local/` works
+# without the `:8080` suffix. Companion to fauxnos-mdns-alias.service.
+table ip nat {
+	chain prerouting {
+		type nat hook prerouting priority dstnat;
+		tcp dport 80 redirect to :8080
+	}
+	chain output {
+		# `dstnat` is prerouting-only; use the equivalent integer -100 here.
+		type nat hook output priority -100;
+		# Match any locally-destined packet so curling fauxnos.local from the
+		# Pi itself also resolves through the redirect.
+		fib daddr type local tcp dport 80 redirect to :8080
+	}
+}
+NFT
+
+    sudo systemctl enable nftables.service
+    # `restart` so edits to nftables.conf get re-applied on re-run.
+    sudo systemctl restart nftables.service
+    log_success "nftables port 80 → 8080 redirect installed"
 }
 
 # ─── Step 7: PulseAudio configuration ─────────────────────────────────────────
