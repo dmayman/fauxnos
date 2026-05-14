@@ -253,6 +253,8 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdate
             onRefresh={onRefresh}
           />
 
+          <EqualizerSection client={client} />
+
           <VersionSection
             client={client}
             serverVersion={serverVersion}
@@ -966,6 +968,213 @@ const LEARN_TIMEOUT_S = 15
  *    the MQTT start command and the client takes over. The button
  *    flips to Cancel until a terminal lifecycle event arrives.
  */
+// Sibling of AdvancedSettings — independent collapsible "Equalizer"
+// section in the device panel. Mirrors the look of AdvancedSettings
+// (fx-section-label header + chevron + fx-panel-card body).
+//
+// The 10 ISO graphic-EQ bands match modules/eq_controller.py BANDS_HZ
+// and api_server.py EQ_BANDS_HZ — keep in sync if the layout changes.
+const EQ_BANDS_HZ = [31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+
+// Pretty-print band frequency for the slider labels: "31" → "31",
+// "1000" → "1k", "16000" → "16k". Saves horizontal space in the strip.
+function fmtBand(hz) {
+  return hz >= 1000 ? `${hz / 1000}k` : `${hz}`
+}
+
+// Pretty-print preset name (snake_case → Title Case).
+function fmtPreset(name) {
+  if (!name) return ''
+  return name.split('_').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ')
+}
+
+// Did the user's current band vector exactly match one of the named
+// presets? Returns the matching name or null. Float tolerance is 0.05 dB
+// so rounding noise in MQTT round-trips doesn't flip the label.
+function findMatchingPreset(presets, bands) {
+  if (!presets || !bands) return null
+  for (const [name, presetBands] of Object.entries(presets)) {
+    let allMatch = true
+    for (const hz of EQ_BANDS_HZ) {
+      const cur = bands[String(hz)] ?? 0
+      const target = presetBands[String(hz)] ?? 0
+      if (Math.abs(cur - target) > 0.05) { allMatch = false; break }
+    }
+    if (allMatch) return name
+  }
+  return null
+}
+
+function EqualizerSection({ client }) {
+  const [open, setOpen] = useState(false)
+  const [enabled, setEnabled] = useState(false)
+  const [bands, setBands] = useState({})
+  const [presets, setPresets] = useState({})
+  // The preset the user picked from the dropdown (no '*' suffix). Render
+  // appends '*' if current bands diverge — that's purely a derived
+  // display thing, not stored.
+  const [selectedPreset, setSelectedPreset] = useState('flat')
+  const [loading, setLoading] = useState(true)
+  const [errorMsg, setErrorMsg] = useState(null)
+  // Per-band debounce so slider drags batch into one PUT after 80ms of
+  // no movement. PUT carries only the band(s) that moved (the server
+  // PUT handler accepts partial 'bands' objects).
+  const debounceRef = useRef(null)
+
+  // Initial fetch — parallel GET of the device's current EQ state AND
+  // the static preset catalog. Both are tiny; one round-trip each.
+  useEffect(() => {
+    if (!client.client_id) return
+    let cancelled = false
+    Promise.all([
+      apiFetch(`/api/clients/${client.client_id}/eq`),
+      apiFetch('/api/eq/presets'),
+    ]).then(([eqResp, presetResp]) => {
+      if (cancelled) return
+      const eq = eqResp?.eq || {}
+      const initBands = eq.bands || {}
+      setEnabled(!!eq.enabled)
+      setBands(initBands)
+      setPresets(presetResp?.presets || {})
+      const match = findMatchingPreset(presetResp?.presets || {}, initBands)
+      setSelectedPreset(match || 'flat')
+    })
+      .catch(e => { if (!cancelled) setErrorMsg(e.message) })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [client.client_id])
+
+  const toggleEnabled = useCallback(async () => {
+    const next = !enabled
+    setEnabled(next)  // optimistic
+    try {
+      await apiFetch(`/api/clients/${client.client_id}/eq`, {
+        method: 'PUT',
+        body: JSON.stringify({ enabled: next }),
+      })
+    } catch (e) {
+      setEnabled(!next)  // revert
+      setErrorMsg(`Toggle failed: ${e.message}`)
+    }
+  }, [client.client_id, enabled])
+
+  const selectPreset = useCallback(async (name) => {
+    if (!presets[name]) return
+    const presetBands = presets[name]
+    setBands({ ...presetBands })  // optimistic: snap sliders
+    setSelectedPreset(name)
+    setErrorMsg(null)
+    try {
+      await apiFetch(`/api/clients/${client.client_id}/eq`, {
+        method: 'PUT',
+        body: JSON.stringify({ preset: name }),
+      })
+    } catch (e) {
+      setErrorMsg(`Preset failed: ${e.message}`)
+    }
+  }, [presets, client.client_id])
+
+  const onBandChange = useCallback((hz, newGain) => {
+    setBands(prev => ({ ...prev, [String(hz)]: newGain }))
+    setErrorMsg(null)
+    // Debounce PUT to a single band — slider drag emits ~60 events/s,
+    // we don't need to flood the server. 80ms feels live.
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      apiFetch(`/api/clients/${client.client_id}/eq`, {
+        method: 'PUT',
+        body: JSON.stringify({ bands: { [String(hz)]: newGain } }),
+      }).catch(e => setErrorMsg(`Band ${hz} Hz failed: ${e.message}`))
+    }, 80)
+  }, [client.client_id])
+
+  // "*" suffix when current bands diverge from selectedPreset. Recomputed
+  // every render — cheap (10 float compares) and avoids stale state.
+  const presetMatches = findMatchingPreset({ [selectedPreset]: presets[selectedPreset] || {} }, bands) === selectedPreset
+  const presetLabel = `${fmtPreset(selectedPreset)}${presetMatches ? '' : ' *'}`
+
+  return (
+    <>
+      <div className="fx-section-label">
+        <span>Equalizer</span>
+        <button
+          className="fx-icon-btn sm"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          title={open ? 'Collapse' : 'Expand'}
+        >
+          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        </button>
+      </div>
+      {open && (
+        <div className="fx-panel-card fx-advanced-body">
+          {loading && <div className="fx-muted">Loading…</div>}
+          {errorMsg && <div className="fx-error">{errorMsg}</div>}
+          {!loading && (
+            <>
+              <div className="fx-eq-header">
+                <label className="fx-eq-enable">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={toggleEnabled}
+                  />
+                  <span>Enabled</span>
+                </label>
+                <select
+                  className="fx-select fx-eq-preset"
+                  value={selectedPreset}
+                  onChange={e => selectPreset(e.target.value)}
+                  disabled={!enabled}
+                  title={enabled ? 'Pick a starting EQ shape' : 'Enable the EQ to choose a preset'}
+                >
+                  {/* Render the current-selected label (with '*' if
+                      diverged) as the displayed option text. The
+                      underlying value stays clean (no '*'), so picking
+                      the same preset name from the menu resets sliders
+                      cleanly. */}
+                  {Object.keys(presets).map(name => (
+                    <option key={name} value={name}>
+                      {name === selectedPreset ? presetLabel : fmtPreset(name)}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="fx-eq-strip">
+                {EQ_BANDS_HZ.map(hz => {
+                  const gain = bands[String(hz)] ?? 0
+                  return (
+                    <div key={hz} className="fx-eq-band">
+                      <span className="fx-eq-gain">
+                        {gain > 0 ? '+' : ''}{gain.toFixed(1)}
+                      </span>
+                      <input
+                        type="range"
+                        className="fx-eq-slider"
+                        min={-12}
+                        max={12}
+                        step={0.5}
+                        value={gain}
+                        disabled={!enabled}
+                        onChange={e => onBandChange(hz, parseFloat(e.target.value))}
+                        onDoubleClick={() => onBandChange(hz, 0)}
+                        aria-label={`${fmtBand(hz)} Hz`}
+                        title={`${fmtBand(hz)} Hz — double-click to zero`}
+                      />
+                      <span className="fx-eq-freq">{fmtBand(hz)}</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </>
+  )
+}
+
 function RemoteControlSection({ client }) {
   const [enabled, setEnabled] = useState(false)
   const [mappings, setMappings] = useState({})

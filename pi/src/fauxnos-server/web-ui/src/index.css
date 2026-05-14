@@ -1496,6 +1496,78 @@ body {
   justify-content: flex-end;
 }
 
+/* ── Equalizer section ──────────────────────────────────────────────────────
+   10-band graphic EQ for the device panel. Header is an enable checkbox
+   + preset dropdown; the slider strip below has 10 vertical sliders with
+   the band frequency below each thumb. Disabled state dims everything
+   below the toggle so it's visually unambiguous that audio is flat. */
+.fx-eq-header {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-3);
+  margin-bottom: var(--fx-3);
+}
+.fx-eq-enable {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-2);
+  cursor: pointer;
+  user-select: none;
+}
+.fx-eq-enable input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--fx-accent);
+}
+.fx-eq-preset {
+  flex: 1;
+  min-width: 0;
+}
+.fx-eq-strip {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: var(--fx-1);
+  padding: var(--fx-2) 0;
+  /* Faint zero line — purely cosmetic. Helps the eye find the centre
+     when sliders are scattered. */
+  background:
+    linear-gradient(to bottom, transparent calc(50% - 1px), var(--fx-line) calc(50% - 1px), var(--fx-line) 50%, transparent 50%);
+}
+.fx-eq-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--fx-1);
+  flex: 1;
+  min-width: 0;
+}
+.fx-eq-gain {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fx-text-3);
+  height: 12px;
+}
+.fx-eq-freq {
+  font-size: 10px;
+  color: var(--fx-text-3);
+}
+.fx-eq-slider {
+  /* Vertical orientation — modern browsers honour writing-mode here.
+     direction:rtl flips the axis so up = positive gain (the natural
+     reading on a graphic EQ). */
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 18px;
+  height: 120px;
+  accent-color: var(--fx-accent);
+  cursor: pointer;
+}
+.fx-eq-slider:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
 /* ── Source rows in device panel ──────────────────────────────────────────── */
 .fx-source-list { /* fx-panel-card supplies layout/border */ }
 /* Each row + its inline form sits in a fx-source-item so hover and "expanded"
