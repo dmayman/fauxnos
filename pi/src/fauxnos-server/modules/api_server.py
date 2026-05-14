@@ -190,6 +190,18 @@ class FauxnosAPIServer:
         def cancel_client_ir_learn(client_id):
             return self.handle_cancel_client_ir_learn(client_id)
 
+        @app.route('/api/clients/<client_id>/eq', methods=['GET'])
+        def get_client_eq(client_id):
+            return self.handle_get_client_eq(client_id)
+
+        @app.route('/api/clients/<client_id>/eq', methods=['PUT'])
+        def put_client_eq(client_id):
+            return self.handle_put_client_eq(client_id)
+
+        @app.route('/api/eq/presets', methods=['GET'])
+        def get_eq_presets():
+            return self.handle_get_eq_presets()
+
         @app.route('/api/clients/<client_id>/ir/stream', methods=['GET'])
         def stream_client_ir(client_id):
             return self.handle_stream_client_ir(client_id)
@@ -769,6 +781,32 @@ class FauxnosAPIServer:
             'feedback_volume': cls.IR_FEEDBACK_VOLUME_DEFAULT,
         }
 
+    # 10 ISO graphic-EQ frequencies — same order client uses in
+    # modules/eq_controller.py BANDS_HZ. Keep these in sync if the
+    # band layout ever changes.
+    EQ_BANDS_HZ = (31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
+
+    # Built-in preset catalog. UI shows these in the dropdown; selecting
+    # one writes the bands vector via PUT /api/clients/<id>/eq. The user
+    # can then tweak sliders — the UI appends "*" to the preset label
+    # when bands diverge (no custom-save UX). Keeping the list short +
+    # opinionated; future presets can be added here without a client
+    # redeploy (the UI fetches via GET /api/eq/presets).
+    EQ_PRESETS = {
+        'flat':        {31: 0.0, 63: 0.0, 125: 0.0, 250: 0.0, 500: 0.0, 1000: 0.0, 2000: 0.0, 4000: 0.0, 8000: 0.0, 16000: 0.0},
+        'bass_boost':  {31: 6.0, 63: 5.0, 125: 3.0, 250: 1.0, 500: 0.0, 1000: 0.0, 2000: 0.0, 4000: 0.0, 8000: 0.0, 16000: 0.0},
+        'vocal':       {31: -2.0, 63: -2.0, 125: -1.0, 250: 1.0, 500: 3.0, 1000: 3.0, 2000: 2.0, 4000: 1.0, 8000: 0.0, 16000: 0.0},
+        'brilliance':  {31: 0.0, 63: 0.0, 125: 0.0, 250: 0.0, 500: 0.0, 1000: 1.0, 2000: 2.0, 4000: 3.0, 8000: 4.0, 16000: 5.0},
+        'loudness':    {31: 5.0, 63: 4.0, 125: 2.0, 250: 0.0, 500: -1.0, 1000: -1.0, 2000: 0.0, 4000: 2.0, 8000: 3.0, 16000: 4.0},
+    }
+
+    @classmethod
+    def _empty_eq_block(cls) -> dict:
+        return {
+            'enabled': False,
+            'bands': {str(hz): 0.0 for hz in cls.EQ_BANDS_HZ},
+        }
+
     def handle_get_client_ir(self, client_id: str):
         """GET /api/clients/<id>/ir — return server's cached mirror.
 
@@ -1014,6 +1052,160 @@ class FauxnosAPIServer:
                     q.put_nowait(event)
                 except Exception:
                     pass
+
+    def handle_get_client_eq(self, client_id: str):
+        """GET /api/clients/<id>/eq — return the server's cached EQ mirror.
+
+        Source of truth lives on the client (modules/eq_controller.py
+        writes ~/.config/fauxnos/eq_state.json). The server's mirror is
+        updated whenever a status/clients/<id>/eq or hello message
+        arrives. Returns the empty block if we haven't seen this client
+        yet (UI shows flat sliders + disabled toggle on first paint).
+        """
+        raw = self._get_client_raw(client_id)
+        if raw is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+        eq = raw.get('eq') or self._empty_eq_block()
+        # Defensive normalization: coerce to the canonical shape every
+        # response, so a stale partial block doesn't leak into the UI.
+        bands = {str(hz): 0.0 for hz in self.EQ_BANDS_HZ}
+        for hz_str, gain in (eq.get('bands') or {}).items():
+            if hz_str in bands and isinstance(gain, (int, float)):
+                bands[hz_str] = float(gain)
+        return jsonify({
+            'client_id': client_id,
+            'eq': {
+                'enabled': bool(eq.get('enabled', False)),
+                'bands': bands,
+            },
+        })
+
+    def handle_put_client_eq(self, client_id: str):
+        """PUT /api/clients/<id>/eq — push new EQ state to the client.
+
+        Body (any subset):
+          {"enabled": true|false}
+          {"bands": {"125": 6.0, "1000": -3.0, ...}}     # partial OK
+          {"preset": "bass_boost"}                       # convenience
+
+        Behavior mirrors the MQTT topic semantics on the client side
+        (see modules/mqtt_client.py _handle_command 'eq' branch).
+        Fire-and-forget over MQTT — the client persists + applies, then
+        echoes back via status/clients/<id>/eq, which the listener
+        catches and writes into server_config. UI does optimistic
+        update against the response from this endpoint.
+        """
+        raw = self._get_client_raw(client_id)
+        if raw is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+
+        data = request.get_json(silent=True) or {}
+        payload = {}
+
+        if 'enabled' in data:
+            payload['enabled'] = bool(data['enabled'])
+
+        # 'preset' is a convenience: resolve to a full bands vector
+        # server-side so the wire-format to the client is always the
+        # raw band gains. Keeps the client dumb about preset names.
+        if 'preset' in data:
+            preset_name = data['preset']
+            if preset_name not in self.EQ_PRESETS:
+                return jsonify({
+                    "error": f"Unknown preset: {preset_name}",
+                    "available": sorted(self.EQ_PRESETS.keys()),
+                }), 400
+            payload['bands'] = {
+                str(hz): float(g) for hz, g in self.EQ_PRESETS[preset_name].items()
+            }
+
+        # Explicit bands override anything 'preset' set. UI never sends
+        # both at once, but if it did, 'bands' wins (slider drag after
+        # picking a preset is the most natural way for both to appear).
+        if 'bands' in data:
+            if not isinstance(data['bands'], dict):
+                return jsonify({
+                    "error": "'bands' must be an object {hz_str: gain_db}",
+                }), 400
+            cleaned = {}
+            for hz_str, gain in data['bands'].items():
+                if hz_str not in {str(h) for h in self.EQ_BANDS_HZ}:
+                    return jsonify({
+                        "error": f"Unknown band: {hz_str}",
+                        "valid_bands": [str(h) for h in self.EQ_BANDS_HZ],
+                    }), 400
+                if not isinstance(gain, (int, float)):
+                    return jsonify({
+                        "error": f"Band {hz_str} gain must be a number",
+                    }), 400
+                cleaned[hz_str] = float(gain)
+            payload['bands'] = cleaned
+
+        if not payload:
+            return jsonify({
+                "error": "Body must include at least one of: enabled, bands, preset",
+            }), 400
+
+        ok = self._publish_mqtt(
+            f"set/clients/{client_id}/eq",
+            json.dumps(payload),
+        )
+        if not ok:
+            return jsonify({"error": "MQTT broker unreachable"}), 502
+
+        # Return the cached mirror (possibly stale; client will echo
+        # back via status/.../eq within a few hundred ms and the next
+        # GET picks up the truth).
+        return self.handle_get_client_eq(client_id)
+
+    def handle_get_eq_presets(self):
+        """GET /api/eq/presets — static catalog of named EQ presets.
+
+        Returns each preset as {name: {hz_str: gain_db, ...}}, matching
+        the wire format the UI uses when previewing a preset on the
+        slider strip before committing.
+        """
+        return jsonify({
+            'presets': {
+                name: {str(hz): float(g) for hz, g in bands.items()}
+                for name, bands in self.EQ_PRESETS.items()
+            },
+            'bands': [str(h) for h in self.EQ_BANDS_HZ],
+        })
+
+    def _ingest_client_eq_state(self, client_id: str, eq_block: dict):
+        """Write the client's EQ state into server_config (mirror update).
+
+        Called from the MQTT listener for both status/.../eq and hello
+        payloads. Idempotent — skips the disk write if value is
+        unchanged.
+        """
+        raw = self._get_client_raw(client_id)
+        if raw is None:
+            return
+        bands = {str(hz): 0.0 for hz in self.EQ_BANDS_HZ}
+        for hz_str, gain in (eq_block.get('bands') or {}).items():
+            if hz_str in bands and isinstance(gain, (int, float)):
+                bands[hz_str] = float(gain)
+        new_eq = {
+            'enabled': bool(eq_block.get('enabled', False)),
+            'bands': bands,
+        }
+        old_eq = raw.get('eq')
+        if old_eq == new_eq:
+            return
+        raw['eq'] = new_eq
+        try:
+            self.config_manager.save_server_config()
+            non_zero = sum(1 for v in new_eq['bands'].values() if v != 0.0)
+            self.log(
+                f"eq mirror updated for {client_id}: "
+                f"enabled={new_eq['enabled']}, "
+                f"non-zero bands={non_zero}/{len(new_eq['bands'])}",
+                "INFO",
+            )
+        except Exception as e:
+            self.log(f"Failed to persist eq mirror for {client_id}: {e}", "ERROR")
 
     def _ingest_client_ir_state(self, client_id: str, ir_block: dict):
         """Write the client's ir state into server_config (mirror update).
@@ -2434,6 +2626,9 @@ rm -- "$0"
                 client.subscribe("status/clients/+/hello")
                 client.subscribe("status/clients/+/ir/state")
                 client.subscribe("status/clients/+/ir/learn_event")
+                # EQ mirroring: hello carries the eq block on
+                # (re)connect; status/.../eq fires on every change.
+                client.subscribe("status/clients/+/eq")
                 # Nudge every client to re-hello so the server's mirror
                 # is fresh after a server restart. Clients handle this
                 # in mqtt_client.py via the "get/clients/all/status"
@@ -2441,7 +2636,7 @@ rm -- "$0"
                 client.publish("get/clients/all/status", "")
                 self.log(
                     "MQTT listener connected, subscribed to "
-                    "mode/hello/ir-state/ir-learn_event"
+                    "mode/hello/ir-state/ir-learn_event/eq"
                 )
 
         def on_message(client, userdata, msg):
@@ -2466,6 +2661,18 @@ rm -- "$0"
                 ir = hello.get("ir")
                 if isinstance(ir, dict):
                     self._ingest_client_ir_state(client_id, ir)
+                eq = hello.get("eq")
+                if isinstance(eq, dict):
+                    self._ingest_client_eq_state(client_id, eq)
+                return
+
+            if action == "eq":
+                try:
+                    eq = json.loads(msg.payload.decode() or "{}")
+                except Exception:
+                    return
+                if isinstance(eq, dict):
+                    self._ingest_client_eq_state(client_id, eq)
                 return
 
             if action == "ir" and sub_action == "state":
