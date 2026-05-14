@@ -797,30 +797,31 @@ deploy_camilladsp_service() {
        && ! pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx camilla_input; then
         mark_reboot_needed "PA needs restart to load camilla_input from new default.pa"
     fi
+}
 
-    # Catch-all for non-first-install default.pa edits (latency tweaks,
-    # new loopbacks, etc.). The check above only fires on the very first
-    # EQ rollout — once camilla_input is in PA's loaded config it stays
-    # there across rolling deploys even if every loopback's latency_msec
-    # changed underneath. We compare the on-disk default.pa mtime to the
-    # running PulseAudio process's start time (/proc/<pid> dir mtime is
-    # the process start on Linux). File newer than process → PA loaded
-    # the previous version; needs restart to pick up the new file.
-    #
-    # Surfaced 2026-05-14 from the latency_msec=20 → 80 bump on a
-    # fully-deployed fauxnos000 where camilla_input was already live.
+# Check whether the on-disk default.pa is newer than the running PA
+# process; if so, PA hasn't loaded the new config and needs restart.
+# MUST run AFTER setup-client.py (i.e. register_client), because
+# setup-client.py is what actually copies the new default.pa into
+# ~/.config/pulse/. Running this from deploy_camilladsp_service would
+# see the OLD on-disk file (still from the previous install) and
+# silently miss every default.pa edit — bit me on the latency_msec=20
+# → 80 deploy 2026-05-14 (fauxnos000 + fauxnos001 both completed with
+# needs_reboot=false even though PA was still running 20ms config).
+check_default_pa_needs_restart() {
     local pa_default="$HOME/.config/pulse/default.pa"
-    if [ -f "$pa_default" ]; then
-        local pa_pid file_mtime pa_start
-        pa_pid=$(pgrep -u "$USER" pulseaudio | head -1)
-        if [ -n "$pa_pid" ]; then
-            file_mtime=$(stat -c %Y "$pa_default" 2>/dev/null)
-            pa_start=$(stat -c %Y "/proc/$pa_pid" 2>/dev/null)
-            if [ -n "$file_mtime" ] && [ -n "$pa_start" ] \
-               && [ "$file_mtime" -gt "$pa_start" ]; then
-                mark_reboot_needed "default.pa newer than running PA (restart needed to apply)"
-            fi
-        fi
+    [ -f "$pa_default" ] || return 0
+    local pa_pid
+    pa_pid=$(pgrep -u "$USER" pulseaudio | head -1)
+    # No PA running → next spawn loads the new file from socket
+    # activation. Nothing to do.
+    [ -n "$pa_pid" ] || return 0
+    local file_mtime pa_start
+    file_mtime=$(stat -c %Y "$pa_default" 2>/dev/null)
+    pa_start=$(stat -c %Y "/proc/$pa_pid" 2>/dev/null)
+    if [ -n "$file_mtime" ] && [ -n "$pa_start" ] \
+       && [ "$file_mtime" -gt "$pa_start" ]; then
+        mark_reboot_needed "default.pa newer than running PA (restart needed to apply)"
     fi
 }
 
@@ -1010,6 +1011,10 @@ main() {
         log_warning "Registration failed - you can retry manually later"
         log "To retry: cd $INSTALL_DIR && python3 setup-client.py --setup"
     fi
+
+    # default.pa is written by setup-client.py inside register_client,
+    # so the mtime check must run AFTER that — see function comment.
+    check_default_pa_needs_restart
 
     validate_installation
     print_completion_message
