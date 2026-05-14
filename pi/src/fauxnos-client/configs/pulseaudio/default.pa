@@ -40,7 +40,13 @@ load-module module-null-sink sink_name=airplaysink sink_properties="device.descr
 # a stable role tag so the calibration code can find it via `pactl list sink-inputs`.
 # On clients without an ADC the source won't exist and PulseAudio will skip the
 # load — that's harmless.
-load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallback" sink=analogsink latency_msec=20 sink_input_properties=media.role=fauxnos-analog-input
+#
+# latency_msec=80 (was 20): see the per-source loopback block below for the
+# full rationale. The HiFiBerry DAC+ADC ALSA source clamps to a 59.95 ms
+# minimum anyway (PA logs "Cannot set requested source latency of 6.67 ms,
+# adjusting to 59.95 ms" at startup) so the practical floor here is ~60 ms;
+# 80 lines this loopback up with the camilla_input ones for consistency.
+load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallback" sink=analogsink latency_msec=80 sink_input_properties=media.role=fauxnos-analog-input
 
 # --- CamillaDSP Capture Sink ---
 # Final intermediate sink before audio enters the DSP engine. All
@@ -71,11 +77,28 @@ load-module module-null-sink sink_name=camilla_input sink_properties="device.des
 # a per-source pre-amp ceiling. Routing target is camilla_input rather
 # than alsa_output directly so the end-of-chain EQ touches every
 # source uniformly (snapcast / airplay / system sounds / analog).
-# load-module module-loopback source=spotifysink.monitor sink=camilla_input latency_msec=20
-load-module module-loopback source=systemsink.monitor sink=camilla_input latency_msec=20 sink_input_properties=media.role=fauxnos-systemsink-out
-load-module module-loopback source=analogsink.monitor sink=camilla_input latency_msec=20 sink_input_properties=media.role=fauxnos-analogsink-out
-load-module module-loopback source=snapsink.monitor sink=camilla_input latency_msec=20 sink_input_properties=media.role=fauxnos-snapsink-out
-load-module module-loopback source=airplaysink.monitor sink=camilla_input latency_msec=20 sink_input_properties=media.role=fauxnos-airplaysink-out
+#
+# latency_msec=80 (was 20): on a Pi Zero 2 W, five simultaneous
+# loopbacks all converging on camilla_input with a 20 ms request cannot
+# hold their schedule. PA's adaptive resampler thrashes (loopback rates
+# observed drifting to 43951–44083 Hz instead of 44100), CPU pegs near
+# 78 %, and within ~13 s of PA startup the journal shows
+# "Too many underruns, increasing latency to N ms" ramping in 5 ms steps
+# until N hits 90.75 ms — which it never recovered from in practice
+# (audio fell progressively behind for hours, remote control queued
+# behind PA's main thread). 80 ms gives PA enough budget to satisfy all
+# five loopbacks plus CamillaDSP's capture without underrun cascades.
+# Net cost: ~60 ms of added end-to-end latency, imperceptible relative
+# to a healthy chain; the unhealthy chain was effectively unbounded.
+#
+# A default.pa edit only takes effect after PA restart, so install.sh
+# below mark_reboot_needed's any time this file's mtime is newer than
+# the running PA process. See [feedback_eq_dsp_rules.md].
+# load-module module-loopback source=spotifysink.monitor sink=camilla_input latency_msec=80
+load-module module-loopback source=systemsink.monitor sink=camilla_input latency_msec=80 sink_input_properties=media.role=fauxnos-systemsink-out
+load-module module-loopback source=analogsink.monitor sink=camilla_input latency_msec=80 sink_input_properties=media.role=fauxnos-analogsink-out
+load-module module-loopback source=snapsink.monitor sink=camilla_input latency_msec=80 sink_input_properties=media.role=fauxnos-snapsink-out
+load-module module-loopback source=airplaysink.monitor sink=camilla_input latency_msec=80 sink_input_properties=media.role=fauxnos-airplaysink-out
 
 # --- Application Routing ---
 # Automatically route specific applications to their designated sinks
