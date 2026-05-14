@@ -767,6 +767,25 @@ deploy_camilladsp_service() {
         systemctl --user enable camilladsp.service
         log_success "camilladsp.service enabled (will start on next boot)"
     fi
+
+    # default.pa is read by PulseAudio at startup ONLY. setup-client.py
+    # writes the new file under ~/.config/pulse/, but the running PA
+    # process keeps the old in-memory config until restart. If the
+    # camilla_input null sink isn't present in the live PA right now,
+    # the audio chain won't route through camilladsp — sliders move,
+    # state file updates, MQTT publishes, but audio stays flat because
+    # the loopbacks are still pointed at alsa_output. Mark reboot
+    # needed so the orchestrator prompts the user (or reboots
+    # interactively-installed first-runs).
+    #
+    # Bit me on fauxnos000 during the first roll-out of this branch
+    # (2026-05-13): update pipeline didn't reboot, default.pa was on
+    # disk but PA still running with the old config, camilladsp kept
+    # restart-looping because camilla_input.monitor didn't exist.
+    if command -v pactl >/dev/null 2>&1 \
+       && ! pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx camilla_input; then
+        mark_reboot_needed "PA needs restart to load camilla_input from new default.pa"
+    fi
 }
 
 # Run client registration

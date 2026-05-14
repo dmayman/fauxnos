@@ -57,6 +57,39 @@ class EqController:
         self.state_file = Path(state_file) if state_file else self.DEFAULT_STATE_FILE
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
 
+        # On startup, re-push the persisted state to camilladsp. Two
+        # scenarios this matters for:
+        #   1. fauxnos-client restart on a system where camilladsp has
+        #      been running flat (it always boots flat because the YAML
+        #      template has gain=0.0 for every band).
+        #   2. camilladsp restart on a system where fauxnos-client
+        #      survives — by default the controller only pushes on
+        #      set_state calls, so the daemon would stay flat until the
+        #      user nudges a slider. This call closes that gap.
+        # Failure is graceful (camilladsp may not be up yet during
+        # boot); on the next set_state call the state still converges.
+        self._sync_on_startup()
+
+    def _sync_on_startup(self) -> None:
+        """Best-effort initial push so audio reflects saved state at boot.
+
+        Only pushes when enabled=True — if the saved state is disabled,
+        camilladsp's flat default is already correct.
+        """
+        try:
+            state = self.get_state()
+        except Exception as e:
+            self.logger.warning(f"eq sync skipped: state read failed ({e})")
+            return
+        if not state.get("enabled"):
+            self.logger.info("eq saved state is disabled — leaving camilladsp flat")
+            return
+        gains = [state["bands"][str(hz)] for hz in BANDS_HZ]
+        if self._push_gains(gains):
+            self.logger.info(f"eq sync at startup pushed saved bands: {dict(zip(BANDS_HZ, gains))}")
+        else:
+            self.logger.info("eq sync at startup: camilladsp not reachable; will retry on next set_state")
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
