@@ -755,6 +755,17 @@ deploy_camilladsp_service() {
         cp "$unit_src" "$unit_dst"
         log "Wrote $unit_dst"
         systemctl --user daemon-reload
+        # daemon-reload re-parses unit files but doesn't apply Restart=
+        # / Environment= / Exec*= changes to a running instance — those
+        # only land at next start. If camilladsp is currently active,
+        # bounce it so the new unit takes effect this install. Brief
+        # (~1-2s) gap in audio output; acceptable during a deploy.
+        # Skipped when inactive: that's either first install (next boot
+        # starts cleanly) or already-broken state (don't paper over).
+        if systemctl --user is-active --quiet camilladsp.service; then
+            systemctl --user restart camilladsp.service || true
+            log "Restarted camilladsp.service to pick up new unit"
+        fi
     fi
 
     # Enable but don't start. Phase 4 (default.pa loading camilla_input)

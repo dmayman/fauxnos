@@ -17,9 +17,24 @@ Type=simple
 # so it doubles as runtime persistence (see install.sh's
 # setup_camilladsp_config — install must NOT clobber it on re-runs).
 ExecStart=/usr/local/bin/camilladsp -a 127.0.0.1 -p 1234 %h/.config/camilladsp/config.yml
-# Restart on crash — but with a meaningful backoff so a YAML edit
-# typo doesn't drown the journal.
-Restart=on-failure
+# Restart=always (not on-failure): when PulseAudio restarts, the
+# pulse_playback/pulse_capture devices throw "Connection terminated"
+# and camilladsp's Rust main loop exits cleanly with status 0. With
+# on-failure that clean exit is ignored and the service stays dead —
+# audio falls silent on every source even though the chain looks
+# otherwise healthy. Surfaced 2026-05-14 when a manual PA restart on
+# fauxnos000 left camilladsp inactive for 38 minutes; PA was happily
+# reloaded on the next snapclient connect, the 5 loopbacks all wrote
+# into camilla_input, but nobody was capturing camilla_input.monitor.
+#
+# RestartSec=5 stays — gives PA's socket activation time to settle
+# (camilladsp tries to capture from camilla_input.monitor immediately,
+# and reconnecting to a half-warm PA was the original concern). A
+# malformed YAML still exits non-zero, so the catastrophe scenario
+# (Restart=always + broken config = journal-drowning restart loop)
+# would happen even with on-failure; this change doesn't make it
+# worse.
+Restart=always
 RestartSec=5
 
 [Install]
