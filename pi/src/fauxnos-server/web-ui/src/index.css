@@ -1186,44 +1186,6 @@ body {
 .fx-source-btn.active > svg { opacity: 1; }
 .fx-source-btn-label { min-width: 0; }
 
-/* Hover popover on the wrapper around a locked source button. Pure CSS,
-   pointer-events:none on the popover so the wrapper still fires :hover
-   reliably even though the disabled button inside swallows events. */
-.fx-source-btn-lock-wrap {
-  position: relative;
-  display: inline-flex;
-  cursor: not-allowed;
-}
-.fx-source-btn-lock-wrap::after {
-  content: attr(data-tooltip);
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 50%;
-  transform: translateX(-50%);
-  white-space: normal;
-  width: max-content;
-  max-width: 260px;
-  padding: 8px 10px;
-  background: var(--fx-surface, #1a1d22);
-  color: var(--fx-fg, #f0f1f4);
-  border: 1px solid var(--fx-border, rgba(255, 255, 255, 0.08));
-  border-radius: 6px;
-  font-size: 12px;
-  line-height: 1.4;
-  text-align: center;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
-  opacity: 0;
-  visibility: hidden;
-  transition: opacity 0.12s ease-out 0.08s, visibility 0s 0.2s;
-  pointer-events: none;
-  z-index: 50;
-}
-.fx-source-btn-lock-wrap:hover::after {
-  opacity: 1;
-  visibility: visible;
-  transition: opacity 0.12s ease-out, visibility 0s;
-}
-
 /* Collapse labels on narrow screens — icons alone keep three sources readable. */
 @media (max-width: 520px) {
   .fx-source-btn { padding: 0 var(--fx-2); }
