@@ -1074,23 +1074,24 @@ function EqualizerSection({ client }) {
   const applyChanges = useCallback(async () => {
     setApplying(true)
     setErrorMsg(null)
+    // Snapshot the values we're about to send so further user edits
+    // during the in-flight PUT don't get prematurely "saved" below.
+    const committed = pendingEq
     try {
-      const resp = await apiFetch(`/api/clients/${client.client_id}/eq`, {
+      await apiFetch(`/api/clients/${client.client_id}/eq`, {
         method: 'PUT',
         body: JSON.stringify({
-          enabled: pendingEq.enabled,
-          bands: pendingEq.bands,
+          enabled: committed.enabled,
+          bands: committed.bands,
         }),
       })
-      // Server returns the post-PUT mirror; trust it as the new saved
-      // state (it may have normalised float precision vs what we sent).
-      const eq = resp?.eq || pendingEq
-      const next = {
-        enabled: !!eq.enabled,
-        bands: eq.bands || pendingEq.bands,
-      }
-      setSavedEq(next)
-      setPendingEq(next)
+      // Don't trust the PUT response body — the server returns the
+      // *pre-echo* server-side mirror (the route fires an MQTT publish
+      // and returns immediately). The client applies asynchronously
+      // and echoes via status/.../eq a few hundred ms later. Using
+      // the response would clobber pendingEq back to the old gains
+      // and make Apply look like a no-op even when the audio changed.
+      setSavedEq(committed)
     } catch (e) {
       setErrorMsg(`Apply failed: ${e.message}`)
     } finally {
