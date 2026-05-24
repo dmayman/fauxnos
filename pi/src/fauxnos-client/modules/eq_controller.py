@@ -289,10 +289,14 @@ class EqController:
                 _pactl(["unload-module", str(eq_mod)])
 
             # 3. Reload eq_sink with new gains.
+            # `sink_master=` is the canonical name; PA 16+ still accepts
+            # `master=` as an alias but logs a deprecation warning on
+            # every load. Using sink_master= silences the warning and is
+            # forward-compatible with PA versions that drop the alias.
             _pactl([
                 "load-module", "module-ladspa-sink",
                 f"sink_name={_EQ_SINK_NAME}",
-                f"master={_HARDWARE_SINK}",
+                f"sink_master={_HARDWARE_SINK}",
                 "plugin=caps",
                 "label=Eq10X2",
                 f"control={gains_str}",

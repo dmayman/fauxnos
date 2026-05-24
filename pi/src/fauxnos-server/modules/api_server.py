@@ -338,16 +338,31 @@ class FauxnosAPIServer:
     # ── Web UI handler ─────────────────────────────────────────────────────────
 
     def handle_index(self):
-        """Serve the web UI index page."""
+        """Serve the web UI index page.
+
+        index.html references the React bundle by content-hash filename
+        (e.g. index-DuVn3cbk.js), so the JS/CSS assets are cache-busted
+        for free. But index.html itself MUST NOT be cached: a stale copy
+        served from Chrome's disk cache after a deploy points at the
+        previous deploy's hashed asset names — those assets have already
+        been replaced on disk, so the browser 404s and the user sees a
+        broken UI. Phase F1 deploys hit this twice; both fixed by
+        Ctrl+Shift+R. no-store/no-cache here is the durable fix.
+        """
         index_file = WEB_DIR / "index.html"
         if not index_file.exists():
             return Response(
                 "<html><body><h1>Fauxnos Server</h1><p>Web UI not found. Deploy web/ directory.</p></body></html>",
                 mimetype="text/html",
-                status=200
+                status=200,
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
             )
         with open(index_file) as f:
-            return Response(f.read(), mimetype="text/html")
+            return Response(
+                f.read(),
+                mimetype="text/html",
+                headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+            )
 
     # ── Client management handlers ─────────────────────────────────────────────
 

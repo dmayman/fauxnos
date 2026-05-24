@@ -64,7 +64,7 @@ load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallbac
 # 2 kHz, 4 kHz, 8 kHz, 16 kHz. Each control is dB, range -48 to +24.
 # __EQ_CONTROL__ is a placeholder rewritten by eq_controller.py and
 # install.sh; render-time it becomes a comma-joined list of 10 gains.
-load-module module-ladspa-sink sink_name=eq_sink master=alsa_output.platform-soc_sound.stereo-fallback plugin=caps label=Eq10X2 control=__EQ_CONTROL__
+load-module module-ladspa-sink sink_name=eq_sink sink_master=alsa_output.platform-soc_sound.stereo-fallback plugin=caps label=Eq10X2 control=__EQ_CONTROL__
 
 # --- Per-source loopbacks into eq_sink ---
 # These take the *monitor output* of each virtual sink and write into
