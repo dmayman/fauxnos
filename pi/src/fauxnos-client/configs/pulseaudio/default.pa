@@ -35,79 +35,63 @@ load-module module-null-sink sink_name=airplaysink sink_properties="device.descr
 
 # --- Analog Input Loopback ---
 # Pipes your analog input directly to the 'analogsink' virtual sink.
-# Removed the aggressive latency_msec=1. PulseAudio will now use system defaults.
 # sink_input_properties=media.role=fauxnos-analog-input gives this loopback
 # a stable role tag so the calibration code can find it via `pactl list sink-inputs`.
-# On clients without an ADC the source won't exist and PulseAudio will skip the
-# load — that's harmless.
+# On clients without an ADC the source won't exist and PulseAudio will skip
+# the load — that's harmless.
 #
-# latency_msec=80 (was 20): see the per-source loopback block below for the
-# full rationale. The HiFiBerry DAC+ADC ALSA source clamps to a 59.95 ms
-# minimum anyway (PA logs "Cannot set requested source latency of 6.67 ms,
-# adjusting to 59.95 ms" at startup) so the practical floor here is ~60 ms;
-# 80 lines this loopback up with the camilla_input ones for consistency.
+# latency_msec=80: matches the per-source loopbacks below for chain-wide
+# consistency. The HiFiBerry DAC+ADC ALSA source clamps to ~60 ms minimum
+# anyway.
 load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallback" sink=analogsink latency_msec=80 sink_input_properties=media.role=fauxnos-analog-input
 
-# --- CamillaDSP Capture Sink ---
-# Final intermediate sink before audio enters the DSP engine. All
-# per-source loopbacks below write here; CamillaDSP captures
-# camilla_input.monitor (its WebSocket on 127.0.0.1:1234 lets the
-# fauxnos-client push live filter updates), applies the filter pipeline
-# from ~/.config/camilladsp/config.yml, then plays out to alsa_output.
+# --- End-of-chain graphic EQ (CAPS Eq10X2, inline LADSPA) ---
+# Replaces the camilladsp/camilla_input pipeline. CamillaDSP introduced
+# audible latency drift on a Pi 3B+ (~50ms direct → 100-200ms with camilla
+# fresh → ~5.5s after a few hours) — root-caused to its PA capture/playback
+# handoff thread, not the DSP itself. module-ladspa-sink processes inline
+# within PA's audio thread — no second process, no IPC.
 #
-# A previous attempt used module-ladspa-sink with mbeq_1197; that path
-# is a dead end because PA exposes no DBUS surface for LADSPA controls,
-# so live slider updates would require module reload (audio glitch).
-# module-equalizer-sink is upstream-disowned in PA 16.1 ("currently
-# unsupported, can cause crashes/latency/artifacts" per its own log
-# warning). CamillaDSP is the actively-maintained, designed-for-live-
-# reload alternative.
+# Live runtime control is achieved by writing this file from
+# modules/eq_controller.py (control= line is substituted from
+# ~/.config/fauxnos/eq_state.json) and then running an unload/reload
+# dance via pactl. ~1s audio interruption per Apply is acceptable for
+# a commit-style UI; the Apply button in the web UI batches enabled +
+# all 10 bands into a single round-trip so each change incurs the
+# reload exactly once.
 #
-# Loading this sink with no consumer attached is harmless: loopback
-# audio just gets dropped at camilla_input until camilladsp.service is
-# up. After=pulseaudio.service + Restart=on-failure on the systemd unit
-# handles the PA-restart → ~10s gap → recovery flow.
-load-module module-null-sink sink_name=camilla_input sink_properties="device.description='CamillaDSP Input'"
+# Bands (left → right): 31 Hz, 63 Hz, 125 Hz, 250 Hz, 500 Hz, 1 kHz,
+# 2 kHz, 4 kHz, 8 kHz, 16 kHz. Each control is dB, range -48 to +24.
+# __EQ_CONTROL__ is a placeholder rewritten by eq_controller.py and
+# install.sh; render-time it becomes a comma-joined list of 10 gains.
+load-module module-ladspa-sink sink_name=eq_sink master=alsa_output.platform-soc_sound.stereo-fallback plugin=caps label=Eq10X2 control=__EQ_CONTROL__
 
-# --- Per-source loopbacks into CamillaDSP ---
+# --- Per-source loopbacks into eq_sink ---
 # These take the *monitor output* of each virtual sink and write into
-# camilla_input (the DSP capture sink above). Each loopback carries a
-# stable sink_input_properties.media.role so
+# eq_sink (the LADSPA sink above). Each loopback carries a stable
+# sink_input_properties.media.role so
 # pulse_controller.set_loopback_calibration() can find it and use it as
-# a per-source pre-amp ceiling. Routing target is camilla_input rather
-# than alsa_output directly so the end-of-chain EQ touches every
-# source uniformly (snapcast / airplay / system sounds / analog).
+# a per-source pre-amp ceiling. Routing target is eq_sink rather than
+# alsa_output directly so the end-of-chain EQ touches every source
+# uniformly (snapcast / airplay / system sounds / analog).
 #
-# latency_msec=80 (was 20): on a Pi Zero 2 W, five simultaneous
-# loopbacks all converging on camilla_input with a 20 ms request cannot
-# hold their schedule. PA's adaptive resampler thrashes (loopback rates
-# observed drifting to 43951–44083 Hz instead of 44100), CPU pegs near
-# 78 %, and within ~13 s of PA startup the journal shows
-# "Too many underruns, increasing latency to N ms" ramping in 5 ms steps
-# until N hits 90.75 ms — which it never recovered from in practice
-# (audio fell progressively behind for hours, remote control queued
-# behind PA's main thread). 80 ms gives PA enough budget to satisfy all
-# five loopbacks plus CamillaDSP's capture without underrun cascades.
-# Net cost: ~60 ms of added end-to-end latency, imperceptible relative
-# to a healthy chain; the unhealthy chain was effectively unbounded.
+# latency_msec=80: chosen for the 5-loopback case on a Pi Zero 2 W to
+# avoid underrun cascades. Pi 3B+ has more headroom so could likely run
+# lower, but kept consistent for now.
 #
 # A default.pa edit only takes effect after PA restart, so install.sh
 # below mark_reboot_needed's any time this file's mtime is newer than
-# the running PA process. See [feedback_eq_dsp_rules.md].
-# load-module module-loopback source=spotifysink.monitor sink=camilla_input latency_msec=80
-load-module module-loopback source=systemsink.monitor sink=camilla_input latency_msec=80 sink_input_properties=media.role=fauxnos-systemsink-out
-load-module module-loopback source=analogsink.monitor sink=camilla_input latency_msec=80 sink_input_properties=media.role=fauxnos-analogsink-out
-load-module module-loopback source=snapsink.monitor sink=camilla_input latency_msec=80 sink_input_properties=media.role=fauxnos-snapsink-out
-load-module module-loopback source=airplaysink.monitor sink=camilla_input latency_msec=80 sink_input_properties=media.role=fauxnos-airplaysink-out
-
-# --- Application Routing ---
-# Automatically route specific applications to their designated sinks
-# This ensures apps go to the correct sink regardless of default sink setting
-# load-module module-match-properties on_client_disconnect=dont-restore add_match_property="application.name=ALSA plug-in [snapclient]" sink=snapsink
-# load-module module-match-properties on_client_disconnect=dont-restore add_match_property="application.name=ALSA plug-in [squeezelite]" sink=libresink
+# the running PA process. eq_controller.py's runtime apply path also
+# rewrites this file (so PA picks it up if it restarts) AND runs a
+# pactl unload/load dance for an immediate live update.
+# load-module module-loopback source=spotifysink.monitor sink=eq_sink latency_msec=80
+load-module module-loopback source=systemsink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-systemsink-out
+load-module module-loopback source=analogsink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-analogsink-out
+load-module module-loopback source=snapsink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-snapsink-out
+load-module module-loopback source=airplaysink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-airplaysink-out
 
 # --- Set Default Sink ---
-# This makes 'spotifysink' the default. Applications that don't specify a sink
-# will send their audio to 'spotifysink'. This audio will then be routed
-# directly to the hardware output.
+# This makes 'snapsink' the default. Applications that don't specify a
+# sink will send their audio to 'snapsink'. This audio will then be
+# routed through the EQ chain to the hardware output.
 set-default-sink snapsink

@@ -1568,6 +1568,16 @@ body {
   opacity: 0.4;
 }
 
+/* Commit/Reset row beneath the slider strip. Mounted only when there
+   are unsaved EQ changes, so spacing-from-strip is built into the row
+   rather than a global gap that would leave dead space when hidden. */
+.fx-eq-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--fx-2);
+  margin-top: var(--fx-3);
+}
+
 /* ── Source rows in device panel ──────────────────────────────────────────── */
 .fx-source-list { /* fx-panel-card supplies layout/border */ }
 /* Each row + its inline form sits in a fx-source-item so hover and "expanded"

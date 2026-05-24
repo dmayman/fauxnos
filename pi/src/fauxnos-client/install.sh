@@ -139,6 +139,11 @@ install_system_dependencies() {
         ir-keytable
         python3-evdev
         python3-gpiozero
+        # CAPS LADSPA plugin pack. Provides /usr/lib/ladspa/caps.so which
+        # ships the Eq10X2 label that module-ladspa-sink loads as the
+        # end-of-chain 10-band graphic EQ (see default.pa). Replaced the
+        # camilladsp pinned tarball install 2026-05-24.
+        caps
     )
     local pip_pkgs=(requests pyyaml paho-mqtt websocket-client)
 
@@ -198,69 +203,40 @@ install_system_dependencies() {
     log_success "System dependencies installed"
 }
 
-# Install CamillaDSP binary
+# Remove any leftover CamillaDSP state from a pre-LADSPA install.
 #
-# CamillaDSP is the end-of-chain DSP engine for the per-client equalizer.
-# We pin a specific upstream release (no apt package exists on Debian
-# Bookworm) and drop the single static binary at /usr/local/bin. The
-# `pulseaudio-aarch64` build is the one we want: it links against libpulse
-# so capture/playback talk straight to PA, no snd-aloop kernel module in
-# the path.
-#
-# Idempotent: if the binary is already on disk at the pinned version,
-# the function exits immediately (re-runs against an already-provisioned
-# device pay just the `--version` cost).
-install_camilladsp_binary() {
-    log_section "Installing CamillaDSP Binary"
+# Idempotent. Runs every install so an upgrade from the camilla era
+# converges, and a fresh install is a no-op (functions short-circuit
+# when the targets don't exist). Specifically:
+#   - Stop + disable + delete the user systemd unit and its drop-in dir
+#   - Remove ~/.config/camilladsp/
+#   - Remove the /usr/local/bin/camilladsp binary
+# We intentionally do NOT touch ~/.config/fauxnos/eq_state.json — that
+# is the user's saved tune and is reused 1:1 by the LADSPA renderer.
+migrate_remove_camilladsp() {
+    log_section "Migrating Off CamillaDSP (if present)"
 
-    local target=/usr/local/bin/camilladsp
-    local pinned_version="4.1.3"
-    local arch
-    arch=$(uname -m)
-
-    # Pi Zero 2 W and Pi 4/5 are all aarch64. Bail loudly on anything
-    # else rather than silently install the wrong binary.
-    if [ "$arch" != "aarch64" ]; then
-        log_error "CamillaDSP install: unsupported arch '$arch' (expected aarch64)"
-        return 1
+    local unit_dir="$HOME/.config/systemd/user"
+    if [ -f "$unit_dir/camilladsp.service" ]; then
+        log "Stopping + disabling camilladsp.service"
+        systemctl --user stop camilladsp.service 2>/dev/null || true
+        systemctl --user disable camilladsp.service 2>/dev/null || true
+        rm -f "$unit_dir/camilladsp.service"
+        rm -rf "$unit_dir/camilladsp.service.d"
+        systemctl --user daemon-reload || true
     fi
 
-    if [ -x "$target" ] && "$target" --version 2>/dev/null | grep -q "$pinned_version"; then
-        log_success "CamillaDSP $pinned_version already installed at $target"
-        return 0
+    if [ -d "$HOME/.config/camilladsp" ]; then
+        log "Removing $HOME/.config/camilladsp"
+        rm -rf "$HOME/.config/camilladsp"
     fi
 
-    local url="https://github.com/HEnquist/camilladsp/releases/download/v${pinned_version}/camilladsp-linux-pulseaudio-aarch64.tar.gz"
-    local tmp_dir
-    tmp_dir=$(mktemp -d)
-    log "Downloading CamillaDSP v${pinned_version} (pulseaudio-aarch64)..."
-    if ! curl -fsSL -o "${tmp_dir}/camilladsp.tar.gz" "$url"; then
-        log_error "Failed to download CamillaDSP from $url"
-        rm -rf "$tmp_dir"
-        return 1
+    if [ -x /usr/local/bin/camilladsp ]; then
+        log "Removing /usr/local/bin/camilladsp"
+        sudo rm -f /usr/local/bin/camilladsp
     fi
 
-    log "Extracting..."
-    if ! tar -xzf "${tmp_dir}/camilladsp.tar.gz" -C "$tmp_dir"; then
-        log_error "Failed to extract CamillaDSP tarball"
-        rm -rf "$tmp_dir"
-        return 1
-    fi
-
-    if [ ! -x "${tmp_dir}/camilladsp" ]; then
-        log_error "Expected ${tmp_dir}/camilladsp after extract — not found"
-        rm -rf "$tmp_dir"
-        return 1
-    fi
-
-    log "Installing to $target (requires sudo)..."
-    sudo install -m 0755 "${tmp_dir}/camilladsp" "$target"
-    rm -rf "$tmp_dir"
-
-    # Sanity check the installed binary
-    local installed_version
-    installed_version=$("$target" --version 2>/dev/null | head -1 || true)
-    log_success "Installed: $installed_version"
+    log_success "CamillaDSP migration complete"
 }
 
 # Configure system settings
@@ -608,8 +584,6 @@ download_client_code() {
         "configs/systemd/shairport-sync-fauxnos.service"
         "configs/shairport-sync/fauxnos.conf"
         "configs/shairport-sync/claim-source.sh"
-        "configs/camilladsp/config.yml.template"
-        "configs/systemd/camilladsp.service"
     )
 
     # Python modules
@@ -676,126 +650,103 @@ download_client_code() {
     log_success "Client code downloaded to: $INSTALL_DIR"
 }
 
-# Set up CamillaDSP runtime config
+# Render the default.pa template's `control=__EQ_CONTROL__` placeholder
+# with values from ~/.config/fauxnos/eq_state.json before setup-client.py
+# copies it into ~/.config/pulse/.
 #
-# The runtime config at ~/.config/camilladsp/config.yml is both the
-# starting state for the EQ and CamillaDSP's persistent state file:
-# when the user moves a slider in the web UI, the client pushes a
-# `SetConfigJson` over WebSocket and CamillaDSP writes the updated
-# YAML back to this same path. install.sh therefore must NOT clobber
-# an existing valid config on re-runs (would erase user EQ tweaks).
+# eq_state.json is the persistent source of truth for the user's EQ tune
+# (modules/eq_controller.py owns runtime writes). When it's present and
+# enabled, we render the saved gains; when absent (fresh install) or
+# disabled, we render 10 zeros (passthrough). Either way the placeholder
+# is gone from the file by the time PA loads it.
 #
-# Re-render only happens when the file is missing or fails --check.
-# Broken files are stashed with a timestamp so we can post-mortem
-# rather than silently lose state.
-setup_camilladsp_config() {
-    log_section "Configuring CamillaDSP"
+# Idempotent. The Python helper runs in-place against the downloaded
+# template, so each install.sh re-run starts from a fresh placeholder
+# (download_client_code clobbers the directory).
+setup_default_pa() {
+    log_section "Rendering default.pa with current EQ state"
 
-    local config_dir="$HOME/.config/camilladsp"
-    local config_file="$config_dir/config.yml"
-    local template="$INSTALL_DIR/configs/camilladsp/config.yml.template"
-
-    mkdir -p "$config_dir"
-
-    if [ -f "$config_file" ]; then
-        if /usr/local/bin/camilladsp --check "$config_file" 2>&1 | grep -q "Config is valid"; then
-            log_success "Existing config valid — leaving user EQ state untouched"
-            return 0
-        fi
-        local backup="${config_file}.broken-$(date +%Y%m%d-%H%M%S)"
-        log_warning "Existing config failed --check; stashing at $backup"
-        mv "$config_file" "$backup"
-    fi
+    local template="$INSTALL_DIR/configs/pulseaudio/default.pa"
+    local state_file="$HOME/.config/fauxnos/eq_state.json"
 
     if [ ! -f "$template" ]; then
-        log_error "Template missing: $template"
+        log_error "default.pa template missing: $template"
         return 1
     fi
 
-    log "Rendering config from template..."
-    cp "$template" "$config_file"
+    python3 - <<PYEOF
+import json, os, re, sys
+from pathlib import Path
 
-    if /usr/local/bin/camilladsp --check "$config_file" 2>&1 | grep -q "Config is valid"; then
-        log_success "CamillaDSP config rendered + validated: $config_file"
-    else
-        log_error "Rendered config failed --check!"
-        /usr/local/bin/camilladsp --check "$config_file"
-        return 1
-    fi
-}
+bands_hz = [31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+template = Path("$template")
+state_file = Path("$state_file")
 
-# Deploy the CamillaDSP user systemd unit
-#
-# Static file (uses %h for home, no template substitution needed). We
-# enable it so it auto-starts on next boot, but we do NOT start it now:
-# the camilla_input null sink it captures from is created by the
-# PulseAudio default.pa, and on first install PA hasn't been restarted
-# yet to pick up that change. A bare `enable` is the right move —
-# Restart=on-failure handles the case where PA is briefly absent later.
-deploy_camilladsp_service() {
-    log_section "Deploying CamillaDSP user service"
+enabled = False
+bands = {str(hz): 0.0 for hz in bands_hz}
+if state_file.exists():
+    try:
+        raw = json.loads(state_file.read_text())
+        enabled = bool(raw.get("enabled", False))
+        for hz_str, gain in (raw.get("bands") or {}).items():
+            if hz_str in bands and isinstance(gain, (int, float)):
+                bands[hz_str] = float(gain)
+    except Exception as e:
+        print(f"WARN: eq_state.json unreadable ({e}); using flat defaults", file=sys.stderr)
 
-    local unit_src="$INSTALL_DIR/configs/systemd/camilladsp.service"
-    local user_units_dir="$HOME/.config/systemd/user"
-    local unit_dst="$user_units_dir/camilladsp.service"
+if enabled:
+    wire = [bands[str(hz)] for hz in bands_hz]
+else:
+    wire = [0.0] * len(bands_hz)
 
-    if [ ! -f "$unit_src" ]; then
-        log_error "Unit template missing: $unit_src"
-        return 1
-    fi
+def fmt(g):
+    g = round(float(g), 1)
+    if g == 0:
+        return "0"
+    if g == int(g):
+        return f"{int(g)}.0"
+    return f"{g:.1f}"
 
-    mkdir -p "$user_units_dir"
+control = ",".join(fmt(g) for g in wire)
+text = template.read_text()
 
-    # Bit-identical? skip (so a no-op update doesn't bounce the unit
-    # on every install.sh re-run). cmp returns 0 only on exact match;
-    # anything else (missing dst, content drift) → copy + reload.
-    if cmp -s "$unit_src" "$unit_dst"; then
-        log_success "camilladsp.service already up to date"
-    else
-        cp "$unit_src" "$unit_dst"
-        log "Wrote $unit_dst"
-        systemctl --user daemon-reload
-        # daemon-reload re-parses unit files but doesn't apply Restart=
-        # / Environment= / Exec*= changes to a running instance — those
-        # only land at next start. If camilladsp is currently active,
-        # bounce it so the new unit takes effect this install. Brief
-        # (~1-2s) gap in audio output; acceptable during a deploy.
-        # Skipped when inactive: that's either first install (next boot
-        # starts cleanly) or already-broken state (don't paper over).
-        if systemctl --user is-active --quiet camilladsp.service; then
-            systemctl --user restart camilladsp.service || true
-            log "Restarted camilladsp.service to pick up new unit"
-        fi
-    fi
+# Replace either the placeholder or a previously-rendered control= value.
+def swap(line):
+    if line.lstrip().startswith("#"):
+        return line
+    if "module-ladspa-sink" not in line:
+        return line
+    parts = line.rstrip("\n").split(" ")
+    for i, tok in enumerate(parts):
+        if tok.startswith("control="):
+            parts[i] = f"control={control}"
+            break
+    return " ".join(parts) + ("\n" if line.endswith("\n") else "")
 
-    # Enable but don't start. Phase 4 (default.pa loading camilla_input)
-    # is the prerequisite for camilladsp actually being able to run, and
-    # PA needs a restart for that to land. Next boot picks everything up
-    # cleanly; meanwhile this is a no-op enable on re-runs.
-    if systemctl --user is-enabled camilladsp.service >/dev/null 2>&1; then
-        log_success "camilladsp.service already enabled"
-    else
-        systemctl --user enable camilladsp.service
-        log_success "camilladsp.service enabled (will start on next boot)"
-    fi
+new_text = "".join(swap(l) for l in text.splitlines(keepends=True))
+if new_text != text:
+    template.write_text(new_text)
+    print(f"Rendered control={control} into {template}")
+else:
+    print(f"default.pa already has control={control}")
+PYEOF
+
+    log_success "default.pa rendered: $template"
 
     # default.pa is read by PulseAudio at startup ONLY. setup-client.py
-    # writes the new file under ~/.config/pulse/, but the running PA
-    # process keeps the old in-memory config until restart. If the
-    # camilla_input null sink isn't present in the live PA right now,
-    # the audio chain won't route through camilladsp — sliders move,
-    # state file updates, MQTT publishes, but audio stays flat because
-    # the loopbacks are still pointed at alsa_output. Mark reboot
-    # needed so the orchestrator prompts the user (or reboots
-    # interactively-installed first-runs).
+    # (run from register_client below) writes the rendered file under
+    # ~/.config/pulse/, but the running PA process keeps the old
+    # in-memory config until restart. If eq_sink isn't present in live
+    # PA right now, the new chain hasn't landed — mark reboot needed
+    # so the orchestrator prompts the user (or reboots interactively-
+    # installed first-runs).
     #
-    # Bit me on fauxnos000 during the first roll-out of this branch
-    # (2026-05-13): update pipeline didn't reboot, default.pa was on
-    # disk but PA still running with the old config, camilladsp kept
-    # restart-looping because camilla_input.monitor didn't exist.
+    # The mtime-based check_default_pa_needs_restart below catches
+    # other default.pa edits (latency tweaks etc.); this eq_sink probe
+    # is the explicit failsafe for the EQ chain specifically.
     if command -v pactl >/dev/null 2>&1 \
-       && ! pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx camilla_input; then
-        mark_reboot_needed "PA needs restart to load camilla_input from new default.pa"
+       && ! pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -qx eq_sink; then
+        mark_reboot_needed "PA needs restart to load eq_sink (LADSPA) from new default.pa"
     fi
 }
 
@@ -996,13 +947,12 @@ main() {
     check_user
     check_prerequisites
     install_system_dependencies
-    install_camilladsp_binary
     configure_system
     configure_ir_receiver
     setup_pulseaudio_user_services
     download_client_code
-    setup_camilladsp_config
-    deploy_camilladsp_service
+    migrate_remove_camilladsp
+    setup_default_pa
 
     # Attempt registration (may fail if server not available)
     if register_client; then

@@ -117,10 +117,11 @@ class FauxnosClient:
             command_handlers=self._build_ir_handlers(),
         )
 
-        # EQ controller — talks to the local camilladsp WebSocket on
-        # 127.0.0.1:1234 and persists user state to ~/.config/fauxnos/
-        # eq_state.json. No PA / MQTT awareness here; the MQTTClient
-        # below ferries set/get commands to it.
+        # EQ controller — rewrites ~/.config/pulse/default.pa's
+        # module-ladspa-sink control= line and runs a pactl unload/load
+        # dance so the new gains land live. Source of truth is the
+        # sidecar at ~/.config/fauxnos/eq_state.json. No MQTT awareness
+        # here; the MQTTClient below ferries set/get commands to it.
         self.eq_controller = EqController()
 
         # Initialize MQTT client (connects to broker, routes commands through SourceManager)

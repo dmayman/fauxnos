@@ -1000,21 +1000,30 @@ function findMatchingPreset(presets, bands) {
   return null
 }
 
+// Shallow {enabled, bands} comparison with float tolerance so MQTT
+// round-trip noise (e.g. 4 vs 4.0) doesn't trip the dirty flag.
+function eqEquals(a, b) {
+  if (!a || !b) return false
+  if (!!a.enabled !== !!b.enabled) return false
+  for (const hz of EQ_BANDS_HZ) {
+    const av = a.bands?.[String(hz)] ?? 0
+    const bv = b.bands?.[String(hz)] ?? 0
+    if (Math.abs(av - bv) > 0.05) return false
+  }
+  return true
+}
+
 function EqualizerSection({ client }) {
   const [open, setOpen] = useState(false)
-  const [enabled, setEnabled] = useState(false)
-  const [bands, setBands] = useState({})
+  // Two views of state: what the device has (saved) and what the user
+  // is staging (pending). Apply flushes pending → saved via one PUT.
+  // Reset reverts pending to saved.
+  const [savedEq, setSavedEq] = useState({ enabled: false, bands: {} })
+  const [pendingEq, setPendingEq] = useState({ enabled: false, bands: {} })
   const [presets, setPresets] = useState({})
-  // The preset the user picked from the dropdown (no '*' suffix). Render
-  // appends '*' if current bands diverge — that's purely a derived
-  // display thing, not stored.
-  const [selectedPreset, setSelectedPreset] = useState('flat')
   const [loading, setLoading] = useState(true)
+  const [applying, setApplying] = useState(false)
   const [errorMsg, setErrorMsg] = useState(null)
-  // Per-band debounce so slider drags batch into one PUT after 80ms of
-  // no movement. PUT carries only the band(s) that moved (the server
-  // PUT handler accepts partial 'bands' objects).
-  const debounceRef = useRef(null)
 
   // Initial fetch — parallel GET of the device's current EQ state AND
   // the static preset catalog. Both are tiny; one round-trip each.
@@ -1027,66 +1036,77 @@ function EqualizerSection({ client }) {
     ]).then(([eqResp, presetResp]) => {
       if (cancelled) return
       const eq = eqResp?.eq || {}
-      const initBands = eq.bands || {}
-      setEnabled(!!eq.enabled)
-      setBands(initBands)
+      const next = {
+        enabled: !!eq.enabled,
+        bands: eq.bands || {},
+      }
+      setSavedEq(next)
+      setPendingEq(next)
       setPresets(presetResp?.presets || {})
-      const match = findMatchingPreset(presetResp?.presets || {}, initBands)
-      setSelectedPreset(match || 'flat')
     })
       .catch(e => { if (!cancelled) setErrorMsg(e.message) })
       .finally(() => { if (!cancelled) setLoading(false) })
     return () => { cancelled = true }
   }, [client.client_id])
 
-  const toggleEnabled = useCallback(async () => {
-    const next = !enabled
-    setEnabled(next)  // optimistic
-    try {
-      await apiFetch(`/api/clients/${client.client_id}/eq`, {
-        method: 'PUT',
-        body: JSON.stringify({ enabled: next }),
-      })
-    } catch (e) {
-      setEnabled(!next)  // revert
-      setErrorMsg(`Toggle failed: ${e.message}`)
-    }
-  }, [client.client_id, enabled])
+  const isDirty = !eqEquals(savedEq, pendingEq)
 
-  const selectPreset = useCallback(async (name) => {
+  const toggleEnabled = useCallback(() => {
+    setPendingEq(prev => ({ ...prev, enabled: !prev.enabled }))
+    setErrorMsg(null)
+  }, [])
+
+  const selectPreset = useCallback((name) => {
     if (!presets[name]) return
     const presetBands = presets[name]
-    setBands({ ...presetBands })  // optimistic: snap sliders
-    setSelectedPreset(name)
+    setPendingEq(prev => ({ ...prev, bands: { ...presetBands } }))
     setErrorMsg(null)
-    try {
-      await apiFetch(`/api/clients/${client.client_id}/eq`, {
-        method: 'PUT',
-        body: JSON.stringify({ preset: name }),
-      })
-    } catch (e) {
-      setErrorMsg(`Preset failed: ${e.message}`)
-    }
-  }, [presets, client.client_id])
+  }, [presets])
 
   const onBandChange = useCallback((hz, newGain) => {
-    setBands(prev => ({ ...prev, [String(hz)]: newGain }))
+    setPendingEq(prev => ({
+      ...prev,
+      bands: { ...prev.bands, [String(hz)]: newGain },
+    }))
     setErrorMsg(null)
-    // Debounce PUT to a single band — slider drag emits ~60 events/s,
-    // we don't need to flood the server. 80ms feels live.
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(() => {
-      apiFetch(`/api/clients/${client.client_id}/eq`, {
-        method: 'PUT',
-        body: JSON.stringify({ bands: { [String(hz)]: newGain } }),
-      }).catch(e => setErrorMsg(`Band ${hz} Hz failed: ${e.message}`))
-    }, 80)
-  }, [client.client_id])
+  }, [])
 
-  // "*" suffix when current bands diverge from selectedPreset. Recomputed
-  // every render — cheap (10 float compares) and avoids stale state.
-  const presetMatches = findMatchingPreset({ [selectedPreset]: presets[selectedPreset] || {} }, bands) === selectedPreset
-  const presetLabel = `${fmtPreset(selectedPreset)}${presetMatches ? '' : ' *'}`
+  const applyChanges = useCallback(async () => {
+    setApplying(true)
+    setErrorMsg(null)
+    try {
+      const resp = await apiFetch(`/api/clients/${client.client_id}/eq`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          enabled: pendingEq.enabled,
+          bands: pendingEq.bands,
+        }),
+      })
+      // Server returns the post-PUT mirror; trust it as the new saved
+      // state (it may have normalised float precision vs what we sent).
+      const eq = resp?.eq || pendingEq
+      const next = {
+        enabled: !!eq.enabled,
+        bands: eq.bands || pendingEq.bands,
+      }
+      setSavedEq(next)
+      setPendingEq(next)
+    } catch (e) {
+      setErrorMsg(`Apply failed: ${e.message}`)
+    } finally {
+      setApplying(false)
+    }
+  }, [client.client_id, pendingEq])
+
+  const resetChanges = useCallback(() => {
+    setPendingEq(savedEq)
+    setErrorMsg(null)
+  }, [savedEq])
+
+  // Which preset (if any) does pendingEq match? Drives the dropdown's
+  // displayed value + the synthetic "Custom" option.
+  const matchedPreset = findMatchingPreset(presets, pendingEq.bands)
+  const dropdownValue = matchedPreset || '__custom__'
 
   return (
     <>
@@ -1111,26 +1131,27 @@ function EqualizerSection({ client }) {
                 <label className="fx-eq-enable">
                   <input
                     type="checkbox"
-                    checked={enabled}
+                    checked={pendingEq.enabled}
                     onChange={toggleEnabled}
                   />
                   <span>Enabled</span>
                 </label>
                 <select
                   className="fx-select fx-eq-preset"
-                  value={selectedPreset}
+                  value={dropdownValue}
                   onChange={e => selectPreset(e.target.value)}
-                  disabled={!enabled}
-                  title={enabled ? 'Pick a starting EQ shape' : 'Enable the EQ to choose a preset'}
+                  disabled={!pendingEq.enabled}
+                  title={pendingEq.enabled ? 'Pick a starting EQ shape' : 'Enable the EQ to choose a preset'}
                 >
-                  {/* Render the current-selected label (with '*' if
-                      diverged) as the displayed option text. The
-                      underlying value stays clean (no '*'), so picking
-                      the same preset name from the menu resets sliders
-                      cleanly. */}
+                  {/* "Custom" is the synthetic option shown when bands
+                      don't match any preset. It's unselectable from the
+                      menu — picking a real preset replaces it. */}
+                  {!matchedPreset && (
+                    <option key="__custom__" value="__custom__" disabled>Custom</option>
+                  )}
                   {Object.keys(presets).map(name => (
                     <option key={name} value={name}>
-                      {name === selectedPreset ? presetLabel : fmtPreset(name)}
+                      {fmtPreset(name)}
                     </option>
                   ))}
                 </select>
@@ -1138,7 +1159,7 @@ function EqualizerSection({ client }) {
 
               <div className="fx-eq-strip">
                 {EQ_BANDS_HZ.map(hz => {
-                  const gain = bands[String(hz)] ?? 0
+                  const gain = pendingEq.bands[String(hz)] ?? 0
                   return (
                     <div key={hz} className="fx-eq-band">
                       <span className="fx-eq-gain">
@@ -1151,7 +1172,7 @@ function EqualizerSection({ client }) {
                         max={12}
                         step={0.5}
                         value={gain}
-                        disabled={!enabled}
+                        disabled={!pendingEq.enabled}
                         onChange={e => onBandChange(hz, parseFloat(e.target.value))}
                         onDoubleClick={() => onBandChange(hz, 0)}
                         aria-label={`${fmtBand(hz)} Hz`}
@@ -1162,6 +1183,30 @@ function EqualizerSection({ client }) {
                   )
                 })}
               </div>
+
+              {/* Apply / Reset row. Only render when there are unsaved
+                  changes — otherwise it collapses out of view and
+                  doesn't visually compete with the slider strip. */}
+              {isDirty && (
+                <div className="fx-eq-actions">
+                  <button
+                    type="button"
+                    className="fx-btn"
+                    onClick={resetChanges}
+                    disabled={applying}
+                  >
+                    Reset
+                  </button>
+                  <button
+                    type="button"
+                    className="fx-btn primary"
+                    onClick={applyChanges}
+                    disabled={applying}
+                  >
+                    {applying ? 'Applying…' : 'Apply'}
+                  </button>
+                </div>
+              )}
             </>
           )}
         </div>
