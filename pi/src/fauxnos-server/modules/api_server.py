@@ -1600,6 +1600,29 @@ class FauxnosAPIServer:
 
             results = {"source_id": source_id}
 
+            # Reject non-spotify sources for multi-client groups. Spotify is
+            # the only snapcast-routed source on this server; AirPlay/Analog/
+            # custom sources are all local-per-device (they play into the
+            # device's own PA sink directly), so switching a multiroom group
+            # to one of those would silence every other client in the group.
+            # UI also disables those buttons; this is the server ratchet.
+            if source_id != "spotify":
+                rpc = self._snapcast_rpc("Server.GetStatus")
+                if rpc and "result" in rpc:
+                    for g in rpc["result"].get("server", {}).get("groups", []):
+                        if g.get("id") != group_id:
+                            continue
+                        connected = sum(1 for c in g.get("clients", []) if c.get("connected"))
+                        if connected > 1:
+                            return jsonify({
+                                "error": "non_spotify_in_multiroom",
+                                "message": (
+                                    f"Source '{source_id}' is not multiroom-capable. "
+                                    f"Only Spotify works when {connected} devices share a group."
+                                ),
+                            }), 409
+                        break
+
             # 1. Try to set snapcast stream
             expected_stream = f"source_{home_client_id}_{source_id}"
             rpc = self._snapcast_rpc("Server.GetStatus")
@@ -1750,13 +1773,23 @@ class FauxnosAPIServer:
     def handle_join_group(self):
         """Handle POST /api/groups/join — {client_id, target_client_id}.
 
-        After the snapcast Group.SetClients move, MQTT-publish a mode change
-        to the JOINING client so its on-device source_manager switches to
-        the matching source (which unmutes snapsink and pins it at 100,
-        letting snapcast control volume via JSON-RPC). Without this, the
-        joining client's source_manager stays on whatever it was previously
-        playing (e.g. 'analog') and silently mutes snapsink as a non-active
-        sink — so the user hears nothing from the joined client.
+        Three side-effects beyond the snapcast Group.SetClients move:
+          1. Pause the joining client's own go-librespot. Without this,
+             a Spotify session that was actively playing into the joining
+             client's home stream keeps running into a sink nobody is
+             listening to (the snapclient moved to the host's group), and
+             Spotify itself still shows the device as "playing" on the phone.
+          2. MQTT-publish mode=spotify to the joining client so its on-device
+             source_manager switches to spotify — unmutes snapsink and pins
+             it at 100, letting snapcast control volume via JSON-RPC. Without
+             this the source_manager stays on whatever it was previously
+             playing (e.g. 'analog') and silently mutes snapsink.
+          3. (Implicit in join_client_to_group) Force the group's stream to
+             the host's home_source. Spotify is the only multiroom-capable
+             source; AirPlay/Analog/custom are local-per-device. The UI also
+             forbids switching the group's source to non-spotify while
+             multi-client; handle_set_group_source is the server ratchet
+             that catches direct API callers.
         """
         try:
             data = request.get_json()
@@ -1765,15 +1798,43 @@ class FauxnosAPIServer:
             if not client_id or not target_client_id:
                 return jsonify({"error": "client_id and target_client_id required"}), 400
 
+            self._pause_client_go_librespot(client_id)
+
             from .group_manager import SnapcastGroupManager
             gm = SnapcastGroupManager(config_manager=self.config_manager)
             if not gm.join_client_to_group(client_id, target_client_id):
                 return jsonify({"error": "Failed to join group"}), 500
 
-            self._publish_mode_for_stream(client_id, target_client_id)
+            # MQTT mode publish is always 'spotify' on join — the only source
+            # the group can actually play in multiroom.
+            try:
+                subprocess.run(
+                    ["mosquitto_pub", "-t", f"set/clients/{client_id}/mode", "-m", "spotify"],
+                    timeout=2, capture_output=True,
+                )
+            except Exception:
+                pass
             return jsonify({"status": "joined"})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    def _pause_client_go_librespot(self, client_id: str) -> None:
+        """Best-effort POST /player/pause to the named client's go-librespot.
+
+        go-librespot runs server-side (one per registered client) on
+        localhost:<server_port>. Failure is silent — pausing is a courtesy
+        to the user's phone-side Spotify state, not a correctness step.
+        """
+        raw = self._get_client_raw(client_id)
+        if not raw:
+            return
+        port = raw.get("go_librespot", {}).get("server_port")
+        if not port:
+            return
+        try:
+            http_requests.post(f"http://localhost:{port}/player/pause", timeout=2)
+        except Exception:
+            pass
 
     def handle_return_home(self):
         """Handle POST /api/groups/return-home — {client_id} (optional).

@@ -22,7 +22,7 @@ function SourceIcon({ source, size = 14 }) {
  * as quiet neutral buttons — enough hierarchy to read the active one at
  * a glance without screaming.
  */
-function SourceButtons({ sources, currentStream, activeMode, groupId, homeClientId, onSwitchSource }) {
+function SourceButtons({ sources, currentStream, activeMode, groupId, homeClientId, onSwitchSource, isMulti }) {
   // Prefer MQTT mode (tracks actual active source), fall back to snapcast stream.
   // Replace the leading `source_fauxnos<N>_` prefix to get the bare source id
   // — matches the value the buttons fire so MQTT echoes light up the right one.
@@ -40,19 +40,28 @@ function SourceButtons({ sources, currentStream, activeMode, groupId, homeClient
     )
   }
 
+  // Multiroom groups only support Spotify — AirPlay/Analog/custom sources are
+  // local-per-device, so switching a shared group to one would silence every
+  // other client. Non-spotify buttons render disabled with an explanatory
+  // tooltip; the server also rejects POST /api/groups/source with non-spotify
+  // on multi-client groups as a ratchet.
   return (
     <div className="fx-source-buttons" role="radiogroup">
       {sources.map(s => {
         const isActive = currentSourceId === s.id
+        const isLocked = isMulti && s.id !== 'spotify'
         return (
           <button
             key={s.id}
             type="button"
             role="radio"
             aria-checked={isActive}
-            className={`fx-source-btn${isActive ? ' active' : ''}`}
-            onClick={() => onSwitchSource(groupId, homeClientId, s.id)}
-            title={s.label || s.id}
+            disabled={isLocked}
+            className={`fx-source-btn${isActive ? ' active' : ''}${isLocked ? ' fx-source-btn-locked' : ''}`}
+            onClick={() => !isLocked && onSwitchSource(groupId, homeClientId, s.id)}
+            title={isLocked
+              ? `${s.label || s.id} doesn't work in multiroom — only Spotify can play across grouped devices`
+              : (s.label || s.id)}
           >
             <SourceIcon source={s} />
             <span className="fx-source-btn-label">{s.label || s.id}</span>
@@ -208,6 +217,7 @@ export default function GroupCard({
             groupId={group.id}
             homeClientId={homeClientId}
             onSwitchSource={onSwitchSource}
+            isMulti={isMulti}
           />
           <button
             className="fx-icon-btn"
