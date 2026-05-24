@@ -42,15 +42,21 @@ function SourceButtons({ sources, currentStream, activeMode, groupId, homeClient
 
   // Multiroom groups only support Spotify — AirPlay/Analog/custom sources are
   // local-per-device, so switching a shared group to one would silence every
-  // other client. Non-spotify buttons render disabled with an explanatory
-  // tooltip; the server also rejects POST /api/groups/source with non-spotify
-  // on multi-client groups as a ratchet.
+  // other client. Non-spotify buttons render disabled with a CSS hover popover
+  // explaining why; the server also rejects POST /api/groups/source with
+  // non-spotify on multi-client groups as a ratchet.
+  //
+  // Locked buttons are wrapped in a span so the hover popover still fires
+  // even though the button itself is disabled (disabled buttons don't always
+  // surface :hover reliably across browsers, and they swallow pointer events
+  // — putting the popover on the wrapper sidesteps both issues).
   return (
     <div className="fx-source-buttons" role="radiogroup">
       {sources.map(s => {
         const isActive = currentSourceId === s.id
         const isLocked = isMulti && s.id !== 'spotify'
-        return (
+        const lockedMsg = `${s.label || s.id} can't play in multiroom — Spotify is the only source that works across grouped devices.`
+        const btn = (
           <button
             key={s.id}
             type="button"
@@ -59,13 +65,17 @@ function SourceButtons({ sources, currentStream, activeMode, groupId, homeClient
             disabled={isLocked}
             className={`fx-source-btn${isActive ? ' active' : ''}${isLocked ? ' fx-source-btn-locked' : ''}`}
             onClick={() => !isLocked && onSwitchSource(groupId, homeClientId, s.id)}
-            title={isLocked
-              ? `${s.label || s.id} doesn't work in multiroom — only Spotify can play across grouped devices`
-              : (s.label || s.id)}
+            title={isLocked ? undefined : (s.label || s.id)}
           >
             <SourceIcon source={s} />
             <span className="fx-source-btn-label">{s.label || s.id}</span>
           </button>
+        )
+        if (!isLocked) return btn
+        return (
+          <span key={s.id} className="fx-source-btn-lock-wrap" data-tooltip={lockedMsg}>
+            {btn}
+          </span>
         )
       })}
     </div>
