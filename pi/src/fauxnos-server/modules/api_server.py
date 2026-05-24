@@ -10,6 +10,7 @@ Test modes available for safe development.
 
 import json
 import argparse
+import re
 import subprocess
 import socket
 import os
@@ -446,11 +447,11 @@ class FauxnosAPIServer:
                         except Exception as e:
                             self.log(f"Failed to restart snapserver: {e}", "WARNING")
 
-                        from .group_manager import assign_all_clients_to_home
-                        if assign_all_clients_to_home(self.config_manager, dry_run=False):
-                            self.log(f"Client {new_client.id} assigned to home group", "SUCCESS")
-                        else:
-                            self.log(f"Failed to assign {new_client.id} to home group", "WARNING")
+                        # Setting the new client's snapcast group stream to its
+                        # home_source happens later in _cleanup_after_install,
+                        # called by InstallRunner once the snapclient is
+                        # verified connected post-reboot. Trying to set it here
+                        # would race the client-side install completing.
                     else:
                         self.log("Server deployment failed", "ERROR")
                         return jsonify({"error": "Failed to deploy server infrastructure"}), 500
@@ -1408,20 +1409,44 @@ class FauxnosAPIServer:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    @staticmethod
+    def _slugify_source_id(label: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", (label or "").strip().lower()).strip("-")
+        return slug or "custom"
+
+    @staticmethod
+    def _unique_source_id(sources, base: str) -> str:
+        existing = {s.get("id") for s in sources}
+        if base not in existing:
+            return base
+        n = 2
+        while f"{base}-{n}" in existing:
+            n += 1
+        return f"{base}-{n}"
+
     def handle_add_source(self, client_id: str):
-        """Handle POST /api/clients/<client_id>/sources — add one source"""
+        """Handle POST /api/clients/<client_id>/sources — add one source.
+
+        ID is derived from label (slugified, uniquified) so the user only
+        supplies a human name. An explicit `id` in the payload is still
+        honored (rejected on collision) for programmatic callers.
+        """
         try:
             data = request.get_json()
-            if not data or "id" not in data or "type" not in data:
-                return jsonify({"error": "source must have 'id' and 'type'"}), 400
+            if not data or "type" not in data:
+                return jsonify({"error": "source must have 'type'"}), 400
+            if "id" not in data and not data.get("label"):
+                return jsonify({"error": "source must have 'label' (or explicit 'id')"}), 400
 
             sources = self._get_client_sources(client_id)
             if sources is None:
                 return jsonify({"error": f"Client {client_id} not found"}), 404
 
-            # Check for duplicate ID
-            if any(s.get("id") == data["id"] for s in sources):
-                return jsonify({"error": f"Source '{data['id']}' already exists"}), 409
+            if "id" in data:
+                if any(s.get("id") == data["id"] for s in sources):
+                    return jsonify({"error": f"Source '{data['id']}' already exists"}), 409
+            else:
+                data["id"] = self._unique_source_id(sources, self._slugify_source_id(data["label"]))
 
             sources.append(data)
             self._set_client_sources(client_id, sources)
@@ -1476,14 +1501,17 @@ class FauxnosAPIServer:
     def handle_get_groups(self):
         """Handle GET /api/groups — proxy to snapcast, enriched with home/stream info.
 
-        Filters offline snapclients from each group's `clients` array, and
-        drops any group that empties out as a result. The server-side filter
-        is the "groups come and go as devices come online/offline" rule:
-        when a Pi powers off its card vanishes from Groups, but its persistent
-        config (sources, has_adc, custom external_switch APIs) lives in
-        server_config.json — untouched here — so the device pops back into
-        Groups intact when its snapclient reconnects. snapserver retains the
-        offline registration too, preserving group memberships and volumes.
+        The "home client" of a snapcast group is derived: it's the connected
+        client whose `home_source` matches the group's current `stream_id`.
+        No `home_group` UUID is consulted (snapcast auto-prunes empty groups,
+        so saved UUIDs go stale on every join/leave). When the user joins
+        client A into client B's group, the group keeps playing B's stream
+        and B remains the home; A is shown as a chip inside B's card.
+
+        Offline snapclients are filtered out and empty groups are dropped, so
+        the visible group list shrinks as devices go offline and grows back
+        intact when they reconnect (their persistent config — sources,
+        has_adc, external_switch APIs — lives in server_config.json).
         """
         try:
             rpc = self._snapcast_rpc("Server.GetStatus")
@@ -1494,7 +1522,7 @@ class FauxnosAPIServer:
             groups = server_data.get("groups", [])
             streams = server_data.get("streams", [])
 
-            # Hide offline snapclients (Layer A). Drop empty groups.
+            # Hide offline snapclients. Drop empty groups.
             visible_groups = []
             for g in groups:
                 g["clients"] = [c for c in g.get("clients", []) if c.get("connected")]
@@ -1502,41 +1530,32 @@ class FauxnosAPIServer:
                     visible_groups.append(g)
             groups = visible_groups
 
-            # Build home_group → client_id map from raw server config
+            # Build home_source → client_id from server config. This is the
+            # only piece of persistent state we use to identify ownership.
             raw_clients = self.config_manager.server_config.get("clients", [])
-            home_group_map = {}  # group_id → client_id
-            for client in raw_clients:
-                hg = client.get("home_group")
-                if hg:
-                    home_group_map[hg] = client.get("id")
+            home_source_map = {
+                c.get("home_source"): c.get("id")
+                for c in raw_clients
+                if c.get("home_source") and c.get("id")
+            }
 
-            # Build available streams list
             stream_list = [{"id": s.get("id", ""), "status": s.get("status", "")} for s in streams]
 
-            # Build raw client map for source lookup
-            raw_map = {c.get("id"): c for c in raw_clients}
-
-            # Enrich each group
             for group in groups:
-                gid = group.get("id", "")
-                group["home_client_id"] = home_group_map.get(gid)
+                stream_id = group.get("stream_id")
+                home_cid = home_source_map.get(stream_id)
+                group["home_client_id"] = home_cid
 
-                # Filter streams belonging to this group's home client
-                home_cid = group.get("home_client_id")
                 if home_cid:
                     group["available_streams"] = [
                         s for s in stream_list if home_cid in s["id"]
                     ]
-                else:
-                    group["available_streams"] = stream_list
-
-                # Include home client's configured sources. Falls back to
-                # synthesized built-ins (spotify/+analog) when the client
-                # has no explicit sources array, so the dropdown always
-                # reflects what the SourcesPanel shows.
-                if home_cid:
                     group["sources"] = self._effective_client_sources(home_cid)
                 else:
+                    # No client owns this stream (e.g. the host is offline but
+                    # a joined client is still here). The UI renders the group
+                    # without a sources panel until the host comes back.
+                    group["available_streams"] = stream_list
                     group["sources"] = []
 
             return jsonify({"groups": groups, "streams": stream_list})
@@ -1680,14 +1699,14 @@ class FauxnosAPIServer:
         Two things happen here:
           1) handle_cleanup_orphans evicts the install-time snapclient
              registration that lingers under the pre-rename hostname.
-          2) ensure_client_home_assignment_with_mapping saves a home_group
-             for the freshly-installed client. The verify step has just
-             confirmed the snapclient reconnected post-reboot, so this is
-             the first moment the client is actually present in
-             snapserver's group roster — closing the race where register
-             writes server_config.json BEFORE snapclient connects (which
-             left home_group=None and broke the Settings gear icon with a
-             404 on /api/clients/null/sources).
+          2) Set the freshly-installed client's snapcast group stream to
+             its home_source. The verify step has just confirmed the
+             snapclient reconnected post-reboot, so this is the first
+             moment the client is actually present in snapserver's roster.
+             Without this, the auto-created snapcast group keeps whatever
+             default stream snapserver picked and the UI can't map it back
+             to the client (home_client_id derivation needs stream_id to
+             match home_source).
 
         Both are best-effort; failures are non-fatal because the install
         itself already succeeded.
@@ -1701,33 +1720,41 @@ class FauxnosAPIServer:
         if not client_id:
             return
         try:
-            client_config = None
-            for c in self.config_manager.server_config.get("clients", []):
-                if c.get("id") == client_id:
-                    client_config = c
-                    break
-            if not client_config:
-                self.log(f"Auto-assign skipped: {client_id} not in server_config", "WARNING")
+            raw = self._get_client_raw(client_id)
+            if not raw:
+                self.log(f"Post-install stream-set skipped: {client_id} not in server_config", "WARNING")
                 return
-            home_source = client_config.get("home_source")
+            home_source = raw.get("home_source")
             if not home_source:
-                self.log(f"Auto-assign skipped: {client_id} has no home_source", "WARNING")
+                self.log(f"Post-install stream-set skipped: {client_id} has no home_source", "WARNING")
                 return
             from .group_manager import SnapcastGroupManager
             gm = SnapcastGroupManager(config_manager=self.config_manager)
-            if gm.ensure_client_home_assignment_with_mapping(
-                config_id=client_id,
-                snapcast_id=client_id,
-                preferred_source=home_source,
-            ):
-                self.log(f"Auto-assigned home_group for {client_id} after install", "SUCCESS")
+            current_group = gm.find_client_group(client_id)
+            if not current_group:
+                self.log(f"Post-install stream-set: {client_id} not yet visible to snapserver", "WARNING")
+                return
+            if current_group.get("stream_id") == home_source:
+                self.log(f"Post-install stream-set: {client_id} already on {home_source}", "INFO")
+                return
+            if gm.set_group_source(current_group.get("id"), home_source):
+                self.log(f"Post-install: set {client_id}'s group stream → {home_source}", "SUCCESS")
             else:
-                self.log(f"Auto-assign returned False for {client_id}", "WARNING")
+                self.log(f"Post-install: failed to set stream for {client_id}", "WARNING")
         except Exception as e:
-            self.log(f"Auto-assign after install failed: {e}", "WARNING")
+            self.log(f"Post-install stream-set failed: {e}", "WARNING")
 
     def handle_join_group(self):
-        """Handle POST /api/groups/join — {client_id, target_client_id}"""
+        """Handle POST /api/groups/join — {client_id, target_client_id}.
+
+        After the snapcast Group.SetClients move, MQTT-publish a mode change
+        to the JOINING client so its on-device source_manager switches to
+        the matching source (which unmutes snapsink and pins it at 100,
+        letting snapcast control volume via JSON-RPC). Without this, the
+        joining client's source_manager stays on whatever it was previously
+        playing (e.g. 'analog') and silently mutes snapsink as a non-active
+        sink — so the user hears nothing from the joined client.
+        """
         try:
             data = request.get_json()
             client_id = data.get("client_id")
@@ -1737,33 +1764,75 @@ class FauxnosAPIServer:
 
             from .group_manager import SnapcastGroupManager
             gm = SnapcastGroupManager(config_manager=self.config_manager)
-            if gm.join_client_to_group(client_id, target_client_id):
-                return jsonify({"status": "joined"})
-            else:
+            if not gm.join_client_to_group(client_id, target_client_id):
                 return jsonify({"error": "Failed to join group"}), 500
+
+            self._publish_mode_for_stream(client_id, target_client_id)
+            return jsonify({"status": "joined"})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
     def handle_return_home(self):
-        """Handle POST /api/groups/return-home — {client_id}"""
+        """Handle POST /api/groups/return-home — {client_id} (optional).
+
+        With no client_id, returns every registered client. Each returned
+        client also gets an MQTT mode publish so its source_manager re-engages
+        the correct sink (defensive — typical case is it's already on the
+        right source, but if the user dragged it into another room and back,
+        the in-process state needs the kick).
+        """
         try:
             data = request.get_json() or {}
             client_id = data.get("client_id")
 
-            from .group_manager import SnapcastGroupManager, assign_all_clients_to_home
+            from .group_manager import SnapcastGroupManager
             gm = SnapcastGroupManager(config_manager=self.config_manager)
 
             if client_id:
-                success = gm.return_client_to_home(client_id)
+                if not gm.return_client_to_home(client_id):
+                    return jsonify({"error": "Failed to return home"}), 500
+                self._publish_mode_for_stream(client_id, client_id)
             else:
-                success = gm.return_all_clients_to_home()
+                failed = []
+                for c in self.config_manager.server_config.get("clients", []):
+                    cid = c.get("id")
+                    if not cid:
+                        continue
+                    if gm.return_client_to_home(cid):
+                        self._publish_mode_for_stream(cid, cid)
+                    else:
+                        failed.append(cid)
+                if failed:
+                    return jsonify({"error": f"Some returns failed: {failed}"}), 500
 
-            if success:
-                return jsonify({"status": "ok"})
-            else:
-                return jsonify({"error": "Failed to return home"}), 500
+            return jsonify({"status": "ok"})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    def _publish_mode_for_stream(self, mqtt_target_client: str, stream_owner_client: str) -> None:
+        """MQTT-publish set/clients/<mqtt_target_client>/mode = <source_id>,
+        where source_id is derived from `stream_owner_client`'s home_source.
+
+        E.g. join fauxnos000 to fauxnos001 → publish mode='spotify' to fauxnos000,
+        because fauxnos001.home_source = source_fauxnos001_spotify. Best-effort:
+        failures are swallowed since the snapcast move already succeeded.
+        """
+        owner = self._get_client_raw(stream_owner_client)
+        if not owner:
+            return
+        home_source = owner.get("home_source", "")
+        # `source_<client>_<source_id>` — split off the source_id suffix
+        parts = home_source.split("_", 2)
+        if len(parts) != 3 or parts[0] != "source":
+            return
+        source_id = parts[2]
+        try:
+            subprocess.run(
+                ["mosquitto_pub", "-t", f"set/clients/{mqtt_target_client}/mode", "-m", source_id],
+                timeout=2, capture_output=True,
+            )
+        except Exception:
+            pass
 
     # ── Status handlers ────────────────────────────────────────────────────────
 

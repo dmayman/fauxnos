@@ -744,7 +744,6 @@ function CustomSourceRow({ source, clientId, onDelete, onUpdate }) {
  * as a perma disclosure below the list.
  */
 function AddCustomSourceForm({ clientId, onAdded, onCancel }) {
-  const [id, setId] = useState('')
   const [label, setLabel] = useState('')
   const [apiUrl, setApiUrl] = useState('')
   const [payload, setPayload] = useState('')
@@ -753,10 +752,10 @@ function AddCustomSourceForm({ clientId, onAdded, onCancel }) {
 
   const handleSubmit = async (e) => {
     e.preventDefault()
-    if (!id.trim() || !label.trim()) return
+    if (!label.trim()) return
     setSubmitting(true)
     const source = {
-      id: id.trim(), label: label.trim(),
+      label: label.trim(),
       type: 'external', category: 'custom',
       control_api: apiUrl.trim(),
       content_type: contentType,
@@ -786,12 +785,8 @@ function AddCustomSourceForm({ clientId, onAdded, onCancel }) {
         </button>
       </div>
       <div>
-        <label className="fx-label">Source ID</label>
-        <input className="fx-input" type="text" value={id} onChange={e => setId(e.target.value)} required placeholder="vinyl" />
-      </div>
-      <div>
-        <label className="fx-label">Label</label>
-        <input className="fx-input" type="text" value={label} onChange={e => setLabel(e.target.value)} required placeholder="Vinyl" />
+        <label className="fx-label">Name</label>
+        <input className="fx-input" type="text" value={label} onChange={e => setLabel(e.target.value)} required placeholder="Vinyl" autoFocus />
       </div>
       <div>
         <label className="fx-label">API URL</label>

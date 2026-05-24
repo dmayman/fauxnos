@@ -73,20 +73,46 @@ class ConfigManager:
             self.logger.error(f"Invalid JSON in config file: {e}")
             raise
 
-        if self._migrate_legacy_deployed_sha(cfg):
+        changed_sha = self._migrate_legacy_deployed_sha(cfg)
+        changed_home_group = self._migrate_drop_home_group(cfg)
+        if changed_sha or changed_home_group:
             # Write the migrated shape back so subsequent loads are
             # no-ops and any consumer reading the file directly sees
             # the new field names.
             try:
                 with open(self.config_file, 'w') as f:
                     json.dump(cfg, f, indent=2)
-                self.logger.info("server_config: migrated legacy deployed_sha → deployed_client_sha")
+                if changed_sha:
+                    self.logger.info("server_config: migrated legacy deployed_sha → deployed_client_sha")
+                if changed_home_group:
+                    self.logger.info("server_config: dropped legacy home_group field(s) (now derived from home_source ↔ stream_id)")
             except Exception as e:
                 # Persistence failure is non-fatal — the in-memory dict is
                 # already migrated, so the server runs correctly this
                 # session; the migration will retry on next load.
                 self.logger.warning(f"server_config: migration save failed (will retry next load): {e}")
         return cfg
+
+    @staticmethod
+    def _migrate_drop_home_group(cfg: Dict[str, Any]) -> bool:
+        """Drop the legacy per-client `home_group` (snapcast group UUID) field.
+
+        The 2026-05-24 group-state refactor removed this field. snapcast
+        auto-prunes empty groups, so any saved UUID went stale the moment
+        a client joined another room (its original group emptied → pruned →
+        UUID gone forever). The new architecture derives group ownership
+        from `home_source` matching the snapcast group's current `stream_id`,
+        so the UUID is purely vestigial.
+
+        Idempotent and additive — only deletes when present, never touches
+        anything else.
+        """
+        changed = False
+        for client in cfg.get("clients", []) or []:
+            if isinstance(client, dict) and "home_group" in client:
+                client.pop("home_group", None)
+                changed = True
+        return changed
 
     @staticmethod
     def _migrate_legacy_deployed_sha(cfg: Dict[str, Any]) -> bool:
@@ -201,7 +227,9 @@ class ConfigManager:
             }
         }
 
-        # Add home source tracking (home_group will be auto-detected on first connect)
+        # Track home_source only. Group ownership is derived live by matching
+        # this against the snapcast group's current stream_id; no home_group
+        # UUID needs to be stored.
         client_config["home_source"] = home_source
 
         self.server_config['clients'].append(client_config)

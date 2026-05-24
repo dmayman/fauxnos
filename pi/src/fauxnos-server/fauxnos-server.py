@@ -10,7 +10,6 @@ Usage:
   fauxnos-server.py remove-client --client-id fauxnos001
   fauxnos-server.py deploy-server
   fauxnos-server.py cleanup --dry-run
-  fauxnos-server.py assign-groups
   fauxnos-server.py status
 """
 
@@ -38,7 +37,7 @@ from modules.config_manager import ConfigManager
 from modules.api_server import FauxnosAPIServer
 from modules.deploy import DeploymentManager
 from modules.cleanup import main as cleanup_main
-from modules.group_manager import assign_all_clients_to_home, SnapcastGroupManager
+from modules.group_manager import SnapcastGroupManager
 from modules.client_monitor import SnapcastClientMonitor
 from modules.volume_manager import VolumeManager
 
@@ -59,7 +58,6 @@ class FauxnosServer:
 
         # Threads for background tasks
         self.api_thread = None
-        self.maintenance_thread = None
 
         # Setup client event callbacks
         self.setup_client_callbacks()
@@ -67,13 +65,8 @@ class FauxnosServer:
     def log(self, message: str, level: str = "INFO"):
         """Centralized logging — always prints, regardless of self.verbose.
 
-        Previously gated on `self.verbose or level in ["ERROR", "WARNING"]`,
-        which silently swallowed every INFO/SUCCESS message including the
-        maintenance loop's "Running periodic group assignment check…"
-        heartbeat. That made the loop indistinguishable from a stuck thread
-        when diagnosing issues from journalctl. Verbose can still be used
-        elsewhere for debug-only output; this top-level log line is too
-        important to suppress.
+        Verbose can still be used elsewhere for debug-only output; this
+        top-level log line is too important to suppress.
         """
         colors = {
             "INFO": "\033[1;36m",    # Bright Cyan
@@ -86,48 +79,23 @@ class FauxnosServer:
         print(f"{colors.get(level, '')}{prefix} [SERVER] {message}{reset}")
 
     def setup_client_callbacks(self):
-        """Setup client event callbacks for group assignment"""
+        """Setup client event callbacks.
+
+        Connect/disconnect events are log-only. Grouping is user-driven via
+        /api/groups/join and /api/groups/return-home; no auto-home behavior
+        runs in response to a reconnect (that's what caused user-grouping
+        to keep getting silently undone).
+        """
         def on_client_connect(client_info):
-            """Handle client connect events"""
-            snapcast_id = client_info.get('id')  # This is the client ID (set by --hostID or defaults to MAC)
-            host_name = client_info.get('host', {}).get('name', 'unknown')  # This is the actual hostname
-
-            self.log(f"Client connected: ID={snapcast_id}, hostname={host_name} - checking group assignment")
-
-            # Find client in config - the snapcast_id should match our config ID when using --hostID
-            client_config = None
-            for client in self.config_manager.server_config.get('clients', []):
-                # The client ID in config should match the snapcast ID (when using --hostID)
-                if client.get('id') == snapcast_id:
-                    client_config = client
-                    break
-
-            if client_config:
-                home_source = client_config.get('home_source')
-
-                if home_source:
-                    group_manager = SnapcastGroupManager(config_manager=self.config_manager)
-                    # Pass both IDs - config ID for lookups, snapcast ID for operations
-                    if group_manager.ensure_client_home_assignment_with_mapping(
-                        config_id=client_config['id'],
-                        snapcast_id=snapcast_id,
-                        preferred_source=home_source
-                    ):
-                        self.log(f"Assigned {snapcast_id} to correct group and source", "SUCCESS")
-                    else:
-                        self.log(f"Failed to assign {snapcast_id} correctly", "WARNING")
-                else:
-                    self.log(f"Client {snapcast_id} missing home source config", "WARNING")
-            else:
-                self.log(f"Client {snapcast_id} (hostname: {host_name}) not found in server config", "WARNING")
+            snapcast_id = client_info.get('id')
+            host_name = client_info.get('host', {}).get('name', 'unknown')
+            self.log(f"Client connected: ID={snapcast_id}, hostname={host_name}")
 
         def on_client_disconnect(client_info):
-            """Handle client disconnect events"""
             client_id = client_info.get('id')
             client_name = client_info.get('host', {}).get('name', 'unknown')
             self.log(f"Client disconnected: {client_id} ({client_name})")
 
-        # Set callbacks
         self.client_monitor.set_connect_callback(on_client_connect)
         self.client_monitor.set_disconnect_callback(on_client_disconnect)
 
@@ -146,29 +114,23 @@ class FauxnosServer:
         self.api_thread = threading.Thread(target=run_api, daemon=True)
         self.api_thread.start()
 
-    def start_maintenance_tasks(self):
-        """Start periodic maintenance tasks"""
-        self.log("Starting maintenance tasks...")
+    def run_startup_reconcile(self):
+        """One-shot at boot: retune any group's stream to match its sole
+        connected client's home_source.
 
-        def maintenance_loop():
-            while self.running:
-                try:
-                    # Every 5 minutes, ensure clients are in correct groups
-                    self.log("Running periodic group assignment check...")
-                    assign_all_clients_to_home(self.config_manager, dry_run=False)
-
-                    # Sleep for 5 minutes
-                    for _ in range(300):  # 5 minutes = 300 seconds
-                        if not self.running:
-                            break
-                        time.sleep(1)
-
-                except Exception as e:
-                    self.log(f"Maintenance task error: {e}", "ERROR")
-                    time.sleep(60)  # Wait a minute before retrying
-
-        self.maintenance_thread = threading.Thread(target=maintenance_loop, daemon=True)
-        self.maintenance_thread.start()
+        Replaces the old 5-minute maintenance loop. Never moves clients
+        between groups — that's user-driven via the /api/groups/* endpoints.
+        Only fixes streams to recover from snapcast's prune-and-recreate
+        cycle where a fresh group inherits a default stream that doesn't
+        match the client's intended home.
+        """
+        self.log("Running startup reconcile (stream retune only, no moves)...")
+        try:
+            gm = SnapcastGroupManager(config_manager=self.config_manager)
+            gm.reconcile_startup()
+            self.log("Startup reconcile complete", "SUCCESS")
+        except Exception as e:
+            self.log(f"Startup reconcile failed: {e}", "WARNING")
 
     def start_client_monitoring(self):
         """Start client event monitoring"""
@@ -178,49 +140,6 @@ class FauxnosServer:
             self.log("✅ Client monitoring started", "SUCCESS")
         else:
             self.log("❌ Failed to start client monitoring", "ERROR")
-
-    def sweep_existing_clients(self):
-        """Back-fill on_client_connect for clients already connected at startup.
-
-        SnapcastClientMonitor only forwards future Client.OnConnect
-        notifications, so any client whose snapclient connected before our
-        monitor subscribed (e.g. across a server restart, or right after a
-        fresh install where the post-reboot connect raced the monitor
-        startup) never has its home_group auto-saved. That manifests as a
-        404 from the Settings panel ("/api/clients/null/sources") because
-        /api/groups can't reverse-map the group to a client.
-
-        This sweep asks snapserver for the current roster once at startup
-        and synthesises a connect event for each currently-connected
-        client. The downstream on_client_connect callback is idempotent —
-        ensure_client_home_assignment_with_mapping skips clients that
-        already have a home_group saved.
-        """
-        if not self.client_monitor.on_client_connect:
-            return
-        try:
-            # Use the group_manager's RPC helper so we benefit from the
-            # newline-framed read fix; a direct socket.recv(4096) here would
-            # re-introduce the truncation bug Server.GetStatus already trips.
-            gm = SnapcastGroupManager(config_manager=self.config_manager)
-            status = gm.get_server_status()
-            if not status or "result" not in status:
-                self.log("Startup sweep: snapserver returned no status", "WARNING")
-                return
-            groups = status["result"].get("server", {}).get("groups", [])
-            dispatched = 0
-            for g in groups:
-                for c in g.get("clients", []):
-                    if not c.get("connected"):
-                        continue
-                    dispatched += 1
-                    try:
-                        self.client_monitor.on_client_connect(c)
-                    except Exception as e:
-                        self.log(f"Startup sweep: on_client_connect raised for {c.get('id')}: {e}", "WARNING")
-            self.log(f"Startup sweep: dispatched on_client_connect for {dispatched} already-connected client(s)", "SUCCESS")
-        except Exception as e:
-            self.log(f"Startup sweep failed: {e}", "WARNING")
 
     def start_volume_management(self):
         """Start volume management (WebSocket listeners)"""
@@ -257,16 +176,15 @@ class FauxnosServer:
 
         # Start components
         self.start_api_server()
-        self.start_maintenance_tasks()
+
+        # One-shot startup reconcile: retune any group's stream to match its
+        # sole connected client's home_source. Skip in test mode (no snapcast).
+        if not self.test_mode:
+            self.run_startup_reconcile()
 
         # Start client monitoring (skip in test mode)
         if not self.test_mode:
             self.start_client_monitoring()
-            # Immediately back-fill on_client_connect for the clients that
-            # were already connected when we started subscribing. Must come
-            # AFTER start_client_monitoring so the callback is wired, but it
-            # doesn't depend on the JSON-RPC notification socket itself.
-            self.sweep_existing_clients()
 
         # Start volume management (skip in test mode)
         if not self.test_mode:
@@ -278,7 +196,6 @@ class FauxnosServer:
 
         self.log("✅ Server daemon started successfully!")
         self.log("📡 API server running on port 8080")
-        self.log("🔄 Maintenance tasks running every 5 minutes")
         if not self.test_mode:
             self.log("👀 Client event monitoring active")
             self.log("🎚️ Volume management active")
@@ -320,11 +237,6 @@ def cmd_add_client(args):
             deployment_manager = DeploymentManager(config_manager)
             if deployment_manager.deploy_server_configs():
                 print("✅ Server infrastructure deployed")
-
-                # Auto-assign groups if requested
-                if not args.no_assign:
-                    print("🏠 Auto-assigning to home group...")
-                    assign_all_clients_to_home(config_manager, dry_run=False)
             else:
                 print("❌ Deployment failed")
                 return 1
@@ -407,17 +319,6 @@ def cmd_cleanup(args):
 
     return cleanup_main()
 
-def cmd_assign_groups(args):
-    """Assign clients to their home groups"""
-    config_manager = ConfigManager(test_mode=args.test)
-
-    if assign_all_clients_to_home(config_manager, dry_run=args.dry_run):
-        print("✅ Group assignments completed")
-        return 0
-    else:
-        print("❌ Some group assignments failed")
-        return 1
-
 def cmd_status(args):
     """Show server status"""
     config_manager = ConfigManager(test_mode=args.test)
@@ -446,99 +347,6 @@ def cmd_status(args):
         print(f"\n🔊 Snapcast: Unable to connect ({e})")
 
     return 0
-
-def cmd_reset_groups(args):
-    """Reset home groups for testing"""
-    print("🔄 Resetting Home Groups")
-    print("=" * 50)
-    print()
-
-    config_manager = ConfigManager(test_mode=args.test)
-
-    if args.client_id:
-        # Reset specific client
-        print(f"Resetting home group for client: {args.client_id}")
-        for client in config_manager.server_config.get('clients', []):
-            if client['id'] == args.client_id:
-                if 'home_group' in client:
-                    del client['home_group']
-                    config_manager.save_server_config()
-                    print(f"✅ Reset home group for {args.client_id}")
-                else:
-                    print(f"ℹ️  {args.client_id} has no home group set")
-                break
-        else:
-            print(f"❌ Client {args.client_id} not found")
-    else:
-        # Reset all clients
-        print("Resetting home groups for all clients...")
-        reset_count = 0
-        for client in config_manager.server_config.get('clients', []):
-            if 'home_group' in client:
-                del client['home_group']
-                reset_count += 1
-                print(f"  - Reset {client['id']}")
-
-        if reset_count > 0:
-            config_manager.save_server_config()
-            print(f"\n✅ Reset home groups for {reset_count} clients")
-        else:
-            print("ℹ️  No clients had home groups set")
-
-    print("\n💡 Home groups will be auto-detected on next client connect")
-    print("💡 Run 'python3 fauxnos-server.py assign-groups' to trigger reassignment now")
-    return 0
-
-def cmd_join_group(args):
-    """Join a client to another client's group (multiroom)"""
-    config_manager = ConfigManager(test_mode=args.test)
-    group_manager = SnapcastGroupManager(config_manager=config_manager)
-
-    print(f"🔗 Joining {args.client_id} to {args.target_id}'s group...")
-
-    if group_manager.join_client_to_group(args.client_id, args.target_id):
-        # Show current groups
-        print("\n📊 Current groups:")
-        groups = group_manager.get_groups()
-        for group in groups:
-            clients = group.get('clients', [])
-            if clients:  # Only show non-empty groups
-                client_ids = [c.get('id') for c in clients]
-                source = group.get('stream_id')
-                print(f"   • Group {group['id'][:8]}... ({source})")
-                print(f"     Clients: {', '.join(client_ids)}")
-        return 0
-    else:
-        return 1
-
-def cmd_return_home(args):
-    """Return client(s) to their home groups"""
-    config_manager = ConfigManager(test_mode=args.test)
-    group_manager = SnapcastGroupManager(config_manager=config_manager)
-
-    if args.client_id:
-        # Return specific client to home
-        print(f"🏠 Returning {args.client_id} to home group...")
-        if group_manager.return_client_to_home(args.client_id):
-            # Show current groups
-            print("\n📊 Current groups:")
-            groups = group_manager.get_groups()
-            for group in groups:
-                clients = group.get('clients', [])
-                if clients:  # Only show non-empty groups
-                    client_ids = [c.get('id') for c in clients]
-                    source = group.get('stream_id')
-                    print(f"   • Group {group['id'][:8]}... ({source})")
-                    print(f"     Clients: {', '.join(client_ids)}")
-            return 0
-        else:
-            return 1
-    else:
-        # Return all clients to home
-        if group_manager.return_all_clients_to_home(dry_run=args.dry_run):
-            return 0
-        else:
-            return 1
 
 def cmd_show_groups(args):
     """Show current snapcast groups"""
@@ -598,12 +406,12 @@ def cmd_config(args):
             print(f"      Server Port: {client.server_port}")
             print(f"      Zeroconf Port: {client.zeroconf_port}")
 
-            # Find home group/source from server config
+            # Find home_source from server config (home_group field is no
+            # longer stored — group ownership is derived live from
+            # home_source ↔ snapcast stream_id).
             for sc in server_config.get('clients', []):
                 if sc.get('id') == client.id:
-                    home_group = sc.get('home_group', 'Not set')
                     home_source = sc.get('home_source', 'Not set')
-                    print(f"      Home Group: {home_group}")
                     print(f"      Home Source: {home_source}")
                     break
 
@@ -647,21 +455,15 @@ def cmd_help(args):
 
     print("🏠 GROUP MANAGEMENT")
     print("  show-groups        Display current snapcast groups and clients")
-    print("  join-group         Join client to another's group (multiroom)")
-    print("                     CLIENT_ID TARGET_ID")
-    print("  return-home        Return client(s) to saved home groups")
-    print("                     [--client-id ID] [--dry-run]")
-    print("  assign-groups      Auto-assign all clients to home (first setup)")
-    print("                     [--dry-run]")
-    print("  reset-groups       Clear saved home groups for testing")
-    print("                     [--client-id ID]")
+    print()
+    print("  Group join/return-home is user-driven via the web UI →")
+    print("  POST /api/groups/join and /api/groups/return-home.")
     print()
 
     print("💡 COMMON WORKFLOWS")
-    print("  • First setup:     add-client → deploy-server → assign-groups")
-    print("  • Multiroom:       join-group fauxnos001 fauxnos000")
-    print("  • Return home:     return-home --client-id fauxnos001")
-    print("  • Return all home: return-home")
+    print("  • First setup:     add-client → deploy-server")
+    print("  • Multiroom join:  drag a device card onto another in the UI")
+    print("  • Return home:     drag the joined device out of the group card")
     print()
 
     print("🔧 GLOBAL FLAGS")
@@ -693,42 +495,26 @@ Examples:
   # Clean up orphaned infrastructure
   python3 fauxnos-server.py cleanup --dry-run
 
-  # Assign all clients to their home groups
-  python3 fauxnos-server.py assign-groups
-
   # Show server and client status
   python3 fauxnos-server.py status
 
   # Show detailed server configuration
   python3 fauxnos-server.py config
 
-  # Reset home groups for testing
-  python3 fauxnos-server.py reset-groups
-  python3 fauxnos-server.py reset-groups --client-id fauxnos001
-
   # Show current snapcast groups
   python3 fauxnos-server.py show-groups
 
-  # Join clients together (multiroom sync)
-  python3 fauxnos-server.py join-group fauxnos001 fauxnos000
-
-  # Return client(s) to their home groups
-  python3 fauxnos-server.py return-home --client-id fauxnos001  # single client
-  python3 fauxnos-server.py return-home                          # all clients
-
 Command Overview:
-  run              Start the complete server daemon (API + monitoring + maintenance)
+  run              Start the complete server daemon (API + monitoring)
   add-client       Add a new client and deploy infrastructure
   remove-client    Remove a client and clean up infrastructure
   deploy-server    Deploy/update server infrastructure for all clients
   cleanup          Clean up orphaned infrastructure files
-  assign-groups    Assign all clients to their home groups and sources
   status           Show server status and client information
   config           Show detailed server configuration
-  reset-groups     Reset home groups (for testing auto-detection)
   show-groups      Show current snapcast groups
-  join-group       Join a client to another client's group (multiroom)
-  return-home      Return client(s) to their saved home groups
+
+  (Group join / return-home are user-driven via the web UI.)
         """
     )
 
@@ -755,7 +541,6 @@ Command Overview:
     add_parser.add_argument('--mac', required=True, help='MAC address of client')
     add_parser.add_argument('--is-server-device', action='store_true', help='Mark as server device (forces fauxnos000 ID)')
     add_parser.add_argument('--no-deploy', action='store_true', help='Skip auto-deployment')
-    add_parser.add_argument('--no-assign', action='store_true', help='Skip auto-group assignment')
     add_parser.set_defaults(func=cmd_add_client)
 
     # Remove client
@@ -774,11 +559,6 @@ Command Overview:
     cleanup_parser.add_argument('--dry-run', action='store_true', help='Show what would be cleaned')
     cleanup_parser.set_defaults(func=cmd_cleanup)
 
-    # Assign groups
-    assign_parser = subparsers.add_parser('assign-groups', help='Assign clients to home groups')
-    assign_parser.add_argument('--dry-run', action='store_true', help='Show what would be assigned')
-    assign_parser.set_defaults(func=cmd_assign_groups)
-
     # Status
     status_parser = subparsers.add_parser('status', help='Show server status')
     status_parser.set_defaults(func=cmd_status)
@@ -787,26 +567,9 @@ Command Overview:
     config_parser = subparsers.add_parser('config', help='Show server configuration')
     config_parser.set_defaults(func=cmd_config)
 
-    # Reset groups (for testing)
-    reset_parser = subparsers.add_parser('reset-groups', help='Reset home groups for testing')
-    reset_parser.add_argument('--client-id', help='Reset specific client (default: all)')
-    reset_parser.set_defaults(func=cmd_reset_groups)
-
     # Show groups
     groups_parser = subparsers.add_parser('show-groups', help='Show current snapcast groups')
     groups_parser.set_defaults(func=cmd_show_groups)
-
-    # Join group (multiroom)
-    join_parser = subparsers.add_parser('join-group', help='Join a client to another client\'s group (multiroom)')
-    join_parser.add_argument('client_id', help='Client ID to move (e.g., fauxnos001)')
-    join_parser.add_argument('target_id', help='Client ID to join with (e.g., fauxnos000)')
-    join_parser.set_defaults(func=cmd_join_group)
-
-    # Return home
-    return_parser = subparsers.add_parser('return-home', help='Return client(s) to their saved home groups')
-    return_parser.add_argument('--client-id', help='Client ID to return home (default: all clients)')
-    return_parser.add_argument('--dry-run', action='store_true', help='Show what would be done (all clients only)')
-    return_parser.set_defaults(func=cmd_return_home)
 
     # Parse and execute
     args = parser.parse_args()

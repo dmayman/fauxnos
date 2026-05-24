@@ -285,7 +285,7 @@ download_server_code() {
     log "Downloading server files..."
 
     # server_config.json is NOT in this list anymore — it's runtime state
-    # (registered clients, home_groups, deployed SHAs), gitignored, and
+    # (registered clients, home_sources, deployed SHAs), gitignored, and
     # auto-created from configs/server_config.json.template by
     # config_manager.ConfigManager._ensure_config_exists() on first start.
     local files=(
