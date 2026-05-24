@@ -78,12 +78,22 @@ class SnapcastGroupManager:
         return []
 
     def find_client_group(self, client_id: str) -> Optional[Dict[str, Any]]:
-        """Find which snapcast group contains a client (by id or hostname)."""
+        """Find which snapcast group contains a CONNECTED client (strict id match).
+
+        We deliberately don't fall back to host.name: a stale snapclient
+        registration under the device's wlan0 MAC (legacy install path)
+        keeps its `host.name="fauxnosNNN"` while its `id` stays the MAC
+        string. The hostname-fallback would match that disconnected stale
+        group first — and `return_client_to_home` would then "fix" the
+        wrong group's stream, leaving the real client stuck on whatever
+        stream snapcast auto-assigned to its new group.
+
+        Disconnected clients are also skipped — operations targeting a
+        sole-member-disconnected group are never what the caller wants.
+        """
         for group in self.get_groups():
             for client in group.get("clients", []):
-                if client.get("id") == client_id:
-                    return group
-                if client.get("host", {}).get("name") == client_id:
+                if client.get("id") == client_id and client.get("connected"):
                     return group
         return None
 
@@ -205,18 +215,43 @@ class SnapcastGroupManager:
     # ── Startup reconcile ─────────────────────────────────────────────────
 
     def reconcile_startup(self) -> None:
-        """One-shot at server boot. Only retunes mismatched streams.
+        """One-shot at server boot. Retunes mismatched streams; evicts
+        stale snapclient registrations that aren't in server_config.
 
-        For each group with a single connected client, if the group's
-        stream_id differs from that client's home_source, set the stream.
-        This recovers from snapcast's prune-and-recreate cycle (a fresh group
-        gets a default stream that may not match the client's intended home).
+        Two passes:
+          1. Delete snapclient entries whose `id` isn't a registered
+             fauxnos client id (e.g. lingering wlan0-MAC registrations
+             from a legacy install path). These collide with the real
+             client's lookup (same `host.name`) and pollute snapcast's
+             state. Server.DeleteClient is the only way to remove them.
+          2. For each group with a single connected client, if the group's
+             stream_id differs from that client's home_source, set the
+             stream. Recovers from snapcast's prune-and-recreate cycle
+             where a fresh group inherits a default/wrong stream.
 
-        Never moves clients between groups.
+        Never moves connected clients between groups.
         """
         if not self.config_manager:
             return
 
+        registered_ids = {
+            c.get("id") for c in self.config_manager.server_config.get("clients", []) if c.get("id")
+        }
+
+        # Pass 1: evict orphan snapclient registrations.
+        for group in self.get_groups():
+            for client in group.get("clients", []):
+                cid = client.get("id")
+                if not cid or cid in registered_ids:
+                    continue
+                if client.get("connected"):
+                    # Real connected client we don't know about — leave it,
+                    # cleanup logic elsewhere can handle this case.
+                    continue
+                print(f"🧹 Reconcile: deleting orphan snapclient {cid} (host.name={client.get('host', {}).get('name')})")
+                self.send_snapcast_command("Server.DeleteClient", {"id": cid})
+
+        # Pass 2: retune mismatched streams.
         for group in self.get_groups():
             connected = [c for c in group.get("clients", []) if c.get("connected")]
             if len(connected) != 1:
