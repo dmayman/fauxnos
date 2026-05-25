@@ -10,6 +10,22 @@ export async function apiFetch(path, options = {}) {
 }
 
 /**
+ * Send a transport command to a client's go-librespot (play/pause/next/prev/seek).
+ *
+ * The server proxies POST /api/clients/<id>/playback/<action>; for `seek`,
+ * pass `{ position_ms }` as the body. UI is optimistic — the real state
+ * arrives a few hundred ms later via the MQTT playback topic.
+ */
+export async function sendPlayback(clientId, action, body) {
+  const res = await fetch(API + `/api/clients/${clientId}/playback/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`)
+}
+
+/**
  * Trigger a snapcast orphan cleanup.
  *
  * Walks snapserver's client registry on the server and deletes any client

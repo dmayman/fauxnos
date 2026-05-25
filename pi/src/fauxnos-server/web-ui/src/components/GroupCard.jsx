@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Settings2, GripVertical, X, Music, AudioLines, Plug, Cast } from 'lucide-react'
 import VolumeSlider from './VolumeSlider'
+import NowPlaying from './NowPlaying'
 
 /**
  * Icon for a source row/button. Built-ins map to recognizable glyphs;
@@ -227,6 +228,16 @@ export default function GroupCard({
             <Settings2 size={16} />
           </button>
         </div>
+
+        <NowPlaying
+          clientId={homeClientId}
+          sourceId={
+            mqtt.modes[homeClientId]
+            || (group.stream_id ? group.stream_id.replace(/^source_fauxnos\d+_/, '') : null)
+          }
+          track={mqtt.tracks[homeClientId]}
+          playback={mqtt.playback[homeClientId]}
+        />
 
         {!isMulti && (
           <div className="fx-group-vol">

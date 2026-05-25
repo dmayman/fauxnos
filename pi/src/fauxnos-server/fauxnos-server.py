@@ -40,6 +40,7 @@ from modules.cleanup import main as cleanup_main
 from modules.group_manager import SnapcastGroupManager
 from modules.client_monitor import SnapcastClientMonitor
 from modules.volume_manager import VolumeManager
+from modules.playback_manager import PlaybackManager
 
 class FauxnosServer:
     """Main server daemon that orchestrates all components"""
@@ -55,6 +56,7 @@ class FauxnosServer:
         self.deployment_manager = DeploymentManager(self.config_manager)
         self.client_monitor = SnapcastClientMonitor()
         self.volume_manager = VolumeManager(config_manager=self.config_manager)
+        self.playback_manager = PlaybackManager(config_manager=self.config_manager)
 
         # Threads for background tasks
         self.api_thread = None
@@ -151,6 +153,15 @@ class FauxnosServer:
         except Exception as e:
             self.log(f"❌ Failed to start volume management: {e}", "ERROR")
 
+    def start_playback_management(self):
+        """Start playback management (WebSocket listeners → MQTT track/playback topics)"""
+        self.log("Starting playback management...")
+        try:
+            self.playback_manager.start()
+            self.log("✅ Playback management started", "SUCCESS")
+        except Exception as e:
+            self.log(f"❌ Failed to start playback management: {e}", "ERROR")
+
     def run_daemon(self):
         """Run the complete server daemon"""
         self.log("🚀 Starting Fauxnos Server Daemon")
@@ -168,6 +179,10 @@ class FauxnosServer:
             # Stop volume management
             if hasattr(self, 'volume_manager'):
                 self.volume_manager.stop()
+
+            # Stop playback management
+            if hasattr(self, 'playback_manager'):
+                self.playback_manager.stop()
 
             sys.exit(0)
 
@@ -189,6 +204,10 @@ class FauxnosServer:
         # Start volume management (skip in test mode)
         if not self.test_mode:
             self.start_volume_management()
+
+        # Start playback management (skip in test mode)
+        if not self.test_mode:
+            self.start_playback_management()
 
         # Start MQTT listener for external source switching
         if not self.test_mode:

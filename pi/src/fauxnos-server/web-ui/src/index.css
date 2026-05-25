@@ -1,44 +1,47 @@
 /* ── Fonts ─────────────────────────────────────────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fustat:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 /* ── Reset ─────────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* ── Tokens (Warm Studio) ──────────────────────────────────────────────────── */
+/* ── Tokens ────────────────────────────────────────────────────────────────── */
 /*
- * Source of truth for the new design language. `fx-*` tokens are the system;
+ * Source of truth for the design language. `fx-*` tokens are the system;
  * legacy unprefixed names below are mapped through to keep older components
  * working until they're individually migrated.
  *
  * Theme selection:
- *   - default                 → warm dark
- *   - [data-theme="dark"]     → warm dark (explicit)
- *   - [data-theme="light"]    → warm light (explicit)
+ *   - default                 → neutral dark
+ *   - [data-theme="dark"]     → neutral dark (explicit)
+ *   - [data-theme="light"]    → neutral light (explicit)
  *   - prefers-color-scheme    → respected only when no explicit theme set
+ *
+ * Accent is neutral high-emphasis text per mode. Album-art-derived color
+ * comes through the `--art-*` namespace, set per-card via inline style.
  */
 :root,
 [data-theme="dark"] {
-  /* Surfaces (warm darks) */
-  --fx-bg:          #0E0D0C;
-  --fx-surface-1:   #181614;
-  --fx-surface-2:   #211E1B;
-  --fx-surface-3:   #2A2724;
+  /* Surfaces (neutral darks) */
+  --fx-bg:          #060606;
+  --fx-surface-1:   #141414;
+  --fx-surface-2:   #1C1C1C;
+  --fx-surface-3:   #262626;
   --fx-line:        rgba(255, 255, 255, 0.06);
   --fx-line-strong: rgba(255, 255, 255, 0.12);
 
   /* Text */
-  --fx-text:   #F2EFEA;
-  --fx-text-2: #A39E96;
-  --fx-text-3: #6B655E;
+  --fx-text:   #F2F2F2;
+  --fx-text-2: #A0A0A0;
+  --fx-text-3: #6A6A6A;
 
-  /* Brand accent (warm amber) */
-  --fx-accent:        #E8B36A;
-  --fx-accent-hover:  #F0BE7A;
-  --fx-accent-soft:   rgba(232, 179, 106, 0.14);
-  --fx-accent-ring:   rgba(232, 179, 106, 0.32);
-  --fx-on-accent:    #1C140A;
+  /* Neutral accent (high-emphasis text color) */
+  --fx-accent:        #F2F2F2;
+  --fx-accent-hover:  #FFFFFF;
+  --fx-accent-soft:   rgba(255, 255, 255, 0.08);
+  --fx-accent-ring:   rgba(255, 255, 255, 0.24);
+  --fx-on-accent:    #0A0A0A;
 
-  /* Status (muted — these read alongside accent, not against it) */
+  /* Status (muted) */
   --fx-ok:        #7BB186;
   --fx-warn:      #D6A85F;
   --fx-err:       #D4736B;
@@ -52,75 +55,75 @@
   --fx-shadow-3: 0 24px 72px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.4);
 
   /* Overlay for floating-panel scrim */
-  --fx-scrim: rgba(8, 6, 4, 0.55);
+  --fx-scrim: rgba(0, 0, 0, 0.55);
 }
 
 [data-theme="light"] {
-  --fx-bg:          #F6F2EA;
+  --fx-bg:          #EEEEEE;
   --fx-surface-1:   #FFFFFF;
-  --fx-surface-2:   #EFE9DC;
-  --fx-surface-3:   #E4DCCB;
-  --fx-line:        rgba(28, 22, 14, 0.08);
-  --fx-line-strong: rgba(28, 22, 14, 0.16);
+  --fx-surface-2:   #F5F5F5;
+  --fx-surface-3:   #EAEAEA;
+  --fx-line:        rgba(0, 0, 0, 0.08);
+  --fx-line-strong: rgba(0, 0, 0, 0.16);
 
-  --fx-text:   #1C1A17;
-  --fx-text-2: #5C5650;
-  --fx-text-3: #8B857B;
+  --fx-text:   #4A4A4A;
+  --fx-text-2: #7A7A7A;
+  --fx-text-3: #A0A0A0;
 
-  /* Darker amber — needed for 4.5:1 on the warm-light background */
-  --fx-accent:        #A56A1C;
-  --fx-accent-hover:  #8E5B16;
-  --fx-accent-soft:   rgba(165, 106, 28, 0.12);
-  --fx-accent-ring:   rgba(165, 106, 28, 0.32);
+  /* Neutral accent (high-emphasis text color) */
+  --fx-accent:        #1A1A1A;
+  --fx-accent-hover:  #000000;
+  --fx-accent-soft:   rgba(0, 0, 0, 0.06);
+  --fx-accent-ring:   rgba(0, 0, 0, 0.18);
   --fx-on-accent:    #FFFFFF;
 
   --fx-ok:        #3E7A4D;
   --fx-warn:      #8E6618;
   --fx-err:       #9E443C;
-  --fx-ok-soft:   rgba(62, 122, 77, 0.12);
-  --fx-warn-soft: rgba(142, 102, 24, 0.12);
-  --fx-err-soft:  rgba(158, 68, 60, 0.12);
+  --fx-ok-soft:   rgba(62, 122, 77, 0.10);
+  --fx-warn-soft: rgba(142, 102, 24, 0.10);
+  --fx-err-soft:  rgba(158, 68, 60, 0.10);
 
-  --fx-shadow-1: 0 1px 2px rgba(28, 22, 14, 0.06);
-  --fx-shadow-2: 0 10px 28px rgba(28, 22, 14, 0.10), 0 1px 2px rgba(28, 22, 14, 0.05);
-  --fx-shadow-3: 0 24px 72px rgba(28, 22, 14, 0.16), 0 2px 4px rgba(28, 22, 14, 0.06);
+  --fx-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --fx-shadow-2: 0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03);
+  --fx-shadow-3: 0 12px 48px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.04);
 
-  --fx-scrim: rgba(28, 22, 14, 0.32);
+  --fx-scrim: rgba(0, 0, 0, 0.32);
 }
 
 /* Honor OS preference only when the user hasn't explicitly set a theme. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
-    --fx-bg:          #F6F2EA;
+    --fx-bg:          #EEEEEE;
     --fx-surface-1:   #FFFFFF;
-    --fx-surface-2:   #EFE9DC;
-    --fx-surface-3:   #E4DCCB;
-    --fx-line:        rgba(28, 22, 14, 0.08);
-    --fx-line-strong: rgba(28, 22, 14, 0.16);
-    --fx-text:        #1C1A17;
-    --fx-text-2:      #5C5650;
-    --fx-text-3:      #8B857B;
-    --fx-accent:      #A56A1C;
-    --fx-accent-hover:#8E5B16;
-    --fx-accent-soft: rgba(165, 106, 28, 0.12);
-    --fx-accent-ring: rgba(165, 106, 28, 0.32);
+    --fx-surface-2:   #F5F5F5;
+    --fx-surface-3:   #EAEAEA;
+    --fx-line:        rgba(0, 0, 0, 0.08);
+    --fx-line-strong: rgba(0, 0, 0, 0.16);
+    --fx-text:        #4A4A4A;
+    --fx-text-2:      #7A7A7A;
+    --fx-text-3:      #A0A0A0;
+    --fx-accent:      #1A1A1A;
+    --fx-accent-hover:#000000;
+    --fx-accent-soft: rgba(0, 0, 0, 0.06);
+    --fx-accent-ring: rgba(0, 0, 0, 0.18);
     --fx-on-accent:   #FFFFFF;
     --fx-ok:          #3E7A4D;
     --fx-warn:        #8E6618;
     --fx-err:         #9E443C;
-    --fx-ok-soft:     rgba(62, 122, 77, 0.12);
-    --fx-warn-soft:   rgba(142, 102, 24, 0.12);
-    --fx-err-soft:    rgba(158, 68, 60, 0.12);
-    --fx-shadow-1:    0 1px 2px rgba(28, 22, 14, 0.06);
-    --fx-shadow-2:    0 10px 28px rgba(28, 22, 14, 0.10), 0 1px 2px rgba(28, 22, 14, 0.05);
-    --fx-shadow-3:    0 24px 72px rgba(28, 22, 14, 0.16), 0 2px 4px rgba(28, 22, 14, 0.06);
-    --fx-scrim:       rgba(28, 22, 14, 0.32);
+    --fx-ok-soft:     rgba(62, 122, 77, 0.10);
+    --fx-warn-soft:   rgba(142, 102, 24, 0.10);
+    --fx-err-soft:    rgba(158, 68, 60, 0.10);
+    --fx-shadow-1:    0 1px 2px rgba(0, 0, 0, 0.04);
+    --fx-shadow-2:    0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03);
+    --fx-shadow-3:    0 12px 48px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.04);
+    --fx-scrim:       rgba(0, 0, 0, 0.32);
   }
 }
 
 :root {
   /* Type */
-  --fx-font:  'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --fx-font:  'Fustat', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --fx-mono:  'JetBrains Mono', SFMono-Regular, Consolas, Menlo, monospace;
 
   --fx-text-xs:   11px;
@@ -136,6 +139,11 @@
   --fx-lh-md:   22px;
   --fx-lh-lg:   26px;
   --fx-lh-xl:   32px;
+
+  /* Card-specific type ramp (group cards, now-playing) */
+  --fx-text-title: 28px;
+  --fx-text-row:   20px;
+  --fx-text-meta:  14px;
 
   /* Spacing — strict 4/8/12/16/24/32 */
   --fx-1: 4px;
@@ -155,6 +163,20 @@
   --fx-ease:     cubic-bezier(0.2, 0.7, 0.2, 1);
   --fx-dur:      180ms;
   --fx-dur-slow: 240ms;
+
+  /* Album-art-derived accent (set per-card via inline style).
+     Defaults make consumers indistinguishable from a neutral card so
+     V2 / pre-extraction states render correctly without any JS. */
+  --art-h: 0;
+  --art-c: 0;
+  --art-l: 50%;
+  --art-accent:            var(--fx-accent);
+  --art-accent-soft:       var(--fx-accent-soft);
+  --art-card-tint:         transparent;
+  --art-inner-surface:     var(--fx-surface-1);
+  --art-slider-fill:       var(--fx-text);
+  --art-slider-track-tint: var(--fx-surface-3);
+  --art-progress-tint:     var(--fx-surface-3);
 
   /* Legacy aliases — keeps every existing class rule working with the new
      palette. Live UI gets a free re-tint; structural styles unchanged. */
@@ -185,7 +207,7 @@ body {
 a { color: var(--accent); }
 
 /* ═════════════════════════════════════════════════════════════════════════════
-   Warm Studio — design-language primitives (fx-*)
+   Design-language primitives (fx-*)
    ═════════════════════════════════════════════════════════════════════════════
    These primitives are the single source of truth for the live UI.
    ComponentSheet (?vibe=1) renders all of them on one page for design review.
@@ -203,7 +225,7 @@ a { color: var(--accent); }
   line-height: var(--fx-lh-base);
   color:       var(--fx-text);
   background:  var(--fx-bg);
-  font-feature-settings: "ss01", "cv11", "tnum"; /* Inter: humanist 'a', tabular nums */
+  font-feature-settings: "tnum"; /* tabular numerals for slider/timecode labels */
   -webkit-font-smoothing: antialiased;
 }
 
@@ -218,6 +240,38 @@ a { color: var(--accent); }
 .fx-mute  { color: var(--fx-text-2); }
 .fx-mute-2 { color: var(--fx-text-3); }
 .fx-num { font-variant-numeric: tabular-nums; }
+
+/* Card type ramp — Fustat-tuned weights for group cards & now-playing.
+   .fx-title-track  → track title (28 Bold)
+   .fx-meta-track   → artist · album (20 SemiBold, art-accent)
+   .fx-name-device  → device-row name (20 Bold, art-accent or neutral)
+   .fx-time-track   → progress timecode (14 Medium, tabular nums) */
+.fx-title-track {
+  font-size: var(--fx-text-title);
+  line-height: 32px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: var(--fx-text);
+}
+.fx-meta-track {
+  font-size: var(--fx-text-row);
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--art-accent);
+}
+.fx-name-device {
+  font-size: var(--fx-text-row);
+  line-height: 24px;
+  font-weight: 700;
+  color: var(--art-accent);
+}
+.fx-time-track {
+  font-size: var(--fx-text-meta);
+  line-height: 18px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--fx-text-2);
+}
 
 /* Sentence-case section header — replaces the uppercase 11px tic */
 .fx-section-label {
@@ -1011,7 +1065,7 @@ body {
   color: var(--fx-text);
   font-size: var(--fx-text-base);
   line-height: var(--fx-lh-base);
-  font-feature-settings: "ss01", "cv11", "tnum";
+  font-feature-settings: "tnum";
   -webkit-font-smoothing: antialiased;
 }
 
@@ -1129,6 +1183,114 @@ body {
 
 .fx-group-vol {
   padding: var(--fx-1) 0;
+}
+
+/* ── Now-playing strip (album art + track meta + transport) ───────────────
+   Sits between the group head and the volume slider. Art tile is a fixed
+   square; the body column flexes. With no track metadata (analog/aux), the
+   art slot renders the source glyph at a large size and the controls row
+   collapses. */
+.fx-now-playing {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-3);
+  padding: var(--fx-2) 0 var(--fx-3);
+  min-width: 0;
+}
+.fx-np-art {
+  flex: 0 0 auto;
+  width: 72px;
+  height: 72px;
+  border-radius: var(--fx-r-sm);
+  background: var(--fx-surface-2);
+  border: 1px solid var(--fx-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: var(--fx-text-3);
+}
+.fx-np-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.fx-np-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fx-np-text { min-width: 0; }
+.fx-np-title {
+  font-size: var(--fx-text-sm);
+  font-weight: 600;
+  color: var(--fx-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+}
+.fx-np-sub {
+  font-size: var(--fx-text-xs);
+  color: var(--fx-text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.2;
+  min-height: 1em;     /* reserve a row even when empty to hold layout */
+}
+.fx-np-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-2);
+  margin-top: 2px;
+}
+.fx-np-progress-track {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  background: var(--fx-surface-3);
+  border-radius: var(--fx-r-pill);
+  overflow: visible;
+}
+.fx-np-progress-fill {
+  position: absolute;
+  inset: 0;
+  width: 0;
+  background: var(--fx-text-2);
+  border-radius: inherit;
+  pointer-events: none;
+}
+.fx-np-progress-input {
+  position: absolute;
+  inset: -8px 0;        /* widen hit area vertically without changing visual */
+  width: 100%;
+  height: calc(100% + 16px);
+  opacity: 0;
+  cursor: pointer;
+  margin: 0;
+}
+.fx-np-time {
+  font-size: var(--fx-text-xs);
+  color: var(--fx-text-3);
+  min-width: 32px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.fx-np-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fx-1);
+  margin-top: 2px;
+}
+.fx-np-play {
+  color: var(--fx-accent);
+}
+.fx-np-play:hover {
+  color: var(--fx-accent-hover);
 }
 
 /* ── Source buttons in the group head ─────────────────────────────────────
