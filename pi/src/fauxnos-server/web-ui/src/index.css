@@ -631,6 +631,23 @@ a { color: var(--accent); }
   color: var(--fx-text-2);
   display: inline-flex;
 }
+.fx-volume-icon-btn {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color var(--fx-dur) var(--fx-ease);
+}
+.fx-volume-icon-btn:hover { color: var(--fx-text); }
+.fx-volume-icon-btn:focus-visible {
+  outline: 2px solid var(--fx-accent-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
 .fx-volume-track {
   position: relative;
   flex: 1;
@@ -1071,9 +1088,26 @@ body {
 
 /* ── App shell ─────────────────────────────────────────────────────────────── */
 .fx-main {
-  max-width: 960px;
+  max-width: 760px;
   margin: 0 auto;
   padding: var(--fx-6) var(--fx-5) var(--fx-6);
+}
+
+/* Viewport-edge drop indicator. Active only while a removable device is
+   being dragged AND the cursor isn't currently over a group card —
+   mutually exclusive with the per-card .fx-drop highlight, so the user
+   never sees two drop affordances competing. Dropping in this state
+   returns the device to its own home group.
+   The stroke is flush to the viewport edge (no inset) and solid so it
+   reads as the canonical "drop zone is here" stroke. pointer-events:
+   none so it doesn't intercept the drop event itself. */
+body.fx-dragging-background::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  border: 2px solid var(--fx-text);
+  pointer-events: none;
+  z-index: 1000;
 }
 @media (max-width: 600px) {
   .fx-main { padding: var(--fx-4) var(--fx-3) var(--fx-6); }
@@ -1117,7 +1151,7 @@ body {
 .fx-groups-grid {
   display: flex;
   flex-direction: column;
-  gap: var(--fx-5);
+  gap: var(--fx-4);
 }
 
 .fx-group-row {
@@ -1400,6 +1434,7 @@ body {
   transition: opacity var(--fx-dur) var(--fx-ease), color var(--fx-dur) var(--fx-ease), background var(--fx-dur) var(--fx-ease);
 }
 .fx-group-member:hover .fx-group-member-x,
+.fx-group-row-v2:hover .fx-group-member-x,
 .fx-group-member-x:focus-visible { opacity: 1; }
 .fx-group-member-x:hover {
   color: var(--fx-err);
@@ -1446,8 +1481,8 @@ body {
 .fx-group-card-v2 {
   position: relative;
   background: var(--fx-surface-1);
-  border: 1px solid var(--fx-line-strong);
-  border-radius: 40px;
+  border: 1px solid var(--fx-line);
+  border-radius: 36px;
   /* Per Figma: subtle outer drop shadow lifts the card off the page bg.
      Light: 0 4px 24px rgba(0,0,0,0.03). Dark stays a bit deeper. */
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.03);
@@ -1490,7 +1525,7 @@ body {
   gap: 24px;
   align-items: center;
   background: var(--fx-surface-1);
-  border-radius: 40px;
+  border-radius: 36px;
   /* Per Figma: inner white-bg sub-card carries a soft halo that separates
      it from the tinted outer card. drop-shadow-style (no offset, 8px blur). */
   box-shadow: 0 0 8px rgba(0, 0, 0, 0.08);
@@ -1508,7 +1543,7 @@ body {
 .fx-group-media-art {
   width: 150px;
   height: 150px;
-  border-radius: 16px;
+  border-radius: 12px;
   overflow: hidden;
   background: var(--fx-surface-2);
   border: 1px solid var(--fx-line);
@@ -1517,6 +1552,22 @@ body {
   justify-content: center;
   color: var(--fx-text-3);
   flex-shrink: 0;
+}
+
+/* V4 (multi + no media) zero-state. Faded Spotify glyph sits in the art
+   slot so the slot's shape and size are preserved; body holds a single
+   muted CTA — no skeletons, no shimmer (shimmer implies the system is
+   actively loading, which it isn't here — Spotify just hasn't been
+   pointed at this room yet). */
+.fx-group-media-art.is-empty {
+  color: var(--fx-text-3);
+  opacity: 0.35;
+}
+.fx-media-empty-cta {
+  font-size: 16px;
+  line-height: 1.4;
+  font-weight: 500;
+  color: var(--fx-text-2);
 }
 .fx-group-media-art img {
   width: 100%;
@@ -1612,18 +1663,27 @@ body {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  height: 32px;
-  padding: 4px 12px;
+  height: 40px;
+  padding: 8px;
   border: 0;
   background: transparent;
-  border-radius: 8px;
+  border-radius: 99px;
   color: var(--fx-text);
   cursor: pointer;
   font: inherit;
   transition: background var(--fx-dur) var(--fx-ease);
 }
 .fx-source-trigger:hover {
-  background: var(--art-accent-soft, var(--fx-accent-soft));
+  background: rgba(74, 74, 74, 0.09);
+}
+[data-theme="dark"] .fx-source-trigger:hover,
+:root:not([data-theme]) .fx-source-trigger:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-source-trigger:hover {
+    background: rgba(74, 74, 74, 0.09);
+  }
 }
 .fx-source-trigger:focus-visible {
   outline: none;
@@ -1648,10 +1708,9 @@ body {
 .fx-group-card-v2[data-has-media="true"] .fx-group-rows {
   gap: 16px;
 }
-/* V2-single body: a single inline row inside the card. The row's own
-   padding (8px) handles vertical rhythm; the outer card adds horizontal
-   padding via pl-[32px] pr-[24px] py-[24px] in the Figma (32 to leave
-   room for the drag-gutter visual on hover). */
+/* V2-single body: a single inline row inside the card. The outer card
+   supplies all the padding; the row itself has none. Left-pad is 32 to
+   leave room for the drag-gutter visual on hover (per Figma). */
 .fx-group-card-v2.v2-single .fx-group-rows {
   padding: 24px 24px 24px 32px;
 }
@@ -1659,13 +1718,14 @@ body {
 /* A device row (or the V2 inline row). Three columns:
      1. Name + (per-row drag indicator on hover, non-home only)
      2. Volume control (icon + slider)
-     3. Source trigger (V2 only — anchored otherwise)                       */
+     3. Source trigger (V2 only — anchored otherwise)
+   No padding: the outer .fx-group-rows wrapper supplies the 24px inset
+   and the 16px row gap handles vertical rhythm between rows. */
 .fx-group-row-v2 {
   display: grid;
   grid-template-columns: 150px 1fr;
   align-items: center;
   gap: 16px;
-  padding: 8px;
   border-radius: 8px;
   position: relative;
   min-width: 0;
@@ -1673,6 +1733,10 @@ body {
 .fx-group-row-v2.with-source {
   grid-template-columns: 150px 1fr auto;
 }
+
+/* Device rows are neutral by default; accent is reserved for the
+   .is-all entry that controls the whole group (see below). */
+.fx-group-row-v2 .fx-name-device { color: var(--fx-text); }
 
 .fx-group-row-name {
   display: flex;
@@ -1704,7 +1768,7 @@ body {
    clips). Matches the Figma kitchen-row drag indicator. */
 .fx-row-drag {
   position: absolute;
-  left: -20px;
+  left: -14px;
   top: 50%;
   transform: translateY(-50%);
   display: inline-flex;
@@ -1712,7 +1776,7 @@ body {
   justify-content: center;
   width: 6px;
   height: 10px;
-  color: var(--art-accent, var(--fx-text-3));
+  color: var(--fx-text-2);
   cursor: grab;
   opacity: 0;
   transition: opacity var(--fx-dur) var(--fx-ease);
@@ -1731,10 +1795,28 @@ body {
   min-width: 0;
 }
 .fx-group-row-volume-icon {
-  color: var(--art-accent, var(--fx-text-2));
+  color: var(--fx-text-2);
   flex-shrink: 0;
   display: inline-flex;
   opacity: 0.85;
+}
+button.fx-group-row-volume-icon {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  transition: opacity var(--fx-dur) var(--fx-ease);
+}
+button.fx-group-row-volume-icon:hover { opacity: 1; }
+button.fx-group-row-volume-icon:focus-visible {
+  outline: 2px solid var(--fx-accent-ring);
+  outline-offset: 2px;
+  border-radius: 2px;
 }
 
 /* Slider visuals tuned to spec (track 4-6px, art-accent fill).
@@ -1747,14 +1829,25 @@ body {
 }
 .fx-volume.card-v2 .fx-volume-track {
   height: 4px;
-  background: var(--art-slider-track-tint, var(--fx-surface-3));
+  /* Translucent so the same track tone reads correctly against the
+     plain card background and the album-art tinted background. */
+  background: rgba(0, 0, 0, 0.05);
+}
+[data-theme="dark"] .fx-volume.card-v2 .fx-volume-track,
+:root:not([data-theme]) .fx-volume.card-v2 .fx-volume-track {
+  background: rgba(255, 255, 255, 0.06);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-volume.card-v2 .fx-volume-track {
+    background: rgba(0, 0, 0, 0.05);
+  }
 }
 .fx-volume.card-v2 .fx-volume-fill {
-  background: var(--art-slider-fill, var(--fx-text));
+  background: var(--fx-text-2);
   opacity: 1;
 }
 .fx-volume.card-v2 .fx-volume-thumb {
-  background: var(--art-slider-fill, var(--fx-text));
+  background: var(--fx-text-2);
   width: 12px;
   height: 12px;
   margin-left: -6px;
@@ -1778,6 +1871,20 @@ body {
 /* External-authority (AirPlay) slider inside the card v2 */
 .fx-volume.card-v2.fx-volume-external::after { content: none; }
 .fx-volume.card-v2.fx-volume-external .fx-volume-track { opacity: 0.4; }
+
+/* "All" row — only render in multi-device groups, controls every member.
+   Accent (album-art tinted, or theme accent when no art) is reserved for
+   this row; sibling device rows stay neutral so the group control reads
+   as the primary affordance. */
+.fx-group-row-v2.is-all .fx-name-device { color: var(--art-accent); }
+.fx-group-row-v2.is-all .fx-group-row-volume-icon {
+  color: var(--art-accent);
+  opacity: 1;
+}
+.fx-group-row-v2.is-all .fx-volume.card-v2 .fx-volume-fill,
+.fx-group-row-v2.is-all .fx-volume.card-v2 .fx-volume-thumb {
+  background: var(--art-accent);
+}
 
 /* ── Source popover ───────────────────────────────────────────────────────
    Opens when a SourceTrigger is clicked. Position is set per-instance via
@@ -1831,17 +1938,20 @@ body {
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
   border-radius: 8px;
 }
-/* Non-active rows render at 60% per Figma — drops the icon + label
-   together so the active row is the clear focal point. Locked rows
-   share the same dim plus a not-allowed cursor and a tooltip. */
+/* Non-active rows: icon + label render in a single muted tone so they
+   read as a unit. Locked rows share the dim and add a not-allowed cursor
+   plus a tooltip. */
 .fx-source-popover-row:not(.active) {
   color: var(--fx-text-2);
 }
-.fx-source-popover-row:not(.active) .fx-source-popover-row-icon {
-  opacity: 0.6;
-}
+.fx-source-popover-row:not(.active) .fx-source-popover-row-icon,
 .fx-source-popover-row:not(.active) .fx-source-popover-row-label {
-  opacity: 0.6;
+  color: var(--fx-text-2);
+}
+.fx-source-popover-row:not(.active):not(.locked):hover,
+.fx-source-popover-row:not(.active):not(.locked):hover .fx-source-popover-row-icon,
+.fx-source-popover-row:not(.active):not(.locked):hover .fx-source-popover-row-label {
+  color: var(--fx-text);
 }
 .fx-source-popover-row.locked {
   cursor: not-allowed;

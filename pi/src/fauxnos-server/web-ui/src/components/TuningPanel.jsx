@@ -46,7 +46,7 @@ function Section({ title, children }) {
 
 export default function TuningPanel() {
   const t = useTuning()
-  const [open, setOpen] = useState(true)
+  const [open, setOpen] = useState(false)
   const [revealed, setRevealed] = useState(false)
   const json = JSON.stringify(t, null, 2)
 

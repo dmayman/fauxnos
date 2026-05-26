@@ -7,9 +7,6 @@ import {
   IconMicrophoneFilled,
   IconExternalLinkFilled,
   IconHeadphonesFilled,
-  IconVolume,
-  IconVolume2,
-  IconVolumeOff,
   IconPlayerPlayFilled,
   IconPlayerPauseFilled,
   IconPlayerSkipBackFilled,
@@ -28,7 +25,7 @@ function DragBarsIcon({ size = 10 }) {
     </svg>
   )
 }
-import VolumeSlider from './VolumeSlider'
+import VolumeSlider, { VolumeIcon } from './VolumeSlider'
 import SourcePopover from './SourcePopover'
 import useAlbumArtColor from '../hooks/useAlbumArtColor'
 import { useTuning } from '../hooks/useTuning'
@@ -36,6 +33,15 @@ import { useTheme } from '../hooks/useTheme'
 import { sendPlayback } from '../api'
 
 const clamp = (lo, v, hi) => Math.max(lo, Math.min(hi, v))
+
+/* Volume glyph ramps with the level: mute (X) is reserved for v === 0
+   only — at low non-zero volumes we still show a wave, so the mute icon
+   reliably signals "muted" (and clicking it = unmute). */
+function volIconState(v) {
+  if (v === 0) return 'mute'
+  if (v < 40) return 'low'
+  return 'high'
+}
 
 /* Given a raw album-art OKLCH { h, c, l }, the active mode, and the live
    tuning values, return the `--art-*` CSS variables ready to write as
@@ -161,7 +167,21 @@ function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientI
  * Renders for V1/V3 (anywhere a track is present). Falls back to a source
  * glyph in the art slot when no metadata is available.
  * ────────────────────────────────────────────────────────────────────────── */
-function MediaCard({ clientId, sourceId, track, playback }) {
+function MediaCard({ clientId, sourceId, track, playback, empty = false, groupName }) {
+  if (empty) {
+    return (
+      <div className="fx-group-media-card is-empty">
+        <div className="fx-group-media-art is-empty" aria-hidden>
+          <IconBrandSpotifyFilled size={72} stroke={0} />
+        </div>
+        <div className="fx-group-media-body">
+          <span className="fx-media-empty-cta">
+            Connect to {groupName} in Spotify
+          </span>
+        </div>
+      </div>
+    )
+  }
   const hasMeta = !!track && (track.title || track.artist)
   const isPlaying = !!playback?.is_playing
   const duration = track?.duration_ms || 0
@@ -248,6 +268,83 @@ function MediaCard({ clientId, sourceId, track, playback }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+ * AllRow — accent-colored "All" entry that controls every device in a
+ * multi-room group. Display value = average of member volumes; dragging
+ * preserves each member's offset from the average (ratio-preserving), so
+ * pre-tuned room balance survives global moves. Anchors a baseline
+ * snapshot on the first publish of a drag and discards it after a short
+ * idle window, so successive drags compose naturally.
+ * ────────────────────────────────────────────────────────────────────────── */
+function AllRow({ clients, mqtt }) {
+  const readVol = useCallback(
+    (c) => mqtt.volumes[c.id] ?? c.config?.volume?.percent ?? 0,
+    [mqtt.volumes],
+  )
+  const vols = clients.map(readVol)
+  const avg = vols.length
+    ? Math.round(vols.reduce((a, b) => a + b, 0) / vols.length)
+    : 0
+  const iconState = volIconState(avg)
+  const lastNonZeroAvgRef = useRef(avg > 0 ? avg : 50)
+  if (avg > 0) lastNonZeroAvgRef.current = avg
+
+  const sessionRef = useRef(null)
+  const idleTimerRef = useRef(null)
+  useEffect(() => () => {
+    if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
+  }, [])
+
+  const wrappedMqtt = {
+    ...mqtt,
+    volumes: {},
+    publishVolume: (_id, newAvg) => {
+      if (!sessionRef.current) {
+        sessionRef.current = { avg, vols: clients.map(readVol) }
+      }
+      const delta = newAvg - sessionRef.current.avg
+      sessionRef.current.vols.forEach((v, i) => {
+        const target = Math.max(0, Math.min(100, v + delta))
+        mqtt.publishVolume(clients[i].id, target)
+      })
+      if (idleTimerRef.current) clearTimeout(idleTimerRef.current)
+      idleTimerRef.current = setTimeout(() => { sessionRef.current = null }, 500)
+    },
+  }
+
+  const toggleAllMute = () => {
+    const next = avg === 0 ? (lastNonZeroAvgRef.current || 50) : 0
+    wrappedMqtt.publishVolume('__all__', next)
+  }
+
+  return (
+    <div className="fx-group-row-v2 is-all">
+      <div className="fx-group-row-name">
+        <span className="fx-name-device fx-group-row-name-label">All</span>
+      </div>
+      <div className="fx-group-row-volume">
+        <button
+          type="button"
+          className="fx-group-row-volume-icon"
+          onClick={toggleAllMute}
+          aria-label={avg === 0 ? 'Unmute all' : 'Mute all'}
+        >
+          <VolumeIcon size={20} state={iconState} />
+        </button>
+        <VolumeSlider
+          clientId="__all__"
+          value={avg}
+          mqtt={wrappedMqtt}
+          variant="card-v2"
+          hideIcon
+          hideLabel
+          ariaLabel="All devices volume"
+        />
+      </div>
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
  * DeviceRow — one entry in the device-rows section of a group card.
  *   - Grid columns: name (150px) | volume (1fr) [ | source-trigger ]
  *   - The per-row drag handle (the two-bars Figma indicator) shows on hover
@@ -264,7 +361,14 @@ function DeviceRow({
   const vol = mqtt.volumes[client.id] ?? client.config?.volume?.percent ?? 0
   const isAirplay = isOnly ? isAirplayHome : (mqtt.modes[client.id] === 'airplay')
   const rowRef = useRef(null)
-  const VolIcon = vol === 0 ? IconVolumeOff : vol < 40 ? IconVolume : IconVolume2
+  const iconState = volIconState(vol)
+  const lastNonZeroRef = useRef(vol > 0 ? vol : 50)
+  if (vol > 0) lastNonZeroRef.current = vol
+  const toggleMute = () => {
+    if (isAirplay) return
+    const next = vol === 0 ? (lastNonZeroRef.current || 50) : 0
+    mqtt.publishVolume?.(client.id, next)
+  }
 
   // The name container is the row's draggable handle. For multi-room
   // non-home rows that means "move me to another group"; for single-device
@@ -300,10 +404,7 @@ function DeviceRow({
             <DragBarsIcon size={10} />
           </span>
         )}
-        <span
-          className={`fx-name-device fx-group-row-name-label${hasMedia ? '' : ' neutral'}`}
-          style={hasMedia ? undefined : { color: 'var(--fx-text)' }}
-        >
+        <span className="fx-name-device fx-group-row-name-label">
           {name}
         </span>
         {isMulti && !isHome && (
@@ -320,9 +421,20 @@ function DeviceRow({
         )}
       </div>
       <div className="fx-group-row-volume">
-        <span className="fx-group-row-volume-icon">
-          <VolIcon size={20} stroke={0} />
-        </span>
+        {isAirplay ? (
+          <span className="fx-group-row-volume-icon">
+            <VolumeIcon size={20} state={iconState} />
+          </span>
+        ) : (
+          <button
+            type="button"
+            className="fx-group-row-volume-icon"
+            onClick={toggleMute}
+            aria-label={vol === 0 ? `Unmute ${name}` : `Mute ${name}`}
+          >
+            <VolumeIcon size={20} state={iconState} />
+          </button>
+        )}
         <VolumeSlider
           clientId={client.id}
           value={vol}
@@ -400,11 +512,17 @@ export default function GroupCard({
     : (hasMedia ? 'v3' : 'v2')
 
   const isSingleNoMedia = variant === 'v2'
-  const showMediaCard = hasMedia // V1, V3
-  // Anchored trigger only makes sense over the media card. Without media,
-  // the source trigger sits inline in the home device row (V2, V4).
-  const showAnchoredTrigger = hasMedia
-  const showInlineTrigger = !hasMedia
+  // Multi-room groups always show a media card — when no track is playing,
+  // we render a skeleton "Connect Spotify to begin" zero state so users
+  // understand the slot exists and what fills it. Single-device cards
+  // still drop to the inline-trigger V2 layout when there's nothing
+  // playing, since the same group is just one row.
+  const showMediaCard = hasMedia || isMulti // V1, V3, V4
+  const isEmptyMedia = isMulti && !hasMedia // V4 zero-state
+  // Anchored trigger sits over the media card; inline only when there's
+  // no media card to anchor against (V2).
+  const showAnchoredTrigger = showMediaCard
+  const showInlineTrigger = !showMediaCard
 
   // Card itself is never draggable — drag affordance lives on the device
   // name. The slider's pointer-down events would otherwise fight the
@@ -463,10 +581,13 @@ export default function GroupCard({
             sourceId={currentSourceId}
             track={track}
             playback={playback}
+            empty={isEmptyMedia}
+            groupName={nameMap[homeClientId] || homeClient?.host?.name || homeClientId}
           />
         )}
         {anchoredTrigger}
         <div className="fx-group-rows">
+          {isMulti && <AllRow clients={sorted} mqtt={mqtt} />}
           {sorted.map(c => (
             <DeviceRow
               key={c.id}
