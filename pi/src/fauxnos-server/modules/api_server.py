@@ -1622,9 +1622,29 @@ class FauxnosAPIServer:
 
             stream_list = [{"id": s.get("id", ""), "status": s.get("status", "")} for s in streams]
 
+            # Build a set of known client ids so we can fall back to
+            # stream-id parsing when the home-source map misses. Streams
+            # are named `source_<client_id>_<source_name>` (e.g.
+            # `source_fauxnos001_airplay`), so the home client is encoded
+            # in the stream name itself — independent of which source
+            # variant is active. The home_source_map only knows the
+            # client's *default* source (usually spotify); switching the
+            # group to airplay otherwise drops home_cid → empty sources.
+            known_client_ids = {c.get("id") for c in raw_clients if c.get("id")}
+
+            def _client_id_from_stream(sid: str) -> Optional[str]:
+                if not sid or not sid.startswith("source_"):
+                    return None
+                rest = sid[len("source_"):]
+                # Greedy match against known client ids — fauxnos<NNN>.
+                for cid in known_client_ids:
+                    if rest == cid or rest.startswith(cid + "_"):
+                        return cid
+                return None
+
             for group in groups:
                 stream_id = group.get("stream_id")
-                home_cid = home_source_map.get(stream_id)
+                home_cid = home_source_map.get(stream_id) or _client_id_from_stream(stream_id)
                 group["home_client_id"] = home_cid
 
                 if home_cid:
