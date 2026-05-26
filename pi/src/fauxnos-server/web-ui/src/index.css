@@ -2021,7 +2021,7 @@ button.fx-group-row-volume-icon:focus-visible {
 .fx-source-popover-row-label {
   flex: 1;
   font-size: 16px;
-  font-weight: 500;
+  font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2033,7 +2033,7 @@ button.fx-group-row-volume-icon:focus-visible {
   color: var(--fx-text);
 }
 .fx-source-popover-row.active .fx-source-popover-row-label {
-  font-weight: 600;
+  font-weight: 700;
 }
 
 /* Trigger button "open" state — subtle background reflecting current accent.
@@ -2246,7 +2246,7 @@ button.fx-group-row-volume-icon:focus-visible {
   color: var(--fx-text);
   font: inherit;
   font-size: var(--fx-text-lg);
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: -0.01em;
   cursor: pointer;
   padding: 2px var(--fx-2);
@@ -2280,9 +2280,20 @@ button.fx-group-row-volume-icon:focus-visible {
   padding-bottom: 0;
   margin-bottom: var(--fx-2);
   font-size: 14px;
-  font-weight: 600;
+  font-weight: 700;
 }
-.fx-device-panel .fx-panel-card + .fx-section-label { margin-top: var(--fx-5); }
+.fx-device-panel .fx-panel-card + .fx-section-label,
+.fx-device-panel .fx-section-label + .fx-section-label,
+.fx-device-panel .fx-device-version-section + .fx-section-label,
+.fx-device-panel .fx-section-label + .fx-device-version-section {
+  margin-top: var(--fx-3);
+}
+.fx-section-label-clickable { cursor: pointer; }
+.fx-section-label-clickable:focus-visible {
+  outline: 2px solid var(--fx-accent);
+  outline-offset: 2px;
+  border-radius: var(--fx-r-sm);
+}
 
 /* Card surface used by Sources + Advanced bodies. Stroke-only, no fill;
    rows inside fill on hover with an inset rounded corner that keeps the
@@ -2295,6 +2306,9 @@ button.fx-group-row-volume-icon:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+.fx-panel-card.fx-advanced-body {
+  padding: var(--fx-3);
 }
 .fx-panel-card .fx-advanced-body { /* nested advanced wrapper — flatten padding */
   padding: 0;
@@ -2321,11 +2335,64 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 
 /* ── Remote control (IR) section ──────────────────────────────────────────── */
+.fx-ir-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--fx-2);
+  width: 100%;
+}
+.fx-ir-card {
+  margin-top: var(--fx-3);
+  padding: 16px;
+  background: var(--fx-surface-2);
+  border-radius: 12px;
+}
+.fx-ir-card .fx-ir-rows { margin-top: var(--fx-2); }
+.fx-ir-card .fx-ir-row { padding-left: 0; padding-right: 0; }
+.fx-ir-card .fx-ir-row:hover { background: transparent; }
+.fx-ir-divider {
+  border: 0;
+  border-top: 1px solid var(--fx-line);
+  margin: var(--fx-1) 0 var(--fx-3);
+}
+.fx-ir-section-title {
+  font-size: var(--fx-text-base);
+  font-weight: 600;
+  color: var(--fx-text-3);
+  margin-bottom: var(--fx-1);
+}
+.fx-audio-hat-select {
+  font-size: var(--fx-text-base);
+  font-weight: 600;
+  color: var(--fx-text);
+}
+.fx-ir-label-group {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--fx-2);
+}
 .fx-ir-toggle {
   display: flex;
   align-items: center;
   gap: var(--fx-2);
   cursor: pointer;
+}
+.fx-help-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.fx-help-popover {
+  position: absolute;
+  top: calc(100% + var(--fx-1));
+  left: 0;
+  min-width: 220px;
+  max-width: 260px;
+  padding: var(--fx-3);
+  font-size: var(--fx-text-sm);
+  line-height: 1.4;
+  color: var(--fx-text-2);
+  z-index: 220;
 }
 .fx-ir-toggle input[type="checkbox"] {
   /* Inherit the same look as other small checkboxes in the panel.
@@ -2361,13 +2428,18 @@ button.fx-group-row-volume-icon:focus-visible {
 .fx-ir-value {
   font-size: 12px;
   font-weight: 600;
-  padding: 2px var(--fx-2);
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 var(--fx-2);
   border-radius: var(--fx-r-sm);
   background: var(--fx-surface-3);
   color: var(--fx-text-2);
   text-align: center;
   white-space: nowrap;
   user-select: all;
+  box-sizing: border-box;
 }
 .fx-ir-value.set { color: var(--fx-text); }
 .fx-ir-value.learning {
@@ -2385,6 +2457,10 @@ button.fx-group-row-volume-icon:focus-visible {
   align-items: center;
   justify-content: flex-end;
 }
+.fx-ir-action-record { color: var(--fx-err); }
+.fx-ir-action-record:hover:not(:disabled) { color: var(--fx-err); background: var(--fx-err-soft, color-mix(in srgb, var(--fx-err) 12%, transparent)); }
+.fx-ir-action-stop { color: var(--fx-err); }
+.fx-ir-action-stop:hover { color: var(--fx-err); background: var(--fx-err-soft, color-mix(in srgb, var(--fx-err) 12%, transparent)); }
 
 /* ── Equalizer section ──────────────────────────────────────────────────────
    10-band graphic EQ for the device panel. Header is an enable checkbox
@@ -2410,8 +2486,9 @@ button.fx-group-row-volume-icon:focus-visible {
   accent-color: var(--fx-accent);
 }
 .fx-eq-preset {
-  flex: 1;
+  width: 50%;
   min-width: 0;
+  margin-left: auto;
 }
 .fx-eq-strip {
   display: flex;
@@ -2443,6 +2520,8 @@ button.fx-group-row-volume-icon:focus-visible {
   font-size: 12px;
   font-weight: 600;
   color: var(--fx-text-3);
+  height: 14px;
+  line-height: 14px;
 }
 .fx-eq-slider {
   /* Vertical orientation — modern browsers honour writing-mode here.
@@ -2486,7 +2565,13 @@ button.fx-group-row-volume-icon:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: var(--fx-3);
-  padding: var(--fx-2) var(--fx-3);
+  padding: var(--fx-3);
+}
+.fx-source-row-clickable { cursor: pointer; }
+.fx-source-row-clickable:focus-visible {
+  outline: 2px solid var(--fx-accent);
+  outline-offset: -2px;
+  border-radius: calc(var(--fx-r-lg) - var(--fx-1));
 }
 .fx-source-info {
   display: flex;
@@ -2499,7 +2584,7 @@ button.fx-group-row-volume-icon:focus-visible {
   align-items: center;
   gap: var(--fx-2);
   font-size: var(--fx-text-base);
-  font-weight: 600;
+  font-weight: 700;
   color: var(--fx-text);
   min-width: 0;
 }
@@ -3019,7 +3104,22 @@ label.fx-source-setting { cursor: pointer; }
   display: flex;
   flex-direction: column;
   gap: var(--fx-2);
+  padding: var(--fx-3);
 }
+.fx-version-status {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-1);
+  width: 100%;
+  padding: var(--fx-2) var(--fx-3);
+  border-radius: var(--fx-r-sm);
+  font-size: var(--fx-text-sm);
+  font-weight: 600;
+  margin-bottom: var(--fx-1);
+}
+.fx-version-status-ok   { color: var(--fx-ok);   background: var(--fx-ok-soft); }
+.fx-version-status-warn { color: var(--fx-warn); background: var(--fx-warn-soft); }
+.fx-version-status-err  { color: var(--fx-err);  background: var(--fx-err-soft); }
 .fx-device-version-row {
   justify-content: space-between;
   align-items: center;

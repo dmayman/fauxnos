@@ -1,14 +1,24 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
-  X, Settings2, Plus, ChevronDown, ChevronRight, Check, Trash2,
-  ArrowDownToLine, GitBranch,
-} from 'lucide-react'
-import {
   IconBrandSpotifyFilled,
   IconBuildingBroadcastTowerFilled,
   IconMicrophoneFilled,
   IconExternalLinkFilled,
   IconHeadphonesFilled,
+  IconX,
+  IconAdjustmentsFilled,
+  IconPlus,
+  IconChevronDown,
+  IconChevronRight,
+  IconCheck,
+  IconTrash,
+  IconDownload,
+  IconGitBranch,
+  IconWorld,
+  IconHelpCircle,
+  IconPlug,
+  IconPlayerRecordFilled,
+  IconPlayerStopFilled,
 } from '@tabler/icons-react'
 import VolumeSlider from './VolumeSlider'
 import { apiFetch } from '../api'
@@ -48,6 +58,47 @@ function SourceIcon({ source, size = 16 }) {
     id ? IconExternalLinkFilled :
     IconHeadphonesFilled
   return <Icon size={size} aria-hidden />
+}
+
+function hostnameOf(url) {
+  if (!url) return ''
+  let host
+  try {
+    const u = /^https?:\/\//i.test(url) ? new URL(url) : new URL(`http://${url}`)
+    host = u.hostname
+  } catch {
+    return url
+  }
+  const parts = host.split('.')
+  return parts.length > 2 ? parts.slice(-2).join('.') : host
+}
+
+function HelpPopover({ children }) {
+  const [open, setOpen] = useState(false)
+  const wrapRef = useRef(null)
+  useEffect(() => {
+    if (!open) return undefined
+    const handler = (e) => {
+      if (!wrapRef.current?.contains(e.target)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+  return (
+    <div className="fx-help-wrap" ref={wrapRef}>
+      <button
+        type="button"
+        className="fx-icon-btn sm"
+        onClick={() => setOpen(v => !v)}
+        title="Help"
+        aria-label="Help"
+        aria-expanded={open}
+      >
+        <IconHelpCircle size={14} />
+      </button>
+      {open && <div className="fx-popover fx-help-popover">{children}</div>}
+    </div>
+  )
 }
 
 /**
@@ -199,7 +250,7 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdate
                 title="Add a source"
                 aria-label="Add source"
               >
-                <Plus size={14} />
+                <IconPlus size={14} />
               </button>
               {addMenuOpen && (
                 <div className="fx-popover fx-add-builtin-menu">
@@ -218,7 +269,7 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdate
                     className="fx-add-builtin-item"
                     onClick={handleAddCustom}
                   >
-                    <Plug size={14} aria-hidden />
+                    <IconPlug size={14} aria-hidden />
                     <span>Custom source…</span>
                   </button>
                 </div>
@@ -255,18 +306,18 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdate
             )}
           </div>
 
-          <AdvancedSettings
-            client={client}
-            overlays={overlays}
-            onRefresh={onRefresh}
-          />
-
           <EqualizerSection client={client} />
 
           <VersionSection
             client={client}
             serverVersion={serverVersion}
             onUpdateClient={onUpdateClient}
+          />
+
+          <AdvancedSettings
+            client={client}
+            overlays={overlays}
+            onRefresh={onRefresh}
           />
 
           <div className="fx-device-panel-footer">
@@ -304,6 +355,7 @@ function ConnectedChip({ connected }) {
  * when the device is offline or when it's already at the client tip.
  */
 function VersionSection({ client, serverVersion, onUpdateClient }) {
+  const [open, setOpen] = useState(false)
   const deploy = client.deploy
   const deployedShort = deploy?.deployed_client_sha_short
   const deployedAt = deploy?.deployed_at
@@ -315,59 +367,82 @@ function VersionSection({ client, serverVersion, onUpdateClient }) {
 
   return (
     <div className="fx-device-version-section">
-      <div className="fx-section-label"><span>Version</span></div>
-      <div className="fx-panel-card fx-device-version-card">
-        <div className="fx-row fx-device-version-row">
-          <span className="fx-mute fx-device-version-label">Deployed</span>
-          <span className="fx-mono fx-device-version-value">
-            <GitBranch size={12} aria-hidden />
-            {deployedShort || '—'}
-          </span>
-        </div>
-        <div className="fx-row fx-device-version-row">
-          <span className="fx-mute fx-device-version-label">Server is at</span>
-          <span className="fx-mono fx-device-version-value">{serverShort || '—'}</span>
-        </div>
-        {deployedAt && (
-          <div className="fx-row fx-device-version-row">
-            <span className="fx-mute fx-device-version-label">Last update</span>
-            <span className="fx-device-version-value">{formatRelativeTime(deployedAt)}</span>
-          </div>
-        )}
-        {everDeployed && behind === null && (
-          <div className="fx-banner fx-banner-mute">
-            Stored SHA isn't in the server's git history (force-push?). Re-deploying will sync it.
-          </div>
-        )}
-        {!everDeployed && (
-          <div className="fx-banner fx-banner-mute">
-            This device has never been deployed via the update pipeline. The first update will pin its SHA.
-          </div>
-        )}
-        {needsUpdate && canUpdate && (
-          <button
-            type="button"
-            className="fx-btn fx-device-version-btn"
-            onClick={() => onUpdateClient(client)}
-          >
-            <ArrowDownToLine size={14} />
-            <span>
-              {everDeployed
-                ? `Update this device${behind > 0 ? ` (${behind} behind)` : ''}`
-                : 'Run first update'}
-            </span>
-          </button>
-        )}
-        {!needsUpdate && everDeployed && (
-          <div className="fx-mute fx-row" style={{ gap: 'var(--fx-1)' }}>
-            <Check size={12} />
-            <span>Up to date with the server.</span>
-          </div>
-        )}
-        {needsUpdate && !canUpdate && (
-          <div className="fx-mute">Device is offline — connect it to update.</div>
-        )}
+      <div
+        className="fx-section-label fx-section-label-clickable"
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen(v => !v)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(v => !v) } }}
+        aria-expanded={open}
+      >
+        <span>Version</span>
+        <button
+          className="fx-icon-btn sm"
+          onClick={(e) => { e.stopPropagation(); setOpen(!open) }}
+          aria-expanded={open}
+          title={open ? 'Collapse' : 'Expand'}
+        >
+          {open ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
+        </button>
       </div>
+      {open && (() => {
+        let statusKind, statusText
+        if (!everDeployed) {
+          statusKind = 'warn'
+          statusText = 'Never deployed via the update pipeline.'
+        } else if (behind === null) {
+          statusKind = 'warn'
+          statusText = "Stored SHA isn't in the server's git history."
+        } else if (behind > 0 && !canUpdate) {
+          statusKind = 'err'
+          statusText = `${behind} commit${behind === 1 ? '' : 's'} behind — device offline.`
+        } else if (behind > 0) {
+          statusKind = 'warn'
+          statusText = `${behind} commit${behind === 1 ? '' : 's'} behind the server.`
+        } else {
+          statusKind = 'ok'
+          statusText = 'Up to date with the server.'
+        }
+        return (
+          <div className="fx-panel-card fx-device-version-card">
+            <div className={`fx-version-status fx-version-status-${statusKind}`}>
+              <IconCheck size={12} aria-hidden />
+              <span>{statusText}</span>
+            </div>
+            <div className="fx-row fx-device-version-row">
+              <span className="fx-mute fx-device-version-label">Deployed</span>
+              <span className="fx-mono fx-device-version-value">
+                <IconGitBranch size={12} aria-hidden />
+                {deployedShort || '—'}
+              </span>
+            </div>
+            <div className="fx-row fx-device-version-row">
+              <span className="fx-mute fx-device-version-label">Server is at</span>
+              <span className="fx-mono fx-device-version-value">{serverShort || '—'}</span>
+            </div>
+            {deployedAt && (
+              <div className="fx-row fx-device-version-row">
+                <span className="fx-mute fx-device-version-label">Last update</span>
+                <span className="fx-device-version-value">{formatRelativeTime(deployedAt)}</span>
+              </div>
+            )}
+            {needsUpdate && canUpdate && (
+              <button
+                type="button"
+                className="fx-btn fx-device-version-btn"
+                onClick={() => onUpdateClient(client)}
+              >
+                <IconDownload size={14} />
+                <span>
+                  {everDeployed
+                    ? `Update this device${behind > 0 ? ` (${behind} behind)` : ''}`
+                    : 'Run first update'}
+                </span>
+              </button>
+            )}
+          </div>
+        )
+      })()}
     </div>
   )
 }
@@ -435,7 +510,7 @@ function DevicePanelHeader({ client, onClose, onRefresh }) {
       />
       <ConnectedChip connected={!!client.connected} />
       <button className="fx-icon-btn" onClick={onClose} aria-label="Close">
-        <X size={18} />
+        <IconX size={18} />
       </button>
     </div>
   )
@@ -524,34 +599,37 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
 
   return (
     <div className={`fx-source-item${expanded ? ' expanded' : ''}`}>
-      <div className="fx-source-row">
+      <div
+        className="fx-source-row fx-source-row-clickable"
+        role="button"
+        tabIndex={0}
+        onClick={() => setExpanded(v => !v)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpanded(v => !v) } }}
+        aria-expanded={expanded}
+      >
         <div className="fx-source-info">
           <span className="fx-source-label">
             <span className="fx-source-icon"><SourceIcon source={source} /></span>
             <span>{source.label || source.id}</span>
           </span>
-          <span className="fx-row" style={{ gap: 'var(--fx-1)' }}>
-            <span className="fx-badge accent">Internal</span>
-            <span className="fx-badge">{vcLabel}</span>
-          </span>
         </div>
         <div className="fx-source-actions">
           <button
             className={`fx-icon-btn sm${expanded ? ' active' : ''}`}
-            onClick={() => setExpanded(!expanded)}
+            onClick={(e) => { e.stopPropagation(); setExpanded(!expanded) }}
             title="Configure"
             aria-label="Configure"
           >
-            <Settings2 size={14} />
+            <IconAdjustmentsFilled size={14} />
           </button>
           {removable && (
             <button
               className="fx-icon-btn sm danger"
-              onClick={onRemove}
+              onClick={(e) => { e.stopPropagation(); onRemove() }}
               title="Remove"
               aria-label="Remove this built-in source"
             >
-              <Trash2 size={14} />
+              <IconTrash size={14} />
             </button>
           )}
         </div>
@@ -619,7 +697,7 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
               </div>
               <div>
                 <button className="fx-btn primary" onClick={handleSave} disabled={saving}>
-                  {saved ? <><Check size={14} /> Saved</> : <><Check size={14} /> Save</>}
+                  {saved ? <><IconCheck size={14} /> Saved</> : <><IconCheck size={14} /> Save</>}
                 </button>
               </div>
             </div>
@@ -677,35 +755,40 @@ function CustomSourceRow({ source, clientId, onDelete, onUpdate }) {
 
   return (
     <div className={`fx-source-item${editing ? ' expanded' : ''}`}>
-      <div className="fx-source-row">
+      <div
+        className="fx-source-row fx-source-row-clickable"
+        role="button"
+        tabIndex={0}
+        onClick={() => setEditing(v => !v)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setEditing(v => !v) } }}
+        aria-expanded={editing}
+      >
         <div className="fx-source-info">
           <span className="fx-source-label">
             <span className="fx-source-icon"><SourceIcon source={source} /></span>
             <span>{source.label || source.id}</span>
-          </span>
-          <span className="fx-row" style={{ gap: 'var(--fx-1)' }}>
-            <span className="fx-badge">External</span>
-            {source.control_api && (
-              <span className="fx-source-api-hint">{source.control_api}</span>
-            )}
+            <span className="fx-badge">
+              <IconWorld size={12} aria-hidden />
+              {hostnameOf(source.control_api) || 'External'}
+            </span>
           </span>
         </div>
         <div className="fx-source-actions">
           <button
             className={`fx-icon-btn sm${editing ? ' active' : ''}`}
-            onClick={() => setEditing(!editing)}
+            onClick={(e) => { e.stopPropagation(); setEditing(!editing) }}
             title="Edit"
             aria-label="Edit"
           >
-            <Settings2 size={14} />
+            <IconAdjustmentsFilled size={14} />
           </button>
           <button
             className="fx-icon-btn sm danger"
-            onClick={handleDelete}
+            onClick={(e) => { e.stopPropagation(); handleDelete() }}
             title="Delete"
             aria-label="Delete"
           >
-            <Trash2 size={14} />
+            <IconTrash size={14} />
           </button>
         </div>
       </div>
@@ -738,7 +821,7 @@ function CustomSourceRow({ source, clientId, onDelete, onUpdate }) {
           </div>
           <div>
             <button className="fx-btn primary" onClick={handleSave} disabled={saving}>
-              {saving ? 'Saving…' : <><Check size={14} /> Save</>}
+              {saving ? 'Saving…' : <><IconCheck size={14} /> Save</>}
             </button>
           </div>
         </div>
@@ -789,7 +872,7 @@ function AddCustomSourceForm({ clientId, onAdded, onCancel }) {
       <div className="fx-row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
         <span className="fx-h3">New custom source</span>
         <button type="button" className="fx-icon-btn sm" onClick={onCancel} aria-label="Cancel">
-          <X size={14} />
+          <IconX size={14} />
         </button>
       </div>
       <div>
@@ -819,7 +902,7 @@ function AddCustomSourceForm({ clientId, onAdded, onCancel }) {
       </div>
       <div>
         <button type="submit" className="fx-btn primary" disabled={submitting}>
-          <Plus size={14} /> Add custom source
+          <IconPlus size={14} /> Add custom source
         </button>
       </div>
     </form>
@@ -877,53 +960,56 @@ function AdvancedSettings({ client, overlays, onRefresh }) {
 
   return (
     <>
-      <div className="fx-section-label">
+      <div
+        className="fx-section-label fx-section-label-clickable"
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen(v => !v)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(v => !v) } }}
+        aria-expanded={open}
+      >
         <span>Advanced settings</span>
         <button
           className="fx-icon-btn sm"
-          onClick={() => setOpen(!open)}
+          onClick={(e) => { e.stopPropagation(); setOpen(!open) }}
           aria-expanded={open}
           title={open ? 'Collapse' : 'Expand'}
         >
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          {open ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
         </button>
       </div>
       {open && (
         <div className="fx-panel-card fx-advanced-body">
           <RemoteControlSection client={client} />
           <div className="fx-advanced-section">
-            <div className="fx-advanced-title">Choose the audio hat this device uses</div>
-            <div className="fx-row" style={{ gap: 'var(--fx-2)', marginTop: 'var(--fx-3)' }}>
-              <select
-                className="fx-select"
-                value={selectedOverlay || ''}
-                disabled={overlayLocked || applying || isRebooting}
-                onChange={e => setSelectedOverlay(e.target.value)}
-                title={overlayLocked
-                  ? "Server hardware overlay is locked (analog-input detection in install.sh keys off this exact value)."
-                  : "Pick the matching DAC HAT and press Apply to reboot."
-                }
-                style={{ flex: 1, minWidth: 0 }}
-              >
-                {(overlays || []).map(o => (
-                  <option key={o.id} value={o.id}>{o.label}</option>
-                ))}
-                {selectedOverlay && !overlays?.some(o => o.id === selectedOverlay) && (
-                  <option value={selectedOverlay}>{selectedOverlay} (custom)</option>
-                )}
-              </select>
-              <button
-                className={overlayDirty ? 'fx-btn primary' : 'fx-btn'}
-                disabled={overlayLocked || applying || isRebooting || !selectedOverlay}
-                onClick={handleApplyOverlay}
-                title="Rewrite /boot/firmware/config.txt and reboot. Device offline for ~60s."
-              >
-                {applying ? 'Applying…' : isRebooting ? 'Rebooting…' : (overlayDirty ? 'Apply + reboot' : 'Re-apply')}
-              </button>
-            </div>
-            {selectedOverlay && (
-              <code className="fx-mono fx-overlay-code">dtoverlay={selectedOverlay}</code>
-            )}
+            <div className="fx-advanced-title">Choose audio hat</div>
+            <select
+              className="fx-select fx-audio-hat-select"
+              value={selectedOverlay || ''}
+              disabled={overlayLocked || applying || isRebooting}
+              onChange={e => setSelectedOverlay(e.target.value)}
+              title={overlayLocked
+                ? "Server hardware overlay is locked (analog-input detection in install.sh keys off this exact value)."
+                : "Pick the matching DAC HAT and press Apply to reboot."
+              }
+              style={{ width: '100%', minWidth: 0 }}
+            >
+              {(overlays || []).map(o => (
+                <option key={o.id} value={o.id}>{o.label}</option>
+              ))}
+              {selectedOverlay && !overlays?.some(o => o.id === selectedOverlay) && (
+                <option value={selectedOverlay}>{selectedOverlay} (custom)</option>
+              )}
+            </select>
+            <button
+              className={overlayDirty ? 'fx-btn primary' : 'fx-btn'}
+              disabled={overlayLocked || applying || isRebooting || !selectedOverlay}
+              onClick={handleApplyOverlay}
+              title="Rewrite /boot/firmware/config.txt and reboot. Device offline for ~60s."
+              style={{ marginTop: 'var(--fx-2)' }}
+            >
+              {applying ? 'Applying…' : isRebooting ? 'Rebooting…' : (overlayDirty ? 'Apply + reboot' : 'Re-apply')}
+            </button>
             {applyMessage && (
               <div className="fx-small" style={{ marginTop: 'var(--fx-2)', color: applyMessage.startsWith('Failed') ? 'var(--fx-err)' : 'var(--fx-text-2)' }}>
                 {applyMessage}
@@ -1119,15 +1205,22 @@ function EqualizerSection({ client }) {
 
   return (
     <>
-      <div className="fx-section-label">
+      <div
+        className="fx-section-label fx-section-label-clickable"
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen(v => !v)}
+        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(v => !v) } }}
+        aria-expanded={open}
+      >
         <span>Equalizer</span>
         <button
           className="fx-icon-btn sm"
-          onClick={() => setOpen(!open)}
+          onClick={(e) => { e.stopPropagation(); setOpen(!open) }}
           aria-expanded={open}
           title={open ? 'Collapse' : 'Expand'}
         >
-          {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          {open ? <IconChevronDown size={14} /> : <IconChevronRight size={14} />}
         </button>
       </div>
       {open && (
@@ -1349,24 +1442,28 @@ function RemoteControlSection({ client }) {
 
   return (
     <div className="fx-advanced-section">
-      <label className="fx-ir-toggle">
+      <div className="fx-ir-header-row">
+        <div className="fx-ir-label-group">
+          <label htmlFor={`ir-remote-${client.client_id}`} className="fx-advanced-title" style={{ margin: 0, cursor: 'pointer' }}>
+            Remote control
+          </label>
+          <HelpPopover>
+            Wire a 38 kHz IR receiver (e.g. VS1838B) to GPIO17 / 3V3 / GND and enable
+            to teach this device a remote.
+          </HelpPopover>
+        </div>
         <input
+          id={`ir-remote-${client.client_id}`}
+          className="fx-checkbox"
           type="checkbox"
           checked={enabled}
           disabled={loading}
           onChange={toggleEnabled}
         />
-        <span className="fx-advanced-title" style={{ margin: 0 }}>Remote control</span>
-      </label>
-      {!enabled && !loading && (
-        <p className="fx-small fx-mute" style={{ marginTop: 'var(--fx-2)' }}>
-          Wire a 38 kHz IR receiver (e.g. VS1838B) to GPIO17 / 3V3 / GND and enable
-          to teach this device a remote.
-        </p>
-      )}
+      </div>
       {enabled && (
-        <>
-          <div className="fx-source-setting" style={{ marginTop: 'var(--fx-2)' }}>
+        <div className="fx-ir-card">
+          <div className="fx-source-setting">
             <span className="fx-source-setting-label">
               Feedback volume <span className="fx-mute" style={{ fontVariantNumeric: 'tabular-nums' }}>{feedbackVolume}%</span>
             </span>
@@ -1387,6 +1484,8 @@ function RemoteControlSection({ client }) {
               </div>
             </div>
           </div>
+          <hr className="fx-ir-divider" />
+          <div className="fx-ir-section-title">Learn commands from your remote control</div>
           <div className="fx-ir-rows">
             {IR_COMMANDS.map(c => (
               <IrCommandRow
@@ -1401,7 +1500,7 @@ function RemoteControlSection({ client }) {
               />
             ))}
           </div>
-        </>
+        </div>
       )}
       {errorMsg && (
         <div className="fx-small" style={{ marginTop: 'var(--fx-2)', color: 'var(--fx-err)' }}>
@@ -1427,7 +1526,14 @@ function IrCommandRow({ label, mapping, learning, disabled, onLearn, onCancel, o
       </code>
       <div className="fx-ir-actions">
         {learning ? (
-          <button className="fx-btn" onClick={onCancel}>Cancel</button>
+          <button
+            className="fx-btn fx-ir-action-stop"
+            onClick={onCancel}
+            aria-label="Cancel learning"
+            title="Cancel"
+          >
+            <IconPlayerStopFilled size={14} />
+          </button>
         ) : (
           <>
             {mapping && (
@@ -1436,17 +1542,19 @@ function IrCommandRow({ label, mapping, learning, disabled, onLearn, onCancel, o
                 onClick={onClear}
                 disabled={disabled}
                 title="Forget this mapping"
+                aria-label="Forget this mapping"
               >
-                <X size={14} />
+                <IconX size={14} />
               </button>
             )}
             <button
-              className="fx-btn"
+              className="fx-btn fx-ir-action-record"
               onClick={onLearn}
               disabled={disabled}
-              title={disabled ? 'Cancel the in-flight learn first' : 'Press a button on your remote after clicking'}
+              title={disabled ? 'Cancel the in-flight learn first' : (mapping ? 'Re-learn — press a button on your remote' : 'Learn — press a button on your remote')}
+              aria-label={mapping ? 'Re-learn' : 'Learn'}
             >
-              {mapping ? 'Re-learn' : 'Learn'}
+              <IconPlayerRecordFilled size={14} />
             </button>
           </>
         )}
@@ -1468,7 +1576,7 @@ function RemoveDeviceButton({ client, onRemoved }) {
 
   return (
     <button className="fx-btn danger" onClick={handleRemove}>
-      <Trash2 size={14} /> Remove device
+      <IconTrash size={14} /> Remove device
     </button>
   )
 }
