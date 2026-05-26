@@ -1123,19 +1123,18 @@ body.fx-dragging-background::after {
 }
 
 /* ── Header ────────────────────────────────────────────────────────────────── */
-/* Lives inside .fx-main so it inherits the same max-width and horizontal
-   padding as the groups below — it occupies the exact slot the old "Groups"
-   title used. No background or sticky chrome; it scrolls with content.
-   The brand indents past the drag-handle gutter so the wordmark aligns
-   with the LEFT edge of the group cards (gutter 24px + row gap 4px = 28px).
-   Pill stays flush with the right edge of the cards. */
+/* Top app bar — spans the full viewport width (sits outside .fx-main, so
+   it ignores the grid's 760px cap). Wordmark on the left, theme toggle +
+   devices button on the right. No background / no sticky behavior, just
+   chrome that defines the page lid. Version-tracker chips live in their
+   own bottom-left fixed slot (see .fx-version-tracker) so this bar stays
+   focused on the primary affordances. */
 .fx-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--fx-3);
-  margin-bottom: var(--fx-4);
-  padding-left: calc(24px + var(--fx-1));
+  padding: var(--fx-4) var(--fx-5);
 }
 .fx-header-wordmark {
   margin: 0;
@@ -1145,7 +1144,37 @@ body.fx-dragging-background::after {
   letter-spacing: -0.01em;
   color: var(--fx-text-3);
 }
-.fx-header-pill { padding: 0 var(--fx-3); }
+/* Devices button — sized + radiused to match the body type ramp instead
+   of the small-chip system look. Inherits 36px height from .fx-btn; we
+   relax the radius to fx-r (12px) so it harmonizes with the 12px
+   thumbnail / 36px card stack, bump type to 15px Bold so the device
+   count reads as a proper label rather than chrome. */
+.fx-header-pill {
+  padding: 0 var(--fx-3);
+  border-radius: var(--fx-r);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+/* Version-tracker pinned to bottom-left of the window. Houses the
+   UpdatePills component (or the all-clean ghost SHA chip). Doesn't
+   scroll with content. z-index keeps it above the page but below the
+   side panel / overlay. */
+.fx-version-tracker {
+  position: fixed;
+  bottom: var(--fx-4);
+  left: var(--fx-4);
+  z-index: 100;
+  display: flex;
+  gap: var(--fx-2);
+  align-items: center;
+}
+@media (max-width: 600px) {
+  .fx-version-tracker {
+    bottom: var(--fx-3);
+    left: var(--fx-3);
+  }
+}
 
 /* ── Groups ────────────────────────────────────────────────────────────────── */
 .fx-groups-grid {
@@ -1503,6 +1532,14 @@ body.fx-dragging-background::after {
   /* tint over a neutral base, falls back to surface-1 when --art-card-tint is transparent */
   background: var(--art-card-tint, var(--fx-surface-1));
 }
+/* V4 empty (multi-device, no Spotify connected) — tint the outer card a
+   slight gray so the inner empty media-card (still surface-1) reads as a
+   raised element, mirroring the visual hierarchy of V1 where album-art
+   tints the outer card. Subtle on purpose: this is the "Spotify not
+   connected" affordance, not a featured state. */
+.fx-group-card-v2.v4-empty {
+  background: var(--fx-surface-2);
+}
 .fx-group-card-v2.fx-card-hover {
   transition:
     border-color var(--fx-dur) var(--fx-ease),
@@ -1736,7 +1773,7 @@ body.fx-dragging-background::after {
 
 /* Device rows are neutral by default; accent is reserved for the
    .is-all entry that controls the whole group (see below). */
-.fx-group-row-v2 .fx-name-device { color: var(--fx-text); }
+.fx-group-row-v2 .fx-name-device { color: var(--fx-text-2); }
 
 .fx-group-row-name {
   display: flex;
@@ -1876,6 +1913,22 @@ button.fx-group-row-volume-icon:focus-visible {
    Accent (album-art tinted, or theme accent when no art) is reserved for
    this row; sibling device rows stay neutral so the group control reads
    as the primary affordance. */
+/* All row sits as a section header above the device list. Extra
+   breathing room beneath, plus an edge-to-edge hairline (the ::after
+   pseudo escapes the .fx-group-rows 24px padding via negative left/
+   right) so the All row reads as a heading + separator, not a peer.
+   margin-bottom 16 + parent gap 16 = 32px from All to first device,
+   with the rule centered in that gap (bottom: -16). */
+.fx-group-row-v2.is-all { margin-bottom: 16px; }
+.fx-group-row-v2.is-all::after {
+  content: "";
+  position: absolute;
+  left: -24px;
+  right: -24px;
+  bottom: -16px;
+  height: 1px;
+  background: var(--fx-line);
+}
 .fx-group-row-v2.is-all .fx-name-device { color: var(--art-accent); }
 .fx-group-row-v2.is-all .fx-group-row-volume-icon {
   color: var(--art-accent);
@@ -2116,8 +2169,8 @@ button.fx-group-row-volume-icon:focus-visible {
   gap: var(--fx-1);
 }
 .fx-devices-popover-header {
-  font-size: var(--fx-text-xs);
-  font-weight: 500;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--fx-text-3);
   padding: var(--fx-2) var(--fx-3) 0;
 }
@@ -2130,7 +2183,8 @@ button.fx-group-row-volume-icon:focus-visible {
   padding: var(--fx-1);
 }
 .fx-devices-popover-empty {
-  font-size: var(--fx-text-sm);
+  font-size: 14px;
+  font-weight: 600;
   color: var(--fx-text-2);
   padding: var(--fx-3);
 }
@@ -2161,15 +2215,16 @@ button.fx-group-row-volume-icon:focus-visible {
   min-width: 0;
 }
 .fx-device-cell-name {
-  font-size: var(--fx-text-sm);
-  font-weight: 500;
+  font-size: 15px;
+  font-weight: 700;
   color: var(--fx-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .fx-device-cell-id {
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--fx-text-3);
 }
 .fx-device-cell-chevron { color: var(--fx-text-3); }
@@ -2218,11 +2273,14 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 
 /* Device panel never wears horizontal rules — section identity comes from
-   the labeled card pattern, not divider lines. */
+   the labeled card pattern, not divider lines. Type floor: 14px body /
+   600 weight (see Devices panel typography rules). */
 .fx-device-panel .fx-section-label {
   border-bottom: 0;
   padding-bottom: 0;
   margin-bottom: var(--fx-2);
+  font-size: 14px;
+  font-weight: 600;
 }
 .fx-device-panel .fx-panel-card + .fx-section-label { margin-top: var(--fx-5); }
 
@@ -2249,13 +2307,14 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 .fx-advanced-title {
   font-size: var(--fx-text-base);
-  font-weight: 500;
+  font-weight: 600;
   color: var(--fx-text);
   margin-bottom: var(--fx-1);
 }
 .fx-overlay-code {
   display: block;
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--fx-text-3);
   margin-top: var(--fx-2);
   user-select: all;
@@ -2295,11 +2354,13 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 .fx-ir-row:hover { background: var(--fx-surface-2); }
 .fx-ir-label {
-  font-size: var(--fx-text-sm);
+  font-size: 14px;
+  font-weight: 600;
   color: var(--fx-text);
 }
 .fx-ir-value {
-  font-size: 11px;
+  font-size: 12px;
+  font-weight: 600;
   padding: 2px var(--fx-2);
   border-radius: var(--fx-r-sm);
   background: var(--fx-surface-3);
@@ -2372,13 +2433,15 @@ button.fx-group-row-volume-icon:focus-visible {
   min-width: 0;
 }
 .fx-eq-gain {
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--fx-text-3);
-  height: 12px;
+  height: 14px;
 }
 .fx-eq-freq {
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 600;
   color: var(--fx-text-3);
 }
 .fx-eq-slider {
@@ -2436,7 +2499,7 @@ button.fx-group-row-volume-icon:focus-visible {
   align-items: center;
   gap: var(--fx-2);
   font-size: var(--fx-text-base);
-  font-weight: 500;
+  font-weight: 600;
   color: var(--fx-text);
   min-width: 0;
 }
@@ -2468,7 +2531,8 @@ button.fx-group-row-volume-icon:focus-visible {
 .fx-source-item:focus-within .fx-source-actions { opacity: 1; }
 
 .fx-source-api-hint {
-  font-size: var(--fx-text-xs);
+  font-size: 12px;
+  font-weight: 600;
   color: var(--fx-text-3);
   max-width: 220px;
   overflow: hidden;
@@ -2499,7 +2563,7 @@ button.fx-group-row-volume-icon:focus-visible {
 label.fx-source-setting { cursor: pointer; }
 .fx-source-setting-label {
   font-size: var(--fx-text-base);
-  font-weight: 400;
+  font-weight: 600;
   color: var(--fx-text);
 }
 /* Small inline value chip beside the setting label, e.g. "+25" on the
@@ -2507,7 +2571,8 @@ label.fx-source-setting { cursor: pointer; }
    user drags through ±2-digit values. */
 .fx-source-setting-value {
   margin-left: var(--fx-2);
-  font-size: var(--fx-text-xs);
+  font-size: 12px;
+  font-weight: 600;
   color: var(--fx-text-2);
   font-variant-numeric: tabular-nums;
 }

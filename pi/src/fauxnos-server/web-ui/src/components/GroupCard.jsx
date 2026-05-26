@@ -562,7 +562,7 @@ export default function GroupCard({
     <div className="fx-group-row-v2-wrap">
       <div
         ref={cardRef}
-        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isDragTarget ? ' fx-drop' : ''}`}
+        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${isDragTarget ? ' fx-drop' : ''}`}
         data-has-media={hasMedia ? 'true' : 'false'}
         style={artStyle}
         onDragOver={handleDragOver}

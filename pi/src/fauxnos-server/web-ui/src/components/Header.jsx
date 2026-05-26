@@ -27,7 +27,7 @@ import { useTheme } from '../hooks/useTheme'
  * per-device update button) lives in DevicePanel.
  */
 const Header = forwardRef(function Header(
-  { status, mqttConnected, onToggleDevices, popoverOpen, serverVersion, clients, onUpdateServer, onUpdateClients },
+  { status, mqttConnected, onToggleDevices, popoverOpen },
   ref,
 ) {
   const ok = status?.status === 'running'
@@ -40,16 +40,10 @@ const Header = forwardRef(function Header(
       <h1 className="fx-header-wordmark">fauxnos</h1>
       <div className="fx-row" style={{ gap: 'var(--fx-2)', alignItems: 'center' }}>
         <ThemeToggle />
-        <UpdatePills
-          serverVersion={serverVersion}
-          clients={clients}
-          onUpdateServer={onUpdateServer}
-          onUpdateClients={onUpdateClients}
-        />
         <button
           ref={ref}
           type="button"
-          className={`fx-btn ghost sm fx-header-pill${popoverOpen ? ' active' : ''}`}
+          className={`fx-btn ghost fx-header-pill${popoverOpen ? ' active' : ''}`}
           onClick={onToggleDevices}
           title="Show devices"
           aria-haspopup="menu"
@@ -57,7 +51,7 @@ const Header = forwardRef(function Header(
         >
           <span className={`fx-dot ${ok ? 'ok' : 'err'}`} />
           <span>{label}</span>
-          <ChevronDown size={14} aria-hidden />
+          <ChevronDown size={16} aria-hidden />
         </button>
       </div>
     </header>
@@ -75,7 +69,7 @@ const Header = forwardRef(function Header(
  * If neither is set: render the small ghost SHA chip (existing behavior
  * when everything is up to date).
  */
-function UpdatePills({ serverVersion, clients, onUpdateServer, onUpdateClients }) {
+export function UpdatePills({ serverVersion, clients, onUpdateServer, onUpdateClients }) {
   if (!serverVersion) return null
 
   const {

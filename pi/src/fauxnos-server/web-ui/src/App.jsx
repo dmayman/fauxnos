@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { X } from 'lucide-react'
-import Header from './components/Header'
+import Header, { UpdatePills } from './components/Header'
 import GroupsTab from './components/GroupsTab'
 import AddDeviceTab from './components/AddDeviceTab'
 import DevicesPopover from './components/DevicesPopover'
@@ -216,18 +216,14 @@ export default function App() {
           onAddDevice={openAddDevice}
         />
       )}
+      <Header
+        ref={headerStatusRef}
+        status={serverStatus}
+        mqttConnected={mqtt.connected}
+        popoverOpen={popoverOpen}
+        onToggleDevices={() => setPopoverOpen(v => !v)}
+      />
       <main className="fx-main">
-        <Header
-          ref={headerStatusRef}
-          status={serverStatus}
-          mqttConnected={mqtt.connected}
-          popoverOpen={popoverOpen}
-          onToggleDevices={() => setPopoverOpen(v => !v)}
-          serverVersion={serverVersion}
-          clients={clients}
-          onUpdateServer={openUpdateServer}
-          onUpdateClients={openUpdateClients}
-        />
         <GroupsTab
           groups={groups}
           clients={clients}
@@ -238,6 +234,14 @@ export default function App() {
           onAddDevice={openAddDevice}
         />
       </main>
+      <div className="fx-version-tracker">
+        <UpdatePills
+          serverVersion={serverVersion}
+          clients={clients}
+          onUpdateServer={openUpdateServer}
+          onUpdateClients={openUpdateClients}
+        />
+      </div>
 
       {sidePanelOpen && <div className="fx-overlay" onClick={() => {
         closeDevice()
