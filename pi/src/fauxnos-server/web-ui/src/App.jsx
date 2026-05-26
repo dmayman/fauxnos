@@ -6,6 +6,7 @@ import AddDeviceTab from './components/AddDeviceTab'
 import DevicesPopover from './components/DevicesPopover'
 import DevicePanel from './components/DevicePanel'
 import UpdateStreamModal from './components/UpdateStreamModal'
+import TuningPanel from './components/TuningPanel'
 import { useMqtt } from './hooks/useMqtt'
 import { apiFetch, getServerVersion } from './api'
 
@@ -276,6 +277,9 @@ export default function App() {
           onDone={onUpdateDone}
         />
       )}
+
+      {/* Temporary OKLCH tuning panel — delete with useTuning.js once values lock. */}
+      <TuningPanel />
     </div>
   )
 }

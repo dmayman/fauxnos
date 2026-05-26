@@ -1,5 +1,7 @@
 import { forwardRef } from 'react'
 import { ChevronDown, ArrowDownToLine, GitBranch } from 'lucide-react'
+import { IconSun, IconMoon, IconDeviceDesktop } from '@tabler/icons-react'
+import { useTheme } from '../hooks/useTheme'
 
 /**
  * Page header — fauxnos wordmark on the left, two update pills + devices
@@ -37,6 +39,7 @@ const Header = forwardRef(function Header(
     <header className="fx-header">
       <h1 className="fx-header-wordmark">fauxnos</h1>
       <div className="fx-row" style={{ gap: 'var(--fx-2)', alignItems: 'center' }}>
+        <ThemeToggle />
         <UpdatePills
           serverVersion={serverVersion}
           clients={clients}
@@ -195,6 +198,35 @@ function buildClientsTooltip(clientsNeedingUpdate, total, repoNeedsPull) {
     lines.push('(server will pull from github first so clients get fresh files)')
   }
   return lines.join('\n')
+}
+
+/* Three-state segmented toggle: system / light / dark. Sits in the header
+   next to the devices pill. Persists via useTheme. */
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme()
+  const options = [
+    { id: 'light',  Icon: IconSun,           label: 'Light' },
+    { id: 'system', Icon: IconDeviceDesktop, label: 'Follow system' },
+    { id: 'dark',   Icon: IconMoon,          label: 'Dark' },
+  ]
+  return (
+    <div className="fx-theme-toggle" role="radiogroup" aria-label="Theme">
+      {options.map(o => (
+        <button
+          key={o.id}
+          type="button"
+          role="radio"
+          aria-checked={theme === o.id}
+          className={theme === o.id ? 'active' : ''}
+          title={o.label}
+          aria-label={o.label}
+          onClick={() => setTheme(o.id)}
+        >
+          <o.Icon size={14} stroke={2} />
+        </button>
+      ))}
+    </div>
+  )
 }
 
 export default Header

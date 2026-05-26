@@ -1,5 +1,7 @@
 /* ── Fonts ─────────────────────────────────────────────────────────────────── */
-@import url('https://fonts.googleapis.com/css2?family=Fustat:wght@500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* Fustat + JetBrains Mono loaded via <link> in index.html (preconnect +
+   variable-axis URL per Google Fonts recommendation). Don't @import here
+   too — duplicate loads silently churn the FOUT. */
 
 /* ── Reset ─────────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -225,7 +227,6 @@ a { color: var(--accent); }
   line-height: var(--fx-lh-base);
   color:       var(--fx-text);
   background:  var(--fx-bg);
-  font-feature-settings: "tnum"; /* tabular numerals for slider/timecode labels */
   -webkit-font-smoothing: antialiased;
 }
 
@@ -1065,7 +1066,6 @@ body {
   color: var(--fx-text);
   font-size: var(--fx-text-base);
   line-height: var(--fx-lh-base);
-  font-feature-settings: "tnum";
   -webkit-font-smoothing: antialiased;
 }
 
@@ -1105,11 +1105,11 @@ body {
 }
 .fx-header-wordmark {
   margin: 0;
-  font-size: var(--fx-text-xl);
-  line-height: var(--fx-lh-xl);
-  font-weight: 600;
-  letter-spacing: -0.015em;
-  color: var(--fx-text);
+  font-size: 24px;
+  line-height: 28px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--fx-text-3);
 }
 .fx-header-pill { padding: 0 var(--fx-3); }
 
@@ -1117,7 +1117,7 @@ body {
 .fx-groups-grid {
   display: flex;
   flex-direction: column;
-  gap: var(--fx-3);
+  gap: var(--fx-5);
 }
 
 .fx-group-row {
@@ -1423,6 +1423,562 @@ body {
     grid-row: 2;
   }
   .fx-group-member-handle { grid-row: 1 / span 2; }
+}
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   Group card v2 — 3-variant layout driven by Figma redesign
+   ═════════════════════════════════════════════════════════════════════════════
+   V1 (multi-room + media):   media-card on top + device rows below
+   V2 (single + no media):    single inline row (name | vol | source-trigger)
+   V3 (single + media):       media-card on top + single device row below
+   V4 (multi-room + no media, transient): rows only, no media card
+
+   All variants share the 40px-radius outer chrome and 24px padding. Album-art
+   color is injected per-card via inline style on the root element; `--art-*`
+   tokens fall back to neutral when no art is present.
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+/* Outer chrome */
+.fx-group-row-v2-wrap {
+  position: relative;
+  width: 100%;
+}
+.fx-group-card-v2 {
+  position: relative;
+  background: var(--fx-surface-1);
+  border: 1px solid var(--fx-line-strong);
+  border-radius: 40px;
+  /* Per Figma: subtle outer drop shadow lifts the card off the page bg.
+     Light: 0 4px 24px rgba(0,0,0,0.03). Dark stays a bit deeper. */
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.03);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+[data-theme="dark"] .fx-group-card-v2,
+:root:not([data-theme]) .fx-group-card-v2 {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-group-card-v2 {
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.03);
+  }
+}
+.fx-group-card-v2[data-has-media="true"] {
+  /* tint over a neutral base, falls back to surface-1 when --art-card-tint is transparent */
+  background: var(--art-card-tint, var(--fx-surface-1));
+}
+.fx-group-card-v2.fx-card-hover {
+  transition:
+    border-color var(--fx-dur) var(--fx-ease),
+    box-shadow var(--fx-dur) var(--fx-ease);
+}
+.fx-group-card-v2.fx-drop {
+  border-color: var(--fx-accent);
+  box-shadow: 0 0 0 3px var(--fx-accent-soft), var(--fx-shadow-2);
+}
+
+/* Inner sub-card (V1/V3 only) — sits above the device rows.
+   Background per spec:
+     light: solid white inner card
+     dark:  a subtle white-over-tint that picks up the parent tint visually */
+.fx-group-media-card {
+  position: relative;
+  padding: 24px;
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 24px;
+  align-items: center;
+  background: var(--fx-surface-1);
+  border-radius: 40px;
+  /* Per Figma: inner white-bg sub-card carries a soft halo that separates
+     it from the tinted outer card. drop-shadow-style (no offset, 8px blur). */
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.08);
+}
+[data-theme="dark"] .fx-group-media-card,
+:root:not([data-theme]) .fx-group-media-card {
+  background: rgba(255, 255, 255, 0.05);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-group-media-card {
+    background: var(--fx-surface-1);
+  }
+}
+
+.fx-group-media-art {
+  width: 150px;
+  height: 150px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--fx-surface-2);
+  border: 1px solid var(--fx-line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fx-text-3);
+  flex-shrink: 0;
+}
+.fx-group-media-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.fx-group-media-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.fx-group-media-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.fx-group-media-text .fx-title-track,
+.fx-group-media-text .fx-meta-track {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: block;
+}
+
+/* Progress row */
+.fx-group-progress {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+.fx-group-progress-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+.fx-group-progress-track {
+  position: relative;
+  flex: 1;
+  height: 6px;
+  background: var(--art-progress-tint, var(--fx-surface-3));
+  border-radius: var(--fx-r-pill);
+  cursor: pointer;
+  min-width: 0;
+}
+.fx-group-progress-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--art-accent, var(--fx-text));
+  border-radius: inherit;
+  pointer-events: none;
+}
+.fx-group-progress-input {
+  position: absolute;
+  inset: -10px 0;
+  width: 100%;
+  height: calc(100% + 20px);
+  opacity: 0;
+  cursor: pointer;
+  margin: 0;
+}
+.fx-group-progress-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+/* Per Figma: prev/play/next live in 8px-radius squares with 8px padding
+   around the 16-18px glyph (so 32×32 hit box). The default .fx-icon-btn
+   is a 99px pill; override the radius here, keep the size. */
+.fx-group-progress-actions .fx-icon-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--fx-text-2);
+}
+.fx-group-progress-actions .fx-icon-btn:hover {
+  color: var(--fx-text);
+  background: var(--art-accent-soft, var(--fx-accent-soft));
+}
+
+/* Source trigger — pill anchored top-right of outer card (V1/V3/V4).
+   In V2 it lives inline in the row instead; that variant uses
+   .fx-source-trigger-inline below. */
+.fx-source-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 32px;
+  padding: 4px 12px;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  color: var(--fx-text);
+  cursor: pointer;
+  font: inherit;
+  transition: background var(--fx-dur) var(--fx-ease);
+}
+.fx-source-trigger:hover {
+  background: var(--art-accent-soft, var(--fx-accent-soft));
+}
+.fx-source-trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
+}
+.fx-source-trigger.anchor {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  z-index: 2;
+}
+
+/* Device rows section — V1/V3/V4 (below media card or as the entire body) */
+.fx-group-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+}
+/* When stacked under a media card, use a tighter top gap so the inner
+   card's drop-shadow has breathing room without doubled padding. */
+.fx-group-card-v2[data-has-media="true"] .fx-group-rows {
+  gap: 16px;
+}
+/* V2-single body: a single inline row inside the card. The row's own
+   padding (8px) handles vertical rhythm; the outer card adds horizontal
+   padding via pl-[32px] pr-[24px] py-[24px] in the Figma (32 to leave
+   room for the drag-gutter visual on hover). */
+.fx-group-card-v2.v2-single .fx-group-rows {
+  padding: 24px 24px 24px 32px;
+}
+
+/* A device row (or the V2 inline row). Three columns:
+     1. Name + (per-row drag indicator on hover, non-home only)
+     2. Volume control (icon + slider)
+     3. Source trigger (V2 only — anchored otherwise)                       */
+.fx-group-row-v2 {
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  align-items: center;
+  gap: 16px;
+  padding: 8px;
+  border-radius: 8px;
+  position: relative;
+  min-width: 0;
+}
+.fx-group-row-v2.with-source {
+  grid-template-columns: 150px 1fr auto;
+}
+
+.fx-group-row-name {
+  display: flex;
+  align-items: center;
+  position: relative;
+  min-width: 0;
+  cursor: inherit;
+  user-select: none;
+}
+.fx-group-row-name.draggable { cursor: grab; }
+.fx-group-row-name.draggable:active { cursor: grabbing; }
+.fx-group-row-name-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.fx-group-row-name-subtitle {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--fx-text-3);
+  margin-top: 2px;
+  white-space: nowrap;
+}
+
+/* Per-row drag handle — only renders for non-home devices in multi-room;
+   visible on row hover. Two parallel bars sitting 20px left of the name
+   (still inside the card's 24px outer padding so the affordance never
+   clips). Matches the Figma kitchen-row drag indicator. */
+.fx-row-drag {
+  position: absolute;
+  left: -20px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 6px;
+  height: 10px;
+  color: var(--art-accent, var(--fx-text-3));
+  cursor: grab;
+  opacity: 0;
+  transition: opacity var(--fx-dur) var(--fx-ease);
+}
+.fx-group-row-v2:hover .fx-row-drag,
+.fx-row-drag:focus-visible {
+  opacity: 0.7;
+}
+.fx-row-drag:hover { opacity: 1; }
+.fx-row-drag:active { cursor: grabbing; }
+
+.fx-group-row-volume {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-width: 0;
+}
+.fx-group-row-volume-icon {
+  color: var(--art-accent, var(--fx-text-2));
+  flex-shrink: 0;
+  display: inline-flex;
+  opacity: 0.85;
+}
+
+/* Slider visuals tuned to spec (track 4-6px, art-accent fill).
+   .fx-volume.card-v2 is layered on top of the existing .fx-volume so
+   the JS still uses VolumeSlider unchanged. */
+.fx-volume.card-v2 {
+  flex: 1;
+  gap: 0;
+  min-width: 0;
+}
+.fx-volume.card-v2 .fx-volume-track {
+  height: 4px;
+  background: var(--art-slider-track-tint, var(--fx-surface-3));
+}
+.fx-volume.card-v2 .fx-volume-fill {
+  background: var(--art-slider-fill, var(--fx-text));
+  opacity: 1;
+}
+.fx-volume.card-v2 .fx-volume-thumb {
+  background: var(--art-slider-fill, var(--fx-text));
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  /* Per Figma: clean bar with no visible thumb at rest — only reveal on
+     hover / focus so the affordance is still discoverable. */
+  opacity: 0;
+  transition: opacity var(--fx-dur) var(--fx-ease),
+              width var(--fx-dur) var(--fx-ease),
+              height var(--fx-dur) var(--fx-ease),
+              margin-left var(--fx-dur) var(--fx-ease);
+}
+.fx-volume.card-v2:hover .fx-volume-thumb,
+.fx-volume.card-v2:active .fx-volume-thumb,
+.fx-volume.card-v2:focus-within .fx-volume-thumb {
+  opacity: 1;
+  width: 14px; height: 14px; margin-left: -7px;
+}
+.fx-volume.card-v2 .fx-volume-label { display: none; }
+
+/* External-authority (AirPlay) slider inside the card v2 */
+.fx-volume.card-v2.fx-volume-external::after { content: none; }
+.fx-volume.card-v2.fx-volume-external .fx-volume-track { opacity: 0.4; }
+
+/* ── Source popover ───────────────────────────────────────────────────────
+   Opens when a SourceTrigger is clicked. Position is set per-instance via
+   inline style (top/right from anchor rect). Width fixed at 192px to match
+   Figma; rows are 24px icon + 8px gap + label, with a 20px check on the
+   right when the row is active. */
+.fx-source-popover {
+  position: fixed;
+  z-index: 260;
+  width: 192px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  background: var(--fx-surface-1);
+  border: 1px solid var(--fx-line);
+  border-radius: 16px;
+  /* Per Figma: 0 0 16px rgba(0,0,0,0.09) — a soft halo, not the heavy
+     elevation-3 used by side panels. */
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.09);
+}
+[data-theme="dark"] .fx-source-popover,
+:root:not([data-theme]) .fx-source-popover {
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.36);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-source-popover {
+    box-shadow: 0 0 16px rgba(0, 0, 0, 0.09);
+  }
+}
+.fx-source-popover-empty {
+  font-size: var(--fx-text-sm);
+  color: var(--fx-text-2);
+}
+.fx-source-popover-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  color: var(--fx-text);
+  text-align: left;
+  width: 100%;
+  transition: opacity var(--fx-dur) var(--fx-ease);
+}
+.fx-source-popover-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
+  border-radius: 8px;
+}
+/* Non-active rows render at 60% per Figma — drops the icon + label
+   together so the active row is the clear focal point. Locked rows
+   share the same dim plus a not-allowed cursor and a tooltip. */
+.fx-source-popover-row:not(.active) {
+  color: var(--fx-text-2);
+}
+.fx-source-popover-row:not(.active) .fx-source-popover-row-icon {
+  opacity: 0.6;
+}
+.fx-source-popover-row:not(.active) .fx-source-popover-row-label {
+  opacity: 0.6;
+}
+.fx-source-popover-row.locked {
+  cursor: not-allowed;
+}
+.fx-source-popover-row.locked .fx-source-popover-row-icon,
+.fx-source-popover-row.locked .fx-source-popover-row-label {
+  opacity: 0.4;
+}
+.fx-source-popover-row-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  color: var(--fx-text);
+}
+.fx-source-popover-row-label {
+  flex: 1;
+  font-size: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.fx-source-popover-row-check {
+  flex-shrink: 0;
+  display: inline-flex;
+  color: var(--fx-text);
+}
+.fx-source-popover-row.active .fx-source-popover-row-label {
+  font-weight: 600;
+}
+
+/* Trigger button "open" state — subtle background reflecting current accent.
+   When card has art-tint, this picks up the art's accent-soft. */
+.fx-source-trigger.open {
+  background: var(--art-accent-soft, var(--fx-accent-soft));
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   TuningPanel — TEMPORARY floating control panel for the OKLCH algorithm.
+   ───────────────────────────────────────────────────────────────────────── */
+.fx-tune-panel {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  width: 360px;
+  max-height: calc(100vh - 32px);
+  background: var(--fx-surface-1);
+  border: 1px solid var(--fx-line);
+  border-radius: 12px;
+  box-shadow: var(--fx-shadow-3);
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  font-family: var(--fx-font);
+}
+.fx-tune-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--fx-surface-2);
+  border: 0;
+  border-bottom: 1px solid var(--fx-line);
+  color: var(--fx-text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  width: 100%;
+}
+.fx-tune-toggle:hover { background: var(--fx-surface-3); }
+.fx-tune-body {
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.fx-tune-section { display: flex; flex-direction: column; gap: 4px; }
+.fx-tune-section-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fx-text-3);
+  margin-bottom: 2px;
+}
+.fx-tune-row {
+  display: grid;
+  grid-template-columns: 50px 1fr 56px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fx-text-2);
+}
+.fx-tune-row input[type="range"] {
+  width: 100%;
+  height: 4px;
+  accent-color: var(--fx-text);
+}
+.fx-tune-label { font-variant-numeric: tabular-nums; }
+.fx-tune-num {
+  height: 24px;
+  width: 56px;
+  background: var(--fx-surface-2);
+  color: var(--fx-text);
+  border: 1px solid var(--fx-line);
+  border-radius: 4px;
+  font-family: var(--fx-mono);
+  font-size: 11px;
+  text-align: right;
+  padding: 0 4px;
+}
+.fx-tune-hint {
+  grid-column: 2 / 4;
+  font-size: 10px;
+  color: var(--fx-text-3);
+  margin-top: -2px;
+}
+.fx-tune-actions {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--fx-line);
+}
+.fx-tune-json {
+  width: 100%;
+  margin-top: 8px;
+  padding: 8px;
+  background: var(--fx-surface-2);
+  border: 1px solid var(--fx-line);
+  border-radius: 6px;
+  color: var(--fx-text);
+  font-family: var(--fx-mono);
+  font-size: 11px;
+  line-height: 1.4;
+  resize: vertical;
+  white-space: pre;
 }
 
 /* ── Empty state ───────────────────────────────────────────────────────────── */

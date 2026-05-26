@@ -27,7 +27,8 @@ export function useMqtt() {
   const calThrottleRef = useRef({})     // key: `${cid}/${sid}` → { timerId, pendingValue }
 
   useEffect(() => {
-    const wsUrl = `ws://${location.hostname}:9001`
+    const mqttHost = import.meta.env.DEV ? 'fauxnos000.local' : location.hostname
+    const wsUrl = `ws://${mqttHost}:9001`
     const client = mqtt.connect(wsUrl, { reconnectPeriod: 5000 })
     clientRef.current = client
 

@@ -1,8 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   X, Settings2, Plus, ChevronDown, ChevronRight, Check, Trash2,
-  Music, AudioLines, Plug, Cast, ArrowDownToLine, GitBranch,
+  ArrowDownToLine, GitBranch,
 } from 'lucide-react'
+import {
+  IconBrandSpotifyFilled,
+  IconBuildingBroadcastTowerFilled,
+  IconMicrophoneFilled,
+  IconExternalLinkFilled,
+  IconHeadphonesFilled,
+} from '@tabler/icons-react'
 import VolumeSlider from './VolumeSlider'
 import { apiFetch } from '../api'
 
@@ -35,10 +42,11 @@ const BUILTIN_DEFS = [
 function SourceIcon({ source, size = 16 }) {
   const id = source?.id
   const Icon =
-    id === 'spotify' ? Music :
-    id === 'airplay' ? Cast :
-    id === 'analog'  ? AudioLines :
-    Plug
+    id === 'spotify' ? IconBrandSpotifyFilled :
+    id === 'airplay' ? IconBuildingBroadcastTowerFilled :
+    id === 'analog'  ? IconMicrophoneFilled :
+    id ? IconExternalLinkFilled :
+    IconHeadphonesFilled
   return <Icon size={size} aria-hidden />
 }
 
