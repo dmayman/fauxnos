@@ -165,7 +165,7 @@ class PlaybackManager:
                             break
                         try:
                             event = json.loads(message)
-                            self._handle_event(client_id, event)
+                            self._handle_event(client_id, event, server_port)
                         except json.JSONDecodeError:
                             self.logger.debug(f"non-JSON event from {client_id}")
                         except Exception as e:
@@ -204,7 +204,38 @@ class PlaybackManager:
         else:
             self._publish_empty(client_id)
 
-    def _handle_event(self, client_id: str, event: dict):
+    def _resolve_position(self, client_id: str, data: dict, server_port: int) -> int:
+        """Best position for a playback event whose payload may or may
+        not carry one.
+
+        go-librespot's `paused`, `playing`, and `seek` events sometimes
+        omit `position` from their `data` block (verified empirically on
+        v0.x — paused/playing events carry only context/uri/play_origin).
+        Falling back to 0 makes the UI jump to 0:00 on every pause/resume.
+
+        Resolution order:
+          1. event's `position` field (when present, authoritative)
+          2. go-librespot's /status `track.position` (accurate, ~5ms HTTP)
+          3. interpolate from prev._playback (last-known good)
+        """
+        if data.get('position') is not None:
+            return int(data['position'])
+        try:
+            r = requests.get(f"http://localhost:{server_port}/status", timeout=1.0)
+            r.raise_for_status()
+            track = r.json().get('track') or {}
+            if track.get('position') is not None:
+                return int(track['position'])
+        except Exception as e:
+            self.logger.debug(f"status fetch for position fallback {client_id}: {e}")
+        prev = self._playback.get(client_id) or {}
+        prev_pos = int(prev.get('position_ms') or 0)
+        if prev.get('is_playing'):
+            elapsed = _now_ms() - int(prev.get('updated_at') or _now_ms())
+            return max(0, prev_pos + elapsed)
+        return prev_pos
+
+    def _handle_event(self, client_id: str, event: dict, server_port: int):
         etype = event.get('type')
         data = event.get('data') or {}
 
@@ -212,14 +243,15 @@ class PlaybackManager:
             # Full track payload — replace the track topic entirely.
             track = _normalize_track(data)
             self._publish_track(client_id, track)
-            # Metadata events typically arrive at the start of a new
-            # track; position resets to 0. Keep the previous is_playing
-            # flag rather than guessing.
+            # Metadata events arrive at the start of a new track; the
+            # payload itself doesn't carry position, so fall back to
+            # /status (which has the new track.position, typically ~0)
+            # rather than zeroing the UI on every track change.
             prev = self._playback.get(client_id, {})
             self._publish_playback(
                 client_id,
                 is_playing=prev.get('is_playing', False),
-                position_ms=data.get('position', 0) or 0,
+                position_ms=self._resolve_position(client_id, data, server_port),
             )
             return
 
@@ -227,7 +259,7 @@ class PlaybackManager:
             self._publish_playback(
                 client_id,
                 is_playing=True,
-                position_ms=data.get('position', 0) or 0,
+                position_ms=self._resolve_position(client_id, data, server_port),
             )
             return
 
@@ -235,7 +267,7 @@ class PlaybackManager:
             self._publish_playback(
                 client_id,
                 is_playing=False,
-                position_ms=data.get('position', 0) or 0,
+                position_ms=self._resolve_position(client_id, data, server_port),
             )
             return
 
@@ -244,7 +276,7 @@ class PlaybackManager:
             self._publish_playback(
                 client_id,
                 is_playing=prev.get('is_playing', False),
-                position_ms=data.get('position', 0) or 0,
+                position_ms=self._resolve_position(client_id, data, server_port),
             )
             return
 
