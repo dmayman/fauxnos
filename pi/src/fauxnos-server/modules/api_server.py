@@ -708,7 +708,11 @@ class FauxnosAPIServer:
         """Handle PUT /api/clients/<client_id>
 
         Accepts any subset of:
-          - name: string  → rename client
+          - name: string  → rename client; propagates to go-librespot's
+            device_name (Spotify Connect) for any client, and to
+            shairport-sync's name + local client_config.yaml for
+            fauxnos000 (those files live on the server box). Other
+            clients' AirPlay name refreshes on the next Update Clients.
           - has_adc: bool → mark client as having an analog input. The UI
             gates whether the "Analog In" built-in source row appears in
             the SourcesPanel on this flag. The actual source must also
@@ -723,15 +727,17 @@ class FauxnosAPIServer:
                 return jsonify({"error": "No JSON data provided"}), 400
 
             updated_fields = {}
+            rename_new = None
 
             # Optional rename
             if 'name' in data:
                 new_name = data.get('name')
                 if not new_name or not isinstance(new_name, str) or not new_name.strip():
                     return jsonify({"error": "name must be a non-empty string"}), 400
-                if not self.config_manager.rename_client(client_id, new_name.strip()):
+                rename_new = new_name.strip()
+                if not self.config_manager.rename_client(client_id, rename_new):
                     return jsonify({"error": f"Client {client_id} not found"}), 404
-                updated_fields["name"] = new_name.strip()
+                updated_fields["name"] = rename_new
 
             # Optional has_adc toggle — written directly to the raw client
             # entry in server_config.json (config_manager has no typed
@@ -771,11 +777,150 @@ class FauxnosAPIServer:
             self.config_manager.save_server_config()
             for k, v in updated_fields.items():
                 self.log(f"Client {client_id} {k} → {v}", "SUCCESS")
-            return jsonify({"status": "updated", **updated_fields})
+
+            response_body = {"status": "updated", **updated_fields}
+
+            # On rename: re-render the per-client configs that embed the
+            # display name and restart just the services that read them.
+            # device_name lives in go-librespot's YAML (advertised as the
+            # Spotify Connect device); for fauxnos000 the AirPlay name
+            # lives in ~/.config/shairport-sync/fauxnos.conf, all local.
+            # For other clients, AirPlay is on the remote box and only
+            # refreshes on the next Update Clients pass — surfaced in the
+            # response so the UI can hint.
+            if rename_new is not None:
+                response_body["propagation"] = self._propagate_rename(client_id, rename_new)
+
+            return jsonify(response_body)
 
         except Exception as e:
             self.log(f"Client update error: {e}", "ERROR")
             return jsonify({"error": "Internal server error"}), 500
+
+    def _propagate_rename(self, client_id: str, new_name: str) -> dict:
+        """Push a UI rename into the per-client configs that embed the
+        device name, and restart the minimum services to make it live.
+
+        Touches only files for this one client — no full deploy_server_configs
+        bounce (which would restart snapserver + every go-librespot at once).
+        Failures are logged but never raised: the server_config.json write
+        is already committed, and partial propagation is better than rolling
+        the rename back. Returns a status dict for the API response.
+        """
+        status = {
+            "spotify_connect": "skipped",
+            "airplay": "deferred",
+            "client_config_yaml": "deferred",
+        }
+
+        # 1. go-librespot device_name (Spotify Connect picker). This lives
+        # on the server box for every client (one go-librespot per client).
+        try:
+            client = self.config_manager.get_client_config(client_id)
+            if client is None:
+                status["spotify_connect"] = "failed (client not found after rename)"
+            else:
+                config_content = self.config_manager.generate_go_librespot_config(client)
+                go_librespot_base = Path(
+                    self.config_manager.server_config['server']['paths']['go_librespot_config_base']
+                ).expanduser()
+                target_dir = go_librespot_base / client_id
+                target_dir.mkdir(parents=True, exist_ok=True)
+                (target_dir / "config.yml").write_text(config_content, encoding="utf-8")
+
+                result = subprocess.run(
+                    ["systemctl", "--user", "restart", f"go-librespot-{client_id}.service"],
+                    check=False, capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode == 0:
+                    status["spotify_connect"] = "updated"
+                    self.log(
+                        f"Restarted go-librespot-{client_id}.service "
+                        f"(device_name='{new_name}')",
+                        "SUCCESS",
+                    )
+                else:
+                    err = (result.stderr or result.stdout or "").strip()
+                    status["spotify_connect"] = f"config written, restart failed ({err})"
+                    self.log(
+                        f"go-librespot-{client_id}.service restart failed: {err}",
+                        "WARNING",
+                    )
+        except Exception as e:
+            status["spotify_connect"] = f"failed ({e})"
+            self.log(f"go-librespot rename propagation failed for {client_id}: {e}", "ERROR")
+
+        # 2. fauxnos000-only: rewrite the local client_config.yaml display_name
+        # and the shairport-sync conf, then restart shairport. Other clients
+        # would need an SSH push for these two — that's what Update Clients
+        # is for, so leave them marked "deferred".
+        if client_id == "fauxnos000":
+            # client_config.yaml has display_name at two places (top-level
+            # legacy + device.display_name). Update both.
+            try:
+                cfg_path = Path.home() / ".config" / "fauxnos" / "client_config.yaml"
+                if cfg_path.exists():
+                    content = cfg_path.read_text(encoding="utf-8")
+                    content = re.sub(
+                        r"(?m)^(\s*display_name:\s*).*$",
+                        lambda m: f"{m.group(1)}{new_name}",
+                        content,
+                    )
+                    cfg_path.write_text(content, encoding="utf-8")
+                    status["client_config_yaml"] = "updated"
+                else:
+                    status["client_config_yaml"] = "skipped (file not present)"
+            except Exception as e:
+                status["client_config_yaml"] = f"failed ({e})"
+                self.log(f"client_config.yaml rename failed: {e}", "ERROR")
+
+            # shairport-sync: rewrite the `name = "..."` line, then restart.
+            # Escape backslashes/quotes the same way setup-client.py does so
+            # a name like 'Bedroom "Closet"' can't break out of the conf
+            # string literal.
+            try:
+                shairport_conf = Path.home() / ".config" / "shairport-sync" / "fauxnos.conf"
+                if shairport_conf.exists():
+                    safe_name = (
+                        new_name.replace("\\", "\\\\")
+                                .replace("\"", "\\\"")
+                                .replace("\n", " ")
+                                .strip()
+                    ) or "Fauxnos"
+                    content = shairport_conf.read_text(encoding="utf-8")
+                    content = re.sub(
+                        r'(?m)^(\s*name\s*=\s*)"[^"]*"(\s*;.*)?$',
+                        lambda m: f'{m.group(1)}"{safe_name}"{m.group(2) or ";"}',
+                        content,
+                    )
+                    shairport_conf.write_text(content, encoding="utf-8")
+
+                    result = subprocess.run(
+                        ["systemctl", "--user", "restart",
+                         "shairport-sync-fauxnos.service"],
+                        check=False, capture_output=True, text=True, timeout=15,
+                    )
+                    if result.returncode == 0:
+                        status["airplay"] = "updated"
+                        self.log(
+                            f"Restarted shairport-sync-fauxnos.service "
+                            f"(name='{safe_name}')",
+                            "SUCCESS",
+                        )
+                    else:
+                        err = (result.stderr or result.stdout or "").strip()
+                        status["airplay"] = f"conf written, restart failed ({err})"
+                        self.log(
+                            f"shairport-sync-fauxnos restart failed: {err}",
+                            "WARNING",
+                        )
+                else:
+                    status["airplay"] = "skipped (shairport not installed)"
+            except Exception as e:
+                status["airplay"] = f"failed ({e})"
+                self.log(f"shairport rename failed: {e}", "ERROR")
+
+        return status
 
     def handle_apply_dac_overlay(self, client_id: str):
         """Handle POST /api/clients/<client_id>/dac_overlay/apply.
