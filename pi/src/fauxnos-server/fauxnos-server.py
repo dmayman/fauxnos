@@ -213,6 +213,17 @@ class FauxnosServer:
         if not self.test_mode:
             self.api_server.start_mqtt_listener()
 
+        # One-shot broker-IP push: any client whose external_volume_controller
+        # has a broker_update_api URL gets fauxnos's current LAN IP pushed
+        # to its device cloud endpoint (Particle Photon setBroker etc.) IFF
+        # the IP differs from the last successful push. No-op if no clients
+        # are configured. Skipped in test mode (no network calls).
+        if not self.test_mode:
+            try:
+                self.api_server._push_broker_update_all(force=False)
+            except Exception as e:
+                self.log(f"⚠️  Broker-IP push at startup failed: {e}", "WARNING")
+
         self.log("✅ Server daemon started successfully!")
         self.log("📡 API server running on port 8080")
         if not self.test_mode:

@@ -960,10 +960,28 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
       : ''
   )
   const [contentType, setContentType] = useState(evc.content_type || 'json')
-  // MQTT fields
-  const [mqttTopicOut, setMqttTopicOut] = useState(evc.mqtt_topic_out || '')
-  const [mqttPayloadOut, setMqttPayloadOut] = useState(evc.mqtt_payload_out || '{{volume}}/100')
-  const [mqttTopicIn, setMqttTopicIn] = useState(evc.mqtt_topic_in || '')
+  // MQTT topic strings are no longer configurable from the UI — fauxnos
+  // uses a canonical `fauxnos/<client_id>/volume/{set,state}` convention.
+  // Legacy `mqtt_topic_out` / `mqtt_topic_in` / `mqtt_payload_out` values
+  // already stored in server_config still take precedence at dispatch
+  // time (backcompat for VinylTable's existing topics), but they're not
+  // displayed or edited here.
+  // Broker-IP push fields — same shape as the HTTP transport above
+  // (URL + payload-with-placeholder + encoding) but the placeholder is
+  // {{ip}}, and fauxnos fires this when its LAN IP changes (devices
+  // that can't resolve mDNS need a way to learn the new broker address).
+  const [brokerUpdateApi, setBrokerUpdateApi] = useState(evc.broker_update_api || '')
+  const [brokerUpdatePayload, setBrokerUpdatePayload] = useState(
+    evc.broker_update_payload
+      ? (typeof evc.broker_update_payload === 'string'
+          ? evc.broker_update_payload
+          : JSON.stringify(evc.broker_update_payload))
+      : ''
+  )
+  const [brokerUpdateContentType, setBrokerUpdateContentType] = useState(evc.broker_update_content_type || 'json')
+  const [lanIp, setLanIp] = useState(null)
+  const [pushing, setPushing] = useState(false)
+  const [pushMessage, setPushMessage] = useState(null)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
@@ -989,16 +1007,37 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
         : ''
     )
     setContentType(e.content_type || 'json')
-    setMqttTopicOut(e.mqtt_topic_out || '')
-    setMqttPayloadOut(e.mqtt_payload_out || '{{volume}}/100')
-    setMqttTopicIn(e.mqtt_topic_in || '')
+    setBrokerUpdateApi(e.broker_update_api || '')
+    setBrokerUpdatePayload(
+      e.broker_update_payload
+        ? (typeof e.broker_update_payload === 'string'
+            ? e.broker_update_payload
+            : JSON.stringify(e.broker_update_payload))
+        : ''
+    )
+    setBrokerUpdateContentType(e.broker_update_content_type || 'json')
   }, [client.external_volume_controller])
+
+  // Fetch fauxnos's current LAN IP once on mount — used to show the
+  // user what value the "Push current IP" button would send, and to
+  // hint at what {{ip}} resolves to in the payload preview.
+  useEffect(() => {
+    let cancelled = false
+    apiFetch('/api/server/lan_ip')
+      .then(j => { if (!cancelled) setLanIp(j?.ip || null) })
+      .catch(() => { if (!cancelled) setLanIp(null) })
+    return () => { cancelled = true }
+  }, [])
 
   const handleSave = useCallback(async () => {
     setSaving(true)
     let parsedPayload = null
     if (payload.trim()) {
       try { parsedPayload = JSON.parse(payload) } catch { parsedPayload = payload }
+    }
+    let parsedBrokerPayload = null
+    if (brokerUpdatePayload.trim()) {
+      try { parsedBrokerPayload = JSON.parse(brokerUpdatePayload) } catch { parsedBrokerPayload = brokerUpdatePayload }
     }
     try {
       await apiFetch(`/api/clients/${client.client_id}/external_volume_controller`, {
@@ -1012,9 +1051,15 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
           control_api: url,
           control_payload: parsedPayload,
           content_type: contentType,
-          mqtt_topic_out: mqttTopicOut,
-          mqtt_payload_out: mqttPayloadOut,
-          mqtt_topic_in: mqttTopicIn,
+          // Legacy mqtt_topic_out / mqtt_topic_in / mqtt_payload_out are
+          // intentionally NOT in this PUT — the server's additive merge
+          // means whatever's already stored stays put (backcompat for
+          // VinylTable's existing config), and new devices just get the
+          // canonical-default fallback at dispatch time.
+          // Broker-IP push (orthogonal to transport)
+          broker_update_api: brokerUpdateApi,
+          broker_update_payload: parsedBrokerPayload,
+          broker_update_content_type: brokerUpdateContentType,
         }),
       })
       setSaved(true)
@@ -1028,22 +1073,56 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
       setSaving(false)
     }
   }, [client.client_id, enabled, transport, url, payload, contentType,
-      mqttTopicOut, mqttPayloadOut, mqttTopicIn, onRefresh])
+      brokerUpdateApi, brokerUpdatePayload, brokerUpdateContentType, onRefresh])
+
+  // Manual "Push current IP" — fires the broker-update HTTP call
+  // immediately, regardless of last-pushed state. Useful after
+  // reflashing a Photon, or to verify the URL/payload work before
+  // relying on the automatic startup push.
+  const handlePushBrokerIp = useCallback(async () => {
+    setPushing(true)
+    setPushMessage(null)
+    try {
+      const j = await apiFetch(`/api/clients/${client.client_id}/broker_update/push`, { method: 'POST' })
+      if (j?.ok) {
+        setPushMessage({ kind: 'ok', text: `Pushed ${j.ip} (HTTP ${j.status})` })
+      } else {
+        setPushMessage({ kind: 'err', text: j?.error || 'Push failed' })
+      }
+    } catch (e) {
+      setPushMessage({ kind: 'err', text: e.message })
+    } finally {
+      setPushing(false)
+    }
+  }, [client.client_id])
 
   return (
-    <div className="fx-advanced-evc">
-      <div className="fx-advanced-title">External volume controller</div>
-      <label className="fx-source-setting">
-        <span className="fx-source-setting-label">Use external volume</span>
+    <div className="fx-advanced-evc fx-remote-control">
+      <div className="fx-ir-header-row">
+        <div className="fx-ir-label-group">
+          <label
+            htmlFor={`evc-enabled-${client.client_id}`}
+            className="fx-advanced-title"
+            style={{ margin: 0, cursor: 'pointer' }}
+          >
+            Use external volume
+          </label>
+          <HelpPopover>
+            Route this device's volume slider to an external endpoint (HTTP or
+            MQTT) instead of attenuating locally. The external controller
+            owns attenuation; fauxnos pins the local chain at unity.
+          </HelpPopover>
+        </div>
         <input
+          id={`evc-enabled-${client.client_id}`}
           className="fx-checkbox"
           type="checkbox"
           checked={enabled}
           onChange={e => setEnabled(e.target.checked)}
         />
-      </label>
+      </div>
       {enabled && (
-        <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
+        <div className="fx-ir-card fx-stack" style={{ gap: 'var(--fx-3)' }}>
           <p className="fx-small fx-mute" style={{ margin: 0 }}>
             Volume slider sends each move to your device. Local PA/snapcast is
             pinned at unity — the external controller owns attenuation.
@@ -1129,54 +1208,91 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
           {transport === 'mqtt' && (
             <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
               <p className="fx-small fx-mute" style={{ margin: 0 }}>
-                Use <code>{'{{volume}}'}</code> as a placeholder for the 0-100
-                slider value. Append <code>/N</code> if your device expects a
-                different scale (e.g. <code>{'{{volume}}/100'}</code>). Inbound
-                payloads are parsed as plain integers 0-100 (or <code>N/M</code>).
+                Topics are fixed per device — no configuration here. Configure
+                your hardware controller to use the broker and topics below.
+                Payloads are plain integers 0-100.
               </p>
-              <div>
-                <label className="fx-label">Outbound topic (fauxnos publishes on slider move)</label>
-                <input
-                  className="fx-input"
-                  type="text"
-                  value={mqttTopicOut}
-                  onChange={e => setMqttTopicOut(e.target.value)}
-                  placeholder="vinyltable/setVolume"
-                />
-              </div>
-              <div>
-                <label className="fx-label">Outbound payload template</label>
-                <input
-                  className="fx-input"
-                  type="text"
-                  value={mqttPayloadOut}
-                  onChange={e => setMqttPayloadOut(e.target.value)}
-                  placeholder="{{volume}}/100"
-                />
-              </div>
-              <div>
-                <label className="fx-label">Inbound topic (fauxnos subscribes; your device publishes on knob turn)</label>
-                <input
-                  className="fx-input"
-                  type="text"
-                  value={mqttTopicIn}
-                  onChange={e => setMqttTopicIn(e.target.value)}
-                  placeholder="vinyltable/volume"
-                />
-              </div>
-              {/* Read-only broker info — users need this to configure
-                  their device, but the broker itself is part of fauxnos
-                  (mosquitto on the server), so the user never picks it. */}
-              <div className="fx-panel-card" style={{ padding: 'var(--fx-2) var(--fx-3)' }}>
-                <div className="fx-small" style={{ marginBottom: 'var(--fx-1)', fontWeight: 600 }}>
-                  Connect your device to:
+              <div className="fx-panel-card" style={{ padding: 'var(--fx-3)' }}>
+                <div className="fx-small" style={{ marginBottom: 'var(--fx-2)', fontWeight: 600 }}>
+                  Configure your device with:
                 </div>
-                <div className="fx-small fx-mute" style={{ fontFamily: 'var(--fx-font-mono, monospace)' }}>
-                  Broker: {brokerHost}:{brokerPort} (TCP, no auth)
+                <div className="fx-small fx-mute" style={{ fontFamily: 'var(--fx-font-mono, monospace)', lineHeight: 1.6 }}>
+                  <div>Broker: {brokerHost}:{brokerPort} (TCP, no auth)</div>
+                  <div>Subscribe: fauxnos/{client.client_id}/volume/set</div>
+                  <div>Publish: fauxnos/{client.client_id}/volume/state</div>
                 </div>
               </div>
             </div>
           )}
+
+          {/* Broker-IP push — orthogonal to transport. Only relevant for
+              devices that can't resolve mDNS (Particle Photon being the
+              canonical case); other devices just hit fauxnos.local and
+              ignore this. URL/payload/encoding mirror the HTTP transport
+              fields above, with {{ip}} as the substitution placeholder. */}
+          <hr style={{ border: 0, borderTop: '1px solid var(--fx-line)', margin: 0 }} />
+          <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
+            <div className="fx-source-setting-label" style={{ fontWeight: 600 }}>
+              Push broker IP on change
+            </div>
+            <p className="fx-small fx-mute" style={{ margin: 0 }}>
+              For devices that can't resolve <code>fauxnos.local</code> (e.g.
+              Particle Photon). When fauxnos's LAN IP changes, this endpoint
+              gets called so the device can reconnect to the new broker.
+              Use <code>{'{{ip}}'}</code> as a placeholder for the IP.
+              {lanIp && <> Current fauxnos IP: <code>{lanIp}</code>.</>}
+            </p>
+            <div>
+              <label className="fx-label">API URL</label>
+              <input
+                className="fx-input"
+                type="url"
+                value={brokerUpdateApi}
+                onChange={e => setBrokerUpdateApi(e.target.value)}
+                placeholder="https://api.particle.io/v1/devices/<id>/setBroker"
+              />
+            </div>
+            <div>
+              <label className="fx-label">Payload</label>
+              <textarea
+                className="fx-textarea"
+                rows={3}
+                value={brokerUpdatePayload}
+                onChange={e => setBrokerUpdatePayload(e.target.value)}
+                placeholder={brokerUpdateContentType === 'form'
+                  ? '{"arg": "{{ip}}", "access_token": "…"}'
+                  : '{"value": "{{ip}}"}'}
+              />
+            </div>
+            <div>
+              <label className="fx-label">Encoding</label>
+              <select
+                className="fx-select"
+                value={brokerUpdateContentType}
+                onChange={e => setBrokerUpdateContentType(e.target.value)}
+              >
+                <option value="json">JSON</option>
+                <option value="form">Form (x-www-form-urlencoded)</option>
+              </select>
+            </div>
+            <div className="fx-stack" style={{ flexDirection: 'row', gap: 'var(--fx-2)', alignItems: 'center' }}>
+              <button
+                className="fx-btn"
+                onClick={handlePushBrokerIp}
+                disabled={pushing || !brokerUpdateApi.trim()}
+              >
+                {pushing ? 'Pushing…' : 'Push current IP now'}
+              </button>
+              {pushMessage && (
+                <span
+                  className="fx-small"
+                  style={{ color: pushMessage.kind === 'ok' ? 'var(--fx-text-2)' : 'var(--fx-err)' }}
+                >
+                  {pushMessage.text}
+                </span>
+              )}
+            </div>
+          </div>
 
           <div>
             <button className="fx-btn primary" onClick={handleSave} disabled={saving}>

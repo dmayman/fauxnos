@@ -168,10 +168,20 @@ class ConfigManager:
             # (LAN-local, no auth), so the user doesn't configure it:
             "mqtt_topic_out":   "device/setVolume",  # we publish here
             "mqtt_payload_out": "{{volume}}/100",     # template
-            "mqtt_topic_in":    "device/volume" }     # we subscribe here
+            "mqtt_topic_in":    "device/volume",      # we subscribe here
+            # Broker-IP push (optional, for devices that can't resolve
+            # mDNS — Particle Photon being the canonical case). Reuses
+            # the HTTP-call shape (URL + payload-with-placeholder + encoding)
+            # but the placeholder is {{ip}} (fauxnos's current LAN IPv4),
+            # not {{volume}}. Fired on server startup when the detected IP
+            # differs from the last-pushed value, or via manual UI button.
+            "broker_update_api":           "",
+            "broker_update_payload":       {},
+            "broker_update_content_type":  "json" }
 
         `{{volume}}` is substituted with the current 0-100 slider value at
-        dispatch time, in both HTTP and MQTT outbound payloads.
+        dispatch time, in both HTTP and MQTT outbound payloads. The
+        broker_update_payload uses `{{ip}}` for the server's current LAN IP.
 
         Additive at the field level: clients that already had a partial
         blob (from earlier 2026-05-26 deploy) get the new MQTT fields
@@ -189,6 +199,9 @@ class ConfigManager:
             "mqtt_topic_out": "",
             "mqtt_payload_out": "{{volume}}/100",
             "mqtt_topic_in": "",
+            "broker_update_api": "",
+            "broker_update_payload": {},
+            "broker_update_content_type": "json",
         }
         changed = False
         for client in cfg.get("clients", []) or []:

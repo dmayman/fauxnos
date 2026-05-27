@@ -272,6 +272,22 @@ class FauxnosAPIServer:
         def inbound_external_volume(client_id):
             return self.handle_external_volume_inbound(client_id)
 
+        # Broker-IP push: tells a device (whose external_volume_controller
+        # has broker_update_api set) what fauxnos's current LAN IP is.
+        # Always force=True from the UI — the user clicked the button, push
+        # regardless of stored last-pushed state.
+        @app.route('/api/clients/<client_id>/broker_update/push', methods=['POST'])
+        def push_broker_update(client_id):
+            return self.handle_broker_update_push(client_id)
+
+        # GET fauxnos's current LAN IP — used by the UI to display "fauxnos
+        # is currently at x.x.x.x" so the user knows what value would be
+        # pushed by the button above.
+        @app.route('/api/server/lan_ip', methods=['GET'])
+        def server_lan_ip():
+            ip = self._get_lan_ip()
+            return jsonify({"ip": ip})
+
         # ── Snapcast groups proxy ─────────────────────────────────────────────
 
         @app.route('/api/groups', methods=['GET'])
@@ -1543,6 +1559,10 @@ class FauxnosAPIServer:
                     "mqtt_topic_out": evc.get("mqtt_topic_out", ""),
                     "mqtt_payload_out": evc.get("mqtt_payload_out", "{{volume}}/100"),
                     "mqtt_topic_in": evc.get("mqtt_topic_in", ""),
+                    # Broker-IP push (Particle setBroker style)
+                    "broker_update_api": evc.get("broker_update_api", ""),
+                    "broker_update_payload": evc.get("broker_update_payload", {}),
+                    "broker_update_content_type": evc.get("broker_update_content_type", "json"),
                 }
         return None
 
@@ -1758,7 +1778,8 @@ class FauxnosAPIServer:
         """PUT /api/clients/<id>/external_volume_controller — patch the blob.
 
         Accepts any subset of {enabled, transport, control_api, control_payload,
-        content_type, mqtt_topic_out, mqtt_payload_out, mqtt_topic_in}.
+        content_type, mqtt_topic_out, mqtt_payload_out, mqtt_topic_in,
+        broker_update_api, broker_update_payload, broker_update_content_type}.
         Missing keys are left at their existing value (mirrors
         handle_update_source's additive merge pattern).
 
@@ -1837,11 +1858,13 @@ class FauxnosAPIServer:
                     return jsonify({"error": f"External API call failed: {e}"}), 502
 
             elif transport == "mqtt":
-                topic = evc.get("mqtt_topic_out")
-                if not topic:
-                    return jsonify({"error": "mqtt_topic_out not configured"}), 400
-                # mqtt_payload_out is a plain string template (MQTT payloads
-                # are bytes — we keep them simple strings, not JSON dicts).
+                # Canonical topic convention is `fauxnos/<client_id>/volume/set`
+                # — the device subscribes to its own client_id's set-topic and
+                # publishes back on /volume/state. Legacy configs (set by the
+                # old UI fields) override the canonical default so VinylTable's
+                # existing `vinyltable/setVolume` keeps working until that
+                # firmware is reflashed to the new convention.
+                topic = evc.get("mqtt_topic_out") or f"fauxnos/{client_id}/volume/set"
                 template = evc.get("mqtt_payload_out") or "{{volume}}"
                 payload_str = template.replace("{{volume}}", str(value))
                 ok = self._publish_mqtt(topic, payload_str)
@@ -3181,6 +3204,168 @@ rm -- "$0"
         runner.cancel()
         return jsonify({"status": "cancelling", "install_id": runner.install_id})
 
+    def handle_broker_update_push(self, client_id: str):
+        """POST /api/clients/<id>/broker_update/push — manual button.
+
+        Force-pushes the current LAN IP to one client regardless of stored
+        last-pushed state. Records on success so the startup-time
+        "push-on-change" logic sees the new baseline. Returns the result
+        dict so the UI can show success/failure inline.
+        """
+        ip = self._get_lan_ip()
+        if not ip:
+            return jsonify({"ok": False, "error": "could not detect LAN IP"}), 500
+        evc = self._get_client_external_volume_controller(client_id)
+        if evc is None:
+            return jsonify({"ok": False, "error": f"Client {client_id} not found"}), 404
+        if not (evc.get("broker_update_api") or "").strip():
+            return jsonify({"ok": False, "error": "broker_update_api not configured"}), 400
+        result = self._push_broker_update_for_client(client_id, ip)
+        if result["ok"]:
+            self._write_last_pushed_broker_ip(client_id, ip)
+        return jsonify({"ok": result["ok"], "ip": ip,
+                        "status": result.get("status"),
+                        "error": result.get("error")})
+
+    # ── Broker-IP push ────────────────────────────────────────────────────────
+    #
+    # For devices that own their volume but can't resolve mDNS (canonical
+    # case: Particle Photon — its TCPClient uses Particle Cloud DNS which
+    # doesn't handle .local), fauxnos pushes its current LAN IP via the
+    # device's own HTTP cloud endpoint when the IP changes. The endpoint,
+    # payload template, and content type are per-client config in the
+    # `external_volume_controller` blob, using the same shape as the
+    # source-control HTTP path. The placeholder is `{{ip}}`.
+
+    @staticmethod
+    def _get_lan_ip() -> Optional[str]:
+        """Return fauxnos's primary LAN IPv4 as a string, or None.
+
+        Uses the standard 'connect a UDP socket to a public IP' trick —
+        no packets are actually sent (UDP is connectionless), but the
+        kernel populates the socket's local address with whichever
+        interface would route to the destination. That's the address
+        other LAN devices see fauxnos as.
+        """
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                ip = s.getsockname()[0]
+            finally:
+                s.close()
+            if ip and not ip.startswith("127."):
+                return ip
+        except OSError:
+            pass
+        return None
+
+    @staticmethod
+    def _broker_state_path() -> Path:
+        return Path.home() / ".config" / "fauxnos" / "broker_state.json"
+
+    def _read_last_pushed_broker_ips(self) -> dict:
+        """Return {client_id: last_pushed_ip} from sidecar state file.
+
+        Per-client so a single device failing to receive the push
+        doesn't block re-pushing to it on next boot (other devices
+        are recorded as successful). Missing file or parse error → {}.
+        """
+        p = self._broker_state_path()
+        if not p.exists():
+            return {}
+        try:
+            data = json.loads(p.read_text())
+            return data.get("last_pushed", {}) if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    def _write_last_pushed_broker_ip(self, client_id: str, ip: str) -> None:
+        """Persist a successful push for one client. Atomic write."""
+        p = self._broker_state_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        current = self._read_last_pushed_broker_ips()
+        current[client_id] = ip
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps({"last_pushed": current}, indent=2))
+        tmp.replace(p)
+
+    @staticmethod
+    def _render_broker_payload(payload, ip: str):
+        """Substitute `{{ip}}` in a payload — same shape as _render_volume_payload."""
+        token = "{{ip}}"
+        if isinstance(payload, dict):
+            return {
+                k: (v.replace(token, ip) if isinstance(v, str) and token in v else v)
+                for k, v in payload.items()
+            }
+        if isinstance(payload, str):
+            return payload.replace(token, ip)
+        return payload
+
+    def _push_broker_update_for_client(self, client_id: str, ip: str) -> dict:
+        """Fire the HTTP call for one client. Returns {"ok": bool, "status": int|None, "error": str|None}.
+
+        Caller is responsible for deciding *whether* to push (IP changed,
+        manual button, etc.) and for recording success in state. This
+        function just performs the call.
+        """
+        evc = self._get_client_external_volume_controller(client_id) or {}
+        url = (evc.get("broker_update_api") or "").strip()
+        if not url:
+            return {"ok": False, "status": None, "error": "broker_update_api not configured"}
+        payload = evc.get("broker_update_payload") or {}
+        content_type = evc.get("broker_update_content_type") or "json"
+        rendered = self._render_broker_payload(payload, ip)
+        try:
+            if content_type == "form":
+                resp = http_requests.post(url, data=rendered, timeout=10)
+            else:
+                resp = http_requests.post(url, json=rendered, timeout=10)
+            ok = 200 <= resp.status_code < 300
+            return {"ok": ok, "status": resp.status_code,
+                    "error": None if ok else (resp.text[:200] if resp.text else f"HTTP {resp.status_code}")}
+        except Exception as e:
+            return {"ok": False, "status": None, "error": str(e)}
+
+    def _push_broker_update_all(self, force: bool = False) -> dict:
+        """Push the current LAN IP to every client that has broker_update_api set.
+
+        When force=False (startup case), only push to clients whose
+        last-pushed IP differs from the current. When force=True (manual
+        UI button), push regardless of state.
+
+        Returns {"ip": "x.x.x.x", "pushed": [client_ids], "skipped": [...],
+                 "failed": {client_id: error_str}}.
+        """
+        ip = self._get_lan_ip()
+        if not ip:
+            return {"ip": None, "pushed": [], "skipped": [], "failed": {}, "error": "could not detect LAN IP"}
+        last_pushed = self._read_last_pushed_broker_ips()
+        pushed, skipped, failed = [], [], {}
+        for client in self.config_manager.server_config.get("clients", []):
+            cid = client.get("id")
+            if not cid:
+                continue
+            evc = client.get("external_volume_controller") or {}
+            if not (evc.get("broker_update_api") or "").strip():
+                continue
+            if not force and last_pushed.get(cid) == ip:
+                skipped.append(cid)
+                continue
+            result = self._push_broker_update_for_client(cid, ip)
+            if result["ok"]:
+                pushed.append(cid)
+                self._write_last_pushed_broker_ip(cid, ip)
+            else:
+                failed[cid] = result["error"]
+        if pushed or failed:
+            self.log(
+                f"Broker-IP push (ip={ip}): {len(pushed)} pushed, "
+                f"{len(skipped)} unchanged, {len(failed)} failed"
+            )
+        return {"ip": ip, "pushed": pushed, "skipped": skipped, "failed": failed}
+
     # ── MQTT mode listener ─────────────────────────────────────────────────────
 
     def start_mqtt_listener(self):
@@ -3369,10 +3554,13 @@ rm -- "$0"
                 continue
             if evc.get("transport") != "mqtt":
                 continue
-            topic = evc.get("mqtt_topic_in") or ""
-            if not topic:
-                continue
-            desired[topic] = client.get("id")
+            # Canonical inbound topic is `fauxnos/<client_id>/volume/state`.
+            # Legacy `mqtt_topic_in` (set by the old UI) takes precedence
+            # so VinylTable's existing `vinyltable/volume` keeps routing
+            # until the firmware is updated to the canonical convention.
+            cid = client.get("id")
+            topic = evc.get("mqtt_topic_in") or f"fauxnos/{cid}/volume/state"
+            desired[topic] = cid
 
         current = self._evc_topic_to_client
         # Unsubscribe from topics that are no longer wanted
