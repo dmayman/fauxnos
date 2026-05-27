@@ -144,6 +144,13 @@ install_system_dependencies() {
         # end-of-chain 10-band graphic EQ (see default.pa). Replaced the
         # camilladsp pinned tarball install 2026-05-24.
         caps
+        # `iw` is the modern cfg80211 userspace tool — install.sh uses it
+        # to disable wifi power-save on the live interface without
+        # bouncing NetworkManager (see configure_system). brcmfmac
+        # defaults power-save = on, which introduces 50-200ms wake
+        # latency between packets and breaks snapcast's TCP stream
+        # (audio cutouts under sustained playback, diagnosed 2026-05-27).
+        iw
     )
     local pip_pkgs=(requests pyyaml paho-mqtt websocket-client)
 
@@ -239,9 +246,74 @@ migrate_remove_camilladsp() {
     log_success "CamillaDSP migration complete"
 }
 
+# Disable wifi power-save on the brcmfmac onboard radio. The Pi 3/4/Zero
+# 2W default of `power-save = on` lets the NIC sleep between packets,
+# which introduces 50-200ms wake latency between TCP segments. snapcast
+# tolerates the occasional ms-level blip but not the 500ms+ stalls that
+# this can cause under contention — symptom is "Time sync request failed:
+# Connection timed out" in snapclient followed by a reconnect that
+# briefly silences the room. Diagnosed 2026-05-27 on fauxnos001 (Kitchen)
+# after two Spotify cutouts in a 5-min window despite -33dBm signal and
+# 30% PA CPU headroom.
+#
+# Fix has three parts:
+#   1. NetworkManager drop-in: every connection profile inherits
+#      wifi.powersave = 2 (disabled). Effective for new connections.
+#   2. nmcli on every currently-active wifi profile so the on-disk
+#      profile also flips. Effective on next reconnect (reboot / wifi
+#      bounce / NM restart).
+#   3. `iw dev wlan0 set power_save off` for IMMEDIATE effect on the
+#      live link, no NM restart needed — important because install.sh
+#      often runs over the same wifi link that would otherwise drop.
+_install_wifi_powersave_off() {
+    log "Disabling wifi power-save (brcmfmac defaults to on)..."
+
+    local nm_conf=/etc/NetworkManager/conf.d/fauxnos-wifi-powersave.conf
+    local desired
+    desired=$(cat <<'EOF'
+# Managed by fauxnos install.sh. brcmfmac wifi power-save causes
+# 50-200ms wake latency that breaks snapcast's TCP stream. See
+# _install_wifi_powersave_off() in install.sh for context.
+[connection]
+wifi.powersave = 2
+EOF
+)
+    if [ ! -f "$nm_conf" ] || ! diff -q <(printf '%s\n' "$desired") "$nm_conf" >/dev/null 2>&1; then
+        printf '%s\n' "$desired" | sudo tee "$nm_conf" >/dev/null
+        log "  Wrote $nm_conf"
+    fi
+
+    # Persist on every currently-active wifi connection profile so a
+    # later NM bounce (e.g. wifi reconfig) doesn't fall back to defaults
+    # before the drop-in is re-read.
+    if command -v nmcli >/dev/null 2>&1; then
+        local conn
+        while IFS= read -r conn; do
+            [ -z "$conn" ] && continue
+            sudo nmcli connection modify "$conn" wifi.powersave 2 >/dev/null 2>&1 || true
+        done < <(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+                    | awk -F: '$2 == "802-11-wireless" {print $1}')
+    fi
+
+    # Immediate live-link fix — no SSH drop, no reconnect.
+    if command -v iw >/dev/null 2>&1; then
+        if sudo iw dev wlan0 set power_save off 2>/dev/null; then
+            log "  Live: wifi power-save disabled on wlan0"
+        fi
+    fi
+
+    log_success "Wifi power-save disabled"
+}
+
 # Configure system settings
 configure_system() {
     log_section "Configuring System"
+
+    # Disable wifi power-save BEFORE any other system config — even one
+    # missed beacon cycle while install.sh is downloading further assets
+    # over the same wifi link is enough to push snapcast over its
+    # reconnect threshold once playback resumes.
+    _install_wifi_powersave_off
 
     # Enable services
     log "Enabling system services..."

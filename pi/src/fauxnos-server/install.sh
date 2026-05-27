@@ -121,6 +121,13 @@ install_system_dependencies() {
     # port-80→8080 redirect that makes `http://fauxnos.local/` work without a
     # port suffix. Both packages ship on default Debian images but listing them
     # explicitly avoids silent breakage if a future image trims its baseline.
+    # `caps` provides /usr/lib/ladspa/caps.so (Eq10X2) for the end-of-chain
+    # 10-band graphic EQ that default.pa's module-ladspa-sink loads. fauxnos000
+    # is a first-class audio endpoint and uses the same EQ chain as clients.
+    # `iw` is the userspace tool used by configure_system() to disable wifi
+    # power-save on the live interface without a NM restart (see
+    # _install_wifi_powersave_off — fixes snapcast TCP cutouts from brcmfmac
+    # power-management, diagnosed 2026-05-27).
     sudo apt install -y \
         snapclient \
         mosquitto \
@@ -140,7 +147,9 @@ install_system_dependencies() {
         openssh-server \
         alsa-utils \
         pulseaudio \
-        pulseaudio-utils
+        pulseaudio-utils \
+        caps \
+        iw
 
     # Install snapserver — check if apt version is recent enough
     local apt_snap_ver
@@ -484,6 +493,14 @@ setup_install_keypair() {
 # ─── Step 6: System configuration ─────────────────────────────────────────────
 configure_system() {
     log_section "Configuring System"
+
+    # Disable wifi power-save BEFORE doing anything else over the network.
+    # brcmfmac defaults to power-save = on, which introduces 50-200ms wake
+    # latency between packets and breaks snapcast's TCP stream (audio
+    # cutouts under sustained playback, diagnosed 2026-05-27 on
+    # fauxnos001). Apply now so the rest of install.sh's network work
+    # (apt downloads, GitHub fetches, snapserver registration) benefits.
+    _install_wifi_powersave_off
 
     # Set hostname to fauxnos000
     log "Setting hostname to $SERVER_HOSTNAME..."
@@ -870,6 +887,59 @@ NFT
     log_success "nftables port 80 → 8080 redirect installed"
 }
 
+# Disable wifi power-save on the brcmfmac onboard radio. The Pi 3/4/Zero
+# 2W default of `power-save = on` lets the NIC sleep between packets,
+# which introduces 50-200ms wake latency between TCP segments — fatal
+# for snapcast's continuous TCP stream. Symptom is "Time sync request
+# failed: Connection timed out" in snapclient followed by a reconnect
+# that briefly silences the room. Diagnosed 2026-05-27 on fauxnos001
+# after two Spotify cutouts in a 5-min window despite a -33dBm signal.
+#
+# Fix has three parts:
+#   1. NetworkManager drop-in: every connection profile inherits
+#      wifi.powersave = 2 (disabled). Effective for new connections.
+#   2. nmcli on every currently-active wifi profile so the on-disk
+#      profile also flips. Effective on next reconnect.
+#   3. `iw dev wlan0 set power_save off` for IMMEDIATE effect on the
+#      live link, no NM restart needed — important because the
+#      orchestrator that runs install.sh is often on the same wifi
+#      network as the Pi.
+_install_wifi_powersave_off() {
+    log "Disabling wifi power-save (brcmfmac defaults to on)..."
+
+    local nm_conf=/etc/NetworkManager/conf.d/fauxnos-wifi-powersave.conf
+    local desired
+    desired=$(cat <<'EOF'
+# Managed by fauxnos install.sh. brcmfmac wifi power-save causes
+# 50-200ms wake latency that breaks snapcast's TCP stream. See
+# _install_wifi_powersave_off() in install.sh for context.
+[connection]
+wifi.powersave = 2
+EOF
+)
+    if [ ! -f "$nm_conf" ] || ! diff -q <(printf '%s\n' "$desired") "$nm_conf" >/dev/null 2>&1; then
+        printf '%s\n' "$desired" | sudo tee "$nm_conf" >/dev/null
+        log "  Wrote $nm_conf"
+    fi
+
+    if command -v nmcli >/dev/null 2>&1; then
+        local conn
+        while IFS= read -r conn; do
+            [ -z "$conn" ] && continue
+            sudo nmcli connection modify "$conn" wifi.powersave 2 >/dev/null 2>&1 || true
+        done < <(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+                    | awk -F: '$2 == "802-11-wireless" {print $1}')
+    fi
+
+    if command -v iw >/dev/null 2>&1; then
+        if sudo iw dev wlan0 set power_save off 2>/dev/null; then
+            log "  Live: wifi power-save disabled on wlan0"
+        fi
+    fi
+
+    log_success "Wifi power-save disabled"
+}
+
 # ─── Step 7: PulseAudio configuration ─────────────────────────────────────────
 setup_pulseaudio() {
     log_section "Setting Up PulseAudio"
@@ -899,10 +969,64 @@ setup_pulseaudio() {
     systemctl --user enable pulseaudio.service pulseaudio.socket 2>/dev/null || true
 
     mkdir -p "$HOME/.config/pulse"
+    mkdir -p "$HOME/.config/fauxnos"
 
     local pa_source="$INSTALL_DIR/configs/pulseaudio/default.pa"
+    local pa_target="$HOME/.config/pulse/default.pa"
+    local eq_state="$HOME/.config/fauxnos/eq_state.json"
+
     if [ -f "$pa_source" ]; then
-        cp "$pa_source" "$HOME/.config/pulse/default.pa"
+        # Render the template's `control=__EQ_CONTROL__` placeholder from
+        # eq_state.json before copying. Mirrors fauxnos-client's
+        # setup_default_pa() so the EQ chain works on first boot and
+        # preserves the user's tune across update runs. Missing state
+        # file or `enabled=false` → flat (control=0,0,...).
+        python3 - "$pa_source" "$pa_target" "$eq_state" <<'PYEOF'
+import json, sys
+from pathlib import Path
+
+src, dst, state_path = (Path(p) for p in sys.argv[1:4])
+bands_hz = [31, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+
+bands = {str(hz): 0.0 for hz in bands_hz}
+enabled = False
+if state_path.exists():
+    try:
+        raw = json.loads(state_path.read_text())
+        enabled = bool(raw.get("enabled", False))
+        for hz_str, gain in (raw.get("bands") or {}).items():
+            if hz_str in bands and isinstance(gain, (int, float)):
+                bands[hz_str] = float(gain)
+    except Exception as e:
+        print(f"WARN: eq_state.json unreadable ({e}); using flat", file=sys.stderr)
+
+wire = [bands[str(hz)] if enabled else 0.0 for hz in bands_hz]
+
+def fmt(g):
+    g = round(float(g), 1)
+    if g == 0:
+        return "0"
+    if g == int(g):
+        return f"{int(g)}.0"
+    return f"{g:.1f}"
+
+control = ",".join(fmt(g) for g in wire)
+text = src.read_text()
+
+lines = text.splitlines(keepends=True)
+for i, line in enumerate(lines):
+    if line.lstrip().startswith("#") or "module-ladspa-sink" not in line:
+        continue
+    parts = line.rstrip("\n").split(" ")
+    for j, tok in enumerate(parts):
+        if tok.startswith("control="):
+            parts[j] = f"control={control}"
+            break
+    lines[i] = " ".join(parts) + ("\n" if line.endswith("\n") else "")
+
+dst.write_text("".join(lines))
+print(f"Rendered control={control} → {dst}")
+PYEOF
         log_success "PulseAudio config deployed from $pa_source"
     else
         log_warning "PulseAudio config not found at $pa_source, using default"

@@ -1,5 +1,16 @@
 .include /etc/pulse/default.pa
 
+# --- Keep the DAC awake ---
+# /etc/pulse/default.pa loads module-suspend-on-idle, which suspends any
+# sink (including the hardware ALSA output) after 5s of silence. On a
+# HiFiBerry DAC+ADC that costs ~5s of wake-up latency the next time we
+# play a feedback sound — the user hears nothing on the first IR press
+# until the chip comes back online. Unloading the module trades that
+# latency for negligible idle power draw on a permanently-powered audio
+# device. If you ever hear hiss from an always-on DAC, swap this for a
+# silent-stream pre-warm or a longer suspend timeout instead.
+unload-module module-suspend-on-idle
+
 # --- Custom PulseAudio Configuration for HiFiBerry DAC+ADC ---
 
 # Important: Disable timer-based scheduling for improved stability on Raspberry Pi
@@ -14,41 +25,73 @@ load-module module-alsa-card device_id=0 tsched=0
 load-module module-null-sink sink_name=systemsink sink_properties="device.description='System Sounds'"
 load-module module-null-sink sink_name=analogsink sink_properties="device.description='Analog Loopback'"
 load-module module-null-sink sink_name=snapsink sink_properties="device.description='Snapcast Output'"
+# airplaysink — shairport-sync writes here when an AirPlay session is
+# active. The fauxnos source manager mutes/unmutes it just like the
+# other virtual sinks. shairport's software volume on the PCM stream
+# is the single user-control stage; fauxnos pins this sink at 100%
+# while airplay is the active source so the externally-attenuated
+# audio passes through transparently.
+load-module module-null-sink sink_name=airplaysink sink_properties="device.description='AirPlay Output'"
 
 # --- Analog Input Loopback ---
 # Pipes your analog input directly to the 'analogsink' virtual sink.
-# Removed the aggressive latency_msec=1. PulseAudio will now use system defaults.
-#
 # sink_input_properties=media.role=fauxnos-analog-input gives this loopback
-# its own stream-restore key so its volume is independent from the others.
-# Without unique roles, all loopbacks share "media.role:abstract" and PA's
-# stream-restore syncs their volumes — change one, all change.
-load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallback" sink=analogsink latency_msec=20 sink_input_properties=media.role=fauxnos-analog-input
+# a stable role tag so the calibration code can find it via `pactl list sink-inputs`.
+# On clients without an ADC the source won't exist and PulseAudio will skip
+# the load — that's harmless.
+#
+# latency_msec=80: matches the per-source loopbacks below for chain-wide
+# consistency. The HiFiBerry DAC+ADC ALSA source clamps to ~60 ms minimum
+# anyway.
+load-module module-loopback source="alsa_input.platform-soc_sound.stereo-fallback" sink=analogsink latency_msec=80 sink_input_properties=media.role=fauxnos-analog-input
 
-# --- LADSPA Equalizer Sink ---
-# This creates a new sink called 'equalizer' that applies the LADSPA plugin.
-# It *masters* the actual hardware output (alsa_output.platform-soc_sound.stereo-fallback).
-# load-module module-ladspa-sink sink_name=equalizer sink_master=alsa_output.platform-soc_sound.stereo-fallback plugin=mbeq_1197 label=mbeq control=0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+# --- End-of-chain graphic EQ (CAPS Eq10X2, inline LADSPA) ---
+# Replaces the camilladsp/camilla_input pipeline. CamillaDSP introduced
+# audible latency drift on a Pi 3B+ (~50ms direct → 100-200ms with camilla
+# fresh → ~5.5s after a few hours) — root-caused to its PA capture/playback
+# handoff thread, not the DSP itself. module-ladspa-sink processes inline
+# within PA's audio thread — no second process, no IPC.
+#
+# Live runtime control is achieved by writing this file from
+# modules/eq_controller.py (control= line is substituted from
+# ~/.config/fauxnos/eq_state.json) and then running an unload/reload
+# dance via pactl. ~1s audio interruption per Apply is acceptable for
+# a commit-style UI; the Apply button in the web UI batches enabled +
+# all 10 bands into a single round-trip so each change incurs the
+# reload exactly once.
+#
+# Bands (left → right): 31 Hz, 63 Hz, 125 Hz, 250 Hz, 500 Hz, 1 kHz,
+# 2 kHz, 4 kHz, 8 kHz, 16 kHz. Each control is dB, range -48 to +24.
+# __EQ_CONTROL__ is a placeholder rewritten by eq_controller.py and
+# install.sh; render-time it becomes a comma-joined list of 10 gains.
+load-module module-ladspa-sink sink_name=eq_sink sink_master=alsa_output.platform-soc_sound.stereo-fallback plugin=caps label=Eq10X2 control=__EQ_CONTROL__
 
-# --- Direct Routing to Master (per-source calibration loopbacks) ---
-# These lines take the *monitor output* of each virtual sink and loop it
-# into the hardware output. Each gets a unique sink_input_properties.media.role
-# so PA's stream-restore tracks their volumes INDEPENDENTLY — that's how we
-# get per-source calibration (Spotify+AirPlay vs Analog vs System) without
-# changing the user-controlled stage. See docs/VOLUME.md.
-# load-module module-loopback source=spotifysink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20
-load-module module-loopback source=systemsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-systemsink-out
-load-module module-loopback source=analogsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-analogsink-out
-load-module module-loopback source=snapsink.monitor sink=alsa_output.platform-soc_sound.stereo-fallback latency_msec=20 sink_input_properties=media.role=fauxnos-snapsink-out
-
-# --- Application Routing ---
-# Automatically route specific applications to their designated sinks
-# This ensures apps go to the correct sink regardless of default sink setting
-# load-module module-match-properties on_client_disconnect=dont-restore add_match_property="application.name=ALSA plug-in [snapclient]" sink=snapsink
-# load-module module-match-properties on_client_disconnect=dont-restore add_match_property="application.name=ALSA plug-in [squeezelite]" sink=libresink
+# --- Per-source loopbacks into eq_sink ---
+# These take the *monitor output* of each virtual sink and write into
+# eq_sink (the LADSPA sink above). Each loopback carries a stable
+# sink_input_properties.media.role so
+# pulse_controller.set_loopback_calibration() can find it and use it as
+# a per-source pre-amp ceiling. Routing target is eq_sink rather than
+# alsa_output directly so the end-of-chain EQ touches every source
+# uniformly (snapcast / airplay / system sounds / analog).
+#
+# latency_msec=80: chosen for the 5-loopback case on a Pi Zero 2 W to
+# avoid underrun cascades. Pi 3B+ has more headroom so could likely run
+# lower, but kept consistent for now.
+#
+# A default.pa edit only takes effect after PA restart, so install.sh
+# below mark_reboot_needed's any time this file's mtime is newer than
+# the running PA process. eq_controller.py's runtime apply path also
+# rewrites this file (so PA picks it up if it restarts) AND runs a
+# pactl unload/load dance for an immediate live update.
+# load-module module-loopback source=spotifysink.monitor sink=eq_sink latency_msec=80
+load-module module-loopback source=systemsink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-systemsink-out
+load-module module-loopback source=analogsink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-analogsink-out
+load-module module-loopback source=snapsink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-snapsink-out
+load-module module-loopback source=airplaysink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-airplaysink-out
 
 # --- Set Default Sink ---
-# This makes 'spotifysink' the default. Applications that don't specify a sink
-# will send their audio to 'spotifysink'. This audio will then be routed
-# directly to the hardware output.
+# This makes 'snapsink' the default. Applications that don't specify a
+# sink will send their audio to 'snapsink'. This audio will then be
+# routed through the EQ chain to the hardware output.
 set-default-sink snapsink
