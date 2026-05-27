@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useSliderHover } from '../hooks/useSliderHover'
 
 /**
  * VolumeSlider — custom track-fill slider.
@@ -96,6 +97,7 @@ export default function VolumeSlider({
   const pct = Math.max(0, Math.min(100, localVal))
   const pctStr = `${pct}%`
   const iconState = pct === 0 ? 'mute' : pct < 40 ? 'low' : 'high'
+  const hover = useSliderHover()
 
   const toggleMute = () => {
     const next = pct === 0 ? (lastNonZeroRef.current || 50) : 0
@@ -130,7 +132,13 @@ export default function VolumeSlider({
           <VolumeIcon size={16} state={iconState} />
         </button>
       )}
-      <div className="fx-volume-track">
+      <div
+        className="fx-volume-track"
+        ref={hover.ref}
+        onPointerMove={hover.onPointerMove}
+        onPointerLeave={hover.onPointerLeave}
+      >
+        <div className="fx-volume-hover" />
         <div className="fx-volume-fill" style={{ width: pctStr }} />
         <div className="fx-volume-thumb" style={{ left: pctStr }} />
         <input

@@ -31,6 +31,7 @@ import SourcePopover from './SourcePopover'
 import useAlbumArtColor from '../hooks/useAlbumArtColor'
 import { useTuning } from '../hooks/useTuning'
 import { useTheme } from '../hooks/useTheme'
+import { useSliderHover } from '../hooks/useSliderHover'
 import { sendPlayback } from '../api'
 
 const clamp = (lo, v, hi) => Math.max(lo, Math.min(hi, v))
@@ -218,6 +219,7 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
   const hasControls = sourceId === 'spotify' && hasMeta
   const titleText = hasMeta ? track.title : (sourceId || '—')
   const subText = hasMeta ? [track.artist, track.album].filter(Boolean).join(' · ') : ''
+  const progressHover = useSliderHover()
 
   return (
     <div className="fx-group-media-card">
@@ -235,8 +237,15 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
           <div className="fx-group-progress">
             <div className="fx-group-progress-bar">
               <span className="fx-time-track">{fmtTime(clampedPos)}</span>
-              <div className="fx-group-progress-track">
+              <div
+                className="fx-group-progress-track"
+                ref={progressHover.ref}
+                onPointerMove={progressHover.onPointerMove}
+                onPointerLeave={progressHover.onPointerLeave}
+              >
+                <div className="fx-group-progress-hover" />
                 <div className="fx-group-progress-fill" style={{ width: `${pct}%` }} />
+                <div className="fx-group-progress-thumb" style={{ left: `${pct}%` }} />
                 <input
                   type="range"
                   min={0}
