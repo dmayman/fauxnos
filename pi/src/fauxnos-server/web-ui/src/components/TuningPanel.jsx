@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { IconChevronDown, IconCopy, IconRefresh } from '@tabler/icons-react'
+import { IconChevronDownFilled, IconCopyFilled, IconRefresh } from '@tabler/icons-react'
 import { useTuning, setTuning, resetTuning } from '../hooks/useTuning'
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ export default function TuningPanel() {
         aria-expanded={open}
       >
         <span>Color tuning</span>
-        <IconChevronDown size={16} style={{ transform: open ? 'rotate(180deg)' : 'none' }} />
+        <IconChevronDownFilled size={16} style={{ transform: open ? 'rotate(180deg)' : 'none' }} />
       </button>
       {open && (
         <div className="fx-tune-body">
@@ -97,7 +97,7 @@ export default function TuningPanel() {
 
           <div className="fx-tune-actions">
             <button type="button" className="fx-btn sm" onClick={() => setRevealed(r => !r)}>
-              <IconCopy size={14} /> {revealed ? 'Hide JSON' : 'Reveal JSON'}
+              <IconCopyFilled size={14} /> {revealed ? 'Hide JSON' : 'Reveal JSON'}
             </button>
             <button type="button" className="fx-btn sm ghost" onClick={() => resetTuning()} title="Reset to defaults">
               <IconRefresh size={14} /> Reset

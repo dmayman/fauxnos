@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronRight, Plus } from 'lucide-react'
+import { IconChevronRightFilled, IconPlusFilled } from '@tabler/icons-react'
 
 /**
  * Popover anchored to the top-right status indicator.
@@ -77,13 +77,13 @@ export default function DevicesPopover({ clients, anchorRef, onClose, onOpenDevi
               <span className={`fx-dot${c.connected ? ' ok' : ''}`} />
               {c.connected ? 'Connected' : 'Offline'}
             </span>
-            <ChevronRight size={14} className="fx-device-cell-chevron" aria-hidden />
+            <IconChevronRightFilled size={14} className="fx-device-cell-chevron" aria-hidden />
           </button>
         ))}
       </div>
       <div className="fx-devices-popover-footer">
-        <button className="fx-btn block" onClick={() => { onAddDevice(); onClose() }}>
-          <Plus size={14} /> Add device
+        <button className="fx-btn block pill" onClick={() => { onAddDevice(); onClose() }}>
+          <IconPlusFilled size={14} /> Add device
         </button>
       </div>
     </div>

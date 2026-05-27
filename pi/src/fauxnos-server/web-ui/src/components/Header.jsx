@@ -1,6 +1,6 @@
 import { forwardRef } from 'react'
 import { ChevronDown, ArrowDownToLine, GitBranch } from 'lucide-react'
-import { IconSun, IconMoon, IconDeviceDesktop } from '@tabler/icons-react'
+import { IconSunFilled, IconMoonFilled, IconDeviceDesktopFilled } from '@tabler/icons-react'
 import { useTheme } from '../hooks/useTheme'
 
 /**
@@ -199,9 +199,9 @@ function buildClientsTooltip(clientsNeedingUpdate, total, repoNeedsPull) {
 function ThemeToggle() {
   const { theme, setTheme } = useTheme()
   const options = [
-    { id: 'light',  Icon: IconSun,           label: 'Light' },
-    { id: 'system', Icon: IconDeviceDesktop, label: 'Follow system' },
-    { id: 'dark',   Icon: IconMoon,          label: 'Dark' },
+    { id: 'light',  Icon: IconSunFilled,           label: 'Light' },
+    { id: 'system', Icon: IconDeviceDesktopFilled, label: 'Follow system' },
+    { id: 'dark',   Icon: IconMoonFilled,          label: 'Dark' },
   ]
   return (
     <div className="fx-theme-toggle" role="radiogroup" aria-label="Theme">

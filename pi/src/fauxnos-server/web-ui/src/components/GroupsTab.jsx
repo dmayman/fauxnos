@@ -246,7 +246,7 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
             Raspberry Pi and a DAC HAT.
           </p>
           {onAddDevice && (
-            <button className="fx-btn primary" onClick={onAddDevice}>
+            <button className="fx-btn primary pill" onClick={onAddDevice}>
               <Plus size={14} /> Add device
             </button>
           )}

@@ -61,7 +61,7 @@
 }
 
 [data-theme="light"] {
-  --fx-bg:          #EEEEEE;
+  --fx-bg:          #F4F4F4;
   --fx-surface-1:   #FFFFFF;
   --fx-surface-2:   #F5F5F5;
   --fx-surface-3:   #EAEAEA;
@@ -96,7 +96,7 @@
 /* Honor OS preference only when the user hasn't explicitly set a theme. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
-    --fx-bg:          #EEEEEE;
+    --fx-bg:          #F4F4F4;
     --fx-surface-1:   #FFFFFF;
     --fx-surface-2:   #F5F5F5;
     --fx-surface-3:   #EAEAEA;
@@ -370,7 +370,7 @@ a { color: var(--accent); }
   border-radius: var(--fx-r-pill);
   font-size: var(--fx-text-xs);
   line-height: var(--fx-lh-xs);
-  font-weight: 500;
+  font-weight: 600;
   color: var(--fx-text-2);
   background: var(--fx-surface-2);
 }
@@ -394,7 +394,7 @@ a { color: var(--accent); }
   color: var(--fx-text);
   font-family: inherit;
   font-size: var(--fx-text-sm);
-  font-weight: 500;
+  font-weight: 700;
   line-height: 1;
   cursor: pointer;
   user-select: none;
@@ -410,6 +410,133 @@ a { color: var(--accent); }
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
 .fx-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.fx-device-panel .fx-btn { font-weight: 700; }
+
+/* ── Custom icon (renders a raw Tabler SVG by name) ───────────────────── */
+.fx-custom-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+}
+.fx-custom-icon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ── Icon picker (lazy-loaded) ────────────────────────────────────────── */
+.fx-input-with-icon {
+  display: flex;
+  gap: var(--fx-2);
+  align-items: stretch;
+}
+.fx-input-with-icon .fx-input { flex: 1; min-width: 0; }
+.fx-icon-picker-trigger-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.fx-icon-picker-trigger {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--fx-surface-2);
+  border: 1px solid var(--fx-line);
+  border-radius: var(--fx-r-sm);
+  color: var(--fx-text-2);
+  cursor: pointer;
+  padding: 0;
+  transition:
+    border-color var(--fx-dur) var(--fx-ease),
+    background var(--fx-dur) var(--fx-ease),
+    color var(--fx-dur) var(--fx-ease);
+}
+.fx-icon-picker-trigger:hover {
+  border-color: var(--fx-line-strong);
+  color: var(--fx-text);
+}
+.fx-icon-picker-trigger[aria-expanded="true"] {
+  background: var(--fx-accent-soft);
+  border-color: var(--fx-accent);
+  color: var(--fx-accent);
+}
+.fx-icon-picker-popover {
+  position: absolute;
+  top: calc(100% + var(--fx-1));
+  left: 0;
+  width: 320px;
+  max-width: 90vw;
+  padding: var(--fx-3) var(--fx-2);
+  z-index: 250;
+}
+.fx-icon-picker {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fx-2);
+}
+.fx-icon-picker-search { width: 100%; }
+.fx-icon-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
+  gap: 2px;
+  max-height: 280px;
+  overflow-y: auto;
+  contain: layout style;
+}
+.fx-icon-picker-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 36px;
+  border: 1px solid transparent;
+  border-radius: var(--fx-r-sm);
+  background: transparent;
+  color: var(--fx-text-2);
+  cursor: pointer;
+  padding: 0;
+  content-visibility: auto;
+  contain-intrinsic-size: 36px 36px;
+  transition:
+    background var(--fx-dur) var(--fx-ease),
+    color var(--fx-dur) var(--fx-ease);
+}
+.fx-icon-picker-cell:hover {
+  background: var(--fx-surface-2);
+  color: var(--fx-text);
+}
+.fx-icon-picker-cell.active {
+  background: var(--fx-accent-soft);
+  color: var(--fx-accent);
+  border-color: var(--fx-accent);
+}
+.fx-icon-picker-cell svg {
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+}
+.fx-icon-picker-empty {
+  grid-column: 1 / -1;
+  padding: var(--fx-3);
+  text-align: center;
+  font-size: var(--fx-text-sm);
+}
+.fx-icon-picker-loading {
+  padding: var(--fx-3);
+  text-align: center;
+  font-size: var(--fx-text-sm);
+}
+.fx-device-panel .fx-select,
+.fx-device-panel .fx-mono,
+.fx-device-panel .fx-mute,
+.fx-device-panel .fx-small,
+.fx-device-panel .fx-eq-enable,
+.fx-device-panel .fx-device-version-label,
+.fx-device-panel .fx-device-version-value,
+.fx-device-panel label { font-weight: 600; }
 
 .fx-btn.primary {
   background: var(--fx-accent);
@@ -436,6 +563,7 @@ a { color: var(--accent); }
 .fx-btn.sm { height: 28px; padding: 0 var(--fx-3); font-size: var(--fx-text-xs); }
 .fx-btn.lg { height: 44px; padding: 0 var(--fx-5); font-size: var(--fx-text-base); }
 .fx-btn.block { width: 100%; }
+.fx-btn.pill { border-radius: var(--fx-r-pill); }
 
 /* Icon-only button (round) */
 .fx-icon-btn {
@@ -1451,8 +1579,9 @@ body.fx-dragging-background::after {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 20px;
+  min-width: 20px;
   height: 20px;
+  padding: 0 4px;
   border-radius: var(--fx-r-pill);
   border: 0;
   background: transparent;
@@ -1466,8 +1595,32 @@ body.fx-dragging-background::after {
 .fx-group-row-v2:hover .fx-group-member-x,
 .fx-group-member-x:focus-visible { opacity: 1; }
 .fx-group-member-x:hover {
-  color: var(--fx-err);
-  background: var(--fx-err-soft);
+  color: var(--fx-text);
+  background: var(--fx-surface-3);
+}
+/* Label sits to the right of the icon and slides in only on direct
+   button hover so the row's resting layout (when button is invisible)
+   stays unchanged. max-width + margin transition together so the label
+   and its leading space appear in one smooth motion. */
+.fx-group-member-x-label {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  max-width: 0;
+  margin-left: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  transition: max-width var(--fx-dur) var(--fx-ease),
+              margin-left var(--fx-dur) var(--fx-ease),
+              opacity var(--fx-dur) var(--fx-ease);
+}
+.fx-group-member-x:hover .fx-group-member-x-label,
+.fx-group-member-x:focus-visible .fx-group-member-x-label {
+  max-width: 80px;
+  margin-left: 4px;
+  opacity: 1;
 }
 .fx-group-member-slider { min-width: 0; }
 
@@ -1510,7 +1663,7 @@ body.fx-dragging-background::after {
 .fx-group-card-v2 {
   position: relative;
   background: var(--fx-surface-1);
-  border: 1px solid var(--fx-line);
+  border: 1px solid var(--fx-line-strong);
   border-radius: 36px;
   /* Per Figma: subtle outer drop shadow lifts the card off the page bg.
      Light: 0 4px 24px rgba(0,0,0,0.03). Dark stays a bit deeper. */
@@ -1529,8 +1682,13 @@ body.fx-dragging-background::after {
   }
 }
 .fx-group-card-v2[data-has-media="true"] {
-  /* tint over a neutral base, falls back to surface-1 when --art-card-tint is transparent */
+  /* Outer card carries the album-art tint; the media content sits flat
+     on it (no inner card) and the device list floats on top of it as a
+     surface-1 sub-card with its own shadow. With the art tint doing the
+     visual lifting, the outer stroke softens to --fx-line so it doesn't
+     read heavy against the brighter background. */
   background: var(--art-card-tint, var(--fx-surface-1));
+  border-color: var(--fx-line);
 }
 /* V4 empty (multi-device, no Spotify connected) — tint the outer card a
    slight gray so the inner empty media-card (still surface-1) reads as a
@@ -1545,9 +1703,44 @@ body.fx-dragging-background::after {
     border-color var(--fx-dur) var(--fx-ease),
     box-shadow var(--fx-dur) var(--fx-ease);
 }
-.fx-group-card-v2.fx-drop {
-  border-color: var(--fx-accent);
-  box-shadow: 0 0 0 3px var(--fx-accent-soft), var(--fx-shadow-2);
+/* Group card default border is `--fx-line-strong` (always visible);
+   hover pushes it darker. Light mode uses an explicit value since
+   `--fx-line` tokens cap out at 16% — the hover state needs more
+   contrast to feel like a clear state change. */
+.fx-group-card-v2.fx-card-hover:hover {
+  border-color: rgba(0, 0, 0, 0.28);
+}
+[data-theme="dark"] .fx-group-card-v2.fx-card-hover:hover,
+:root:not([data-theme]) .fx-group-card-v2.fx-card-hover:hover {
+  border-color: rgba(255, 255, 255, 0.20);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-group-card-v2.fx-card-hover:hover {
+    border-color: rgba(0, 0, 0, 0.28);
+  }
+}
+/* Media cards rest with the softer --fx-line so the album-art tint
+   carries the edge. Hover lands midway at --fx-line-strong (12/16%)
+   instead of the heavier explicit 20/28% used by non-media cards,
+   which felt too dark against the tinted background. */
+.fx-group-card-v2[data-has-media="true"].fx-card-hover:hover {
+  border-color: var(--fx-line-strong);
+}
+/* Drop indicator — matches the viewport-edge background indicator
+   (2px solid --fx-text). Non-media cards take the dark stroke on the
+   outer chrome; media cards keep the outer tint and put the stroke on
+   the inner .fx-group-rows sub-card so the album-art area isn't fenced
+   off from the drop affordance. Uses outline (not border/box-shadow)
+   so the indicator appears/disappears instantly — the card's existing
+   box-shadow transition would otherwise morph the soft drop shadow
+   into the tight ring over 180ms and back, which reads as glitchy. */
+.fx-group-card-v2:not([data-has-media="true"]).fx-drop {
+  outline: 2px solid var(--fx-text);
+  outline-offset: -2px;
+}
+.fx-group-card-v2[data-has-media="true"].fx-drop .fx-group-rows {
+  outline: 2px solid var(--fx-text);
+  outline-offset: -2px;
 }
 
 /* Inner sub-card (V1/V3 only) — sits above the device rows.
@@ -1561,20 +1754,9 @@ body.fx-dragging-background::after {
   grid-template-columns: 150px 1fr;
   gap: 24px;
   align-items: center;
-  background: var(--fx-surface-1);
-  border-radius: 36px;
-  /* Per Figma: inner white-bg sub-card carries a soft halo that separates
-     it from the tinted outer card. drop-shadow-style (no offset, 8px blur). */
-  box-shadow: 0 0 8px rgba(0, 0, 0, 0.08);
-}
-[data-theme="dark"] .fx-group-media-card,
-:root:not([data-theme]) .fx-group-media-card {
-  background: rgba(255, 255, 255, 0.05);
-}
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme]) .fx-group-media-card {
-    background: var(--fx-surface-1);
-  }
+  /* No background or border — the media content sits flat on the
+     outer card's album-art tint. */
+  background: transparent;
 }
 
 .fx-group-media-art {
@@ -1584,6 +1766,7 @@ body.fx-dragging-background::after {
   overflow: hidden;
   background: var(--fx-surface-2);
   border: 1px solid var(--fx-line);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1618,12 +1801,18 @@ body.fx-dragging-background::after {
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+  padding-top: 28px;
 }
 .fx-group-media-text {
   display: flex;
   flex-direction: column;
   gap: 4px;
   min-width: 0;
+  /* Clear the anchored source-trigger pill in the top-right corner
+     (~68px wide, anchored 24px from the card edge). Reserved on the
+     text container only so the progress row below still spans full
+     width to its own right-aligned transport controls. */
+  padding-right: 80px;
 }
 .fx-group-media-text .fx-title-track,
 .fx-group-media-text .fx-meta-track {
@@ -1678,13 +1867,12 @@ body.fx-dragging-background::after {
   gap: 4px;
   flex-shrink: 0;
 }
-/* Per Figma: prev/play/next live in 8px-radius squares with 8px padding
-   around the 16-18px glyph (so 32×32 hit box). The default .fx-icon-btn
-   is a 99px pill; override the radius here, keep the size. */
+/* prev/play/next live in 32×32 circles with 8px padding around the
+   16-18px glyph. Uses the pill radius (a full circle at this size). */
 .fx-group-progress-actions .fx-icon-btn {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
+  border-radius: var(--fx-r-pill);
   color: var(--fx-text-2);
 }
 .fx-group-progress-actions .fx-icon-btn:hover {
@@ -1737,19 +1925,55 @@ body.fx-dragging-background::after {
 .fx-group-rows {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 20px;
   padding: 24px;
 }
-/* When stacked under a media card, use a tighter top gap so the inner
-   card's drop-shadow has breathing room without doubled padding. */
+/* When stacked under a media card the rows section becomes a floating
+   surface-1 sub-card sitting on the outer card's album-art tint —
+   reverse of the original layout. Margin reveals the tint around all
+   four edges; the shadow lifts the white surface off the tint. */
 .fx-group-card-v2[data-has-media="true"] .fx-group-rows {
-  gap: 16px;
+  gap: 20px;
+  margin: 0;
+  background: var(--fx-surface-1);
+  /* Only the top stroke shows — left/right/bottom edges sit flush against
+     the outer card's own border, so adding more strokes would draw a
+     double line. */
+  border: 0;
+  border-top: 1px solid var(--fx-line-strong);
+  /* All four corners rounded: top corners (36px) curve into the media
+     area above for the "floating card" feel; bottom corners (35px) tuck
+     just inside the outer card's interior radius. */
+  border-radius: 36px 36px 35px 35px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  /* Match the V2-single card's intrinsic row height (40px inline source
+     trigger + 24px padding-y) so cards line up at the same height
+     regardless of whether they're in V2 or V3 mode. Top pad mirrors V3
+     (16px) so the multi-room rows tuck snug under the media card. */
+  padding: 16px 24px 32px 32px;
+}
+[data-theme="dark"] .fx-group-card-v2[data-has-media="true"] .fx-group-rows,
+:root:not([data-theme]) .fx-group-card-v2[data-has-media="true"] .fx-group-rows {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-group-card-v2[data-has-media="true"] .fx-group-rows {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  }
 }
 /* V2-single body: a single inline row inside the card. The outer card
    supplies all the padding; the row itself has none. Left-pad is 32 to
-   leave room for the drag-gutter visual on hover (per Figma). */
+   leave room for the drag-gutter visual on hover (per Figma). Vertical
+   padding is 16 so the row (40px source-trigger) + padding = 72px total. */
 .fx-group-card-v2.v2-single .fx-group-rows {
-  padding: 24px 24px 24px 32px;
+  padding: 16px 24px 16px 32px;
+}
+/* V3 (single + media): rows section sits below the media card with the
+   same 72px target height as V2-single, and the same 32px left pad so
+   the drag gutter aligns across both single-device variants. Overrides
+   the data-has-media block above (same specificity, later in cascade). */
+.fx-group-card-v2.v3 .fx-group-rows {
+  padding: 16px 24px 16px 32px;
 }
 
 /* A device row (or the V2 inline row). Three columns:
@@ -1771,9 +1995,13 @@ body.fx-dragging-background::after {
   grid-template-columns: 150px 1fr auto;
 }
 
-/* Device rows are neutral by default; accent is reserved for the
-   .is-all entry that controls the whole group (see below). */
-.fx-group-row-v2 .fx-name-device { color: var(--fx-text-2); }
+/* Device rows are darker by default (single-device groups); muted only
+   when there's more than one device in the card (V1 + V4 multi variants).
+   Accent is reserved for the .is-all entry that controls the whole group
+   (see below). */
+.fx-group-row-v2 .fx-name-device { color: var(--fx-text); }
+.fx-group-card-v2.v1 .fx-group-row-v2 .fx-name-device,
+.fx-group-card-v2.v4 .fx-group-row-v2 .fx-name-device { color: var(--fx-text-2); }
 
 .fx-group-row-name {
   display: flex;
@@ -1818,7 +2046,7 @@ body.fx-dragging-background::after {
   opacity: 0;
   transition: opacity var(--fx-dur) var(--fx-ease);
 }
-.fx-group-row-v2:hover .fx-row-drag,
+.fx-group-rows:hover .fx-row-drag,
 .fx-row-drag:focus-visible {
   opacity: 0.7;
 }
@@ -1866,18 +2094,10 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 .fx-volume.card-v2 .fx-volume-track {
   height: 4px;
-  /* Translucent so the same track tone reads correctly against the
-     plain card background and the album-art tinted background. */
-  background: rgba(0, 0, 0, 0.05);
-}
-[data-theme="dark"] .fx-volume.card-v2 .fx-volume-track,
-:root:not([data-theme]) .fx-volume.card-v2 .fx-volume-track {
-  background: rgba(255, 255, 255, 0.06);
-}
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme]) .fx-volume.card-v2 .fx-volume-track {
-    background: rgba(0, 0, 0, 0.05);
-  }
+  /* Neutral surface-3 so all device sliders share the same track tone
+     as the "All" row above — keeps the rows reading as a unified group
+     instead of the art-tinted track competing with the neutral fill. */
+  background: var(--fx-surface-3);
 }
 .fx-volume.card-v2 .fx-volume-fill {
   background: var(--fx-text-2);
@@ -1917,26 +2137,66 @@ button.fx-group-row-volume-icon:focus-visible {
    breathing room beneath, plus an edge-to-edge hairline (the ::after
    pseudo escapes the .fx-group-rows 24px padding via negative left/
    right) so the All row reads as a heading + separator, not a peer.
-   margin-bottom 16 + parent gap 16 = 32px from All to first device,
-   with the rule centered in that gap (bottom: -16). */
+   margin-bottom 16 + parent gap 20 = 36px from All to first device,
+   with the rule centered in that gap (bottom: -18). */
 .fx-group-row-v2.is-all { margin-bottom: 16px; }
 .fx-group-row-v2.is-all::after {
   content: "";
   position: absolute;
-  left: -24px;
-  right: -24px;
-  bottom: -16px;
+  left: 0;
+  right: 0;
+  bottom: -14px;
   height: 1px;
   background: var(--fx-line);
 }
-.fx-group-row-v2.is-all .fx-name-device { color: var(--art-accent); }
-.fx-group-row-v2.is-all .fx-group-row-volume-icon {
-  color: var(--art-accent);
+.fx-group-card-v2 .fx-group-row-v2.is-all .fx-name-device { color: var(--fx-text); }
+.fx-group-card-v2 .fx-group-row-v2.is-all .fx-group-row-volume-icon {
+  color: var(--fx-text);
   opacity: 1;
 }
-.fx-group-row-v2.is-all .fx-volume.card-v2 .fx-volume-fill,
-.fx-group-row-v2.is-all .fx-volume.card-v2 .fx-volume-thumb {
-  background: var(--art-accent);
+.fx-group-card-v2 .fx-group-row-v2.is-all .fx-volume.card-v2 .fx-volume-fill,
+.fx-group-card-v2 .fx-group-row-v2.is-all .fx-volume.card-v2 .fx-volume-thumb {
+  background: var(--fx-text);
+}
+
+/* Single-device cards (V2 no media, V3 with media): the lone device row
+   uses the same neutral primary-text treatment as the .is-all row in
+   multi-room cards — keeps both single-device variants visually aligned
+   and lets the row chrome read as primary against the surface-3 track. */
+.fx-group-card-v2.v3 .fx-group-row-v2 .fx-name-device,
+.fx-group-card-v2.v2-single .fx-group-row-v2 .fx-name-device {
+  color: var(--fx-text);
+}
+.fx-group-card-v2.v3 .fx-group-row-v2 .fx-group-row-volume-icon,
+.fx-group-card-v2.v2-single .fx-group-row-v2 .fx-group-row-volume-icon {
+  color: var(--fx-text);
+  opacity: 1;
+}
+.fx-group-card-v2.v3 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-fill,
+.fx-group-card-v2.v3 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-thumb,
+.fx-group-card-v2.v2-single .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-fill,
+.fx-group-card-v2.v2-single .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-thumb {
+  background: var(--fx-text);
+}
+
+/* Disclosure chevron next to any source-trigger source icon reads as a
+   muted indicator, not a primary glyph. Applies to both the anchored
+   media-card variant and the inline V2 variant. */
+.fx-source-trigger > svg:last-of-type {
+  color: var(--fx-text-3);
+}
+/* Media-card chrome: time chips and transport controls pick up the
+   album-art accent. The source icon itself stays neutral text-color
+   (inherits from the trigger button) so the brand glyph isn't tinted. */
+.fx-group-media-card .fx-time-track {
+  color: var(--art-accent);
+}
+.fx-group-media-card .fx-group-progress-actions .fx-icon-btn {
+  color: var(--art-accent);
+}
+.fx-group-media-card .fx-group-progress-actions .fx-icon-btn:hover {
+  color: var(--art-accent);
+  background: var(--art-accent-soft, var(--fx-accent-soft));
 }
 
 /* ── Source popover ───────────────────────────────────────────────────────
@@ -2034,6 +2294,91 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 .fx-source-popover-row.active .fx-source-popover-row-label {
   font-weight: 700;
+}
+
+/* Multi-room footer: a small hint explaining why other sources are
+   hidden, plus an explicit Ungroup-all CTA. Visual weight sits below
+   the source list — caption + ghost-button, no heavy chrome. Hint
+   and button group together (8px gap) so they read as one unit, with
+   the outer popover gap of 16px separating them from the Spotify row. */
+.fx-source-popover-ungroup-group {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.fx-source-popover-hint {
+  font-size: var(--fx-text-xs);
+  line-height: var(--fx-lh-xs);
+  color: var(--fx-text-2);
+}
+.fx-source-popover-ungroup {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 var(--fx-3);
+  border: 1px solid var(--fx-line-strong);
+  border-radius: var(--fx-r-pill);
+  background: transparent;
+  color: var(--fx-text);
+  font: inherit;
+  font-size: var(--fx-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--fx-dur) var(--fx-ease),
+              border-color var(--fx-dur) var(--fx-ease),
+              color var(--fx-dur) var(--fx-ease);
+}
+.fx-source-popover-ungroup:hover {
+  background: var(--fx-surface-2);
+  border-color: var(--fx-text-3);
+}
+.fx-source-popover-ungroup:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
+}
+
+/* "Configure" floating action button — small circular gear anchored
+   8px below the source popover, sharing its right edge. Same surface +
+   border + shadow as the popover so it reads as a paired secondary
+   affordance, not a separate menu. */
+.fx-source-popover-configure-fab {
+  position: fixed;
+  z-index: 260;
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: var(--fx-surface-1);
+  border: 1px solid var(--fx-line);
+  border-radius: 50%;
+  color: var(--fx-text-2);
+  cursor: pointer;
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.09);
+  transition: color var(--fx-dur) var(--fx-ease),
+              background var(--fx-dur) var(--fx-ease);
+}
+[data-theme="dark"] .fx-source-popover-configure-fab,
+:root:not([data-theme]) .fx-source-popover-configure-fab {
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.36);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-source-popover-configure-fab {
+    box-shadow: 0 0 16px rgba(0, 0, 0, 0.09);
+  }
+}
+.fx-source-popover-configure-fab:hover {
+  color: var(--fx-text);
+  background: var(--fx-surface-2);
+}
+.fx-source-popover-configure-fab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring),
+              0 0 16px rgba(0, 0, 0, 0.09);
 }
 
 /* Trigger button "open" state — subtle background reflecting current accent.
@@ -2189,7 +2534,6 @@ button.fx-group-row-volume-icon:focus-visible {
   padding: var(--fx-3);
 }
 .fx-devices-popover-footer {
-  border-top: 1px solid var(--fx-line);
   padding: var(--fx-2);
 }
 .fx-device-cell {
@@ -2224,7 +2568,7 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 .fx-device-cell-id {
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 400;
   color: var(--fx-text-3);
 }
 .fx-device-cell-chevron { color: var(--fx-text-3); }
@@ -2285,7 +2629,11 @@ button.fx-group-row-volume-icon:focus-visible {
 .fx-device-panel .fx-panel-card + .fx-section-label,
 .fx-device-panel .fx-section-label + .fx-section-label,
 .fx-device-panel .fx-device-version-section + .fx-section-label,
-.fx-device-panel .fx-section-label + .fx-device-version-section {
+.fx-device-panel .fx-section-label + .fx-device-version-section,
+.fx-device-panel .fx-device-advanced-section + .fx-section-label,
+.fx-device-panel .fx-section-label + .fx-device-advanced-section,
+.fx-device-panel .fx-device-version-section + .fx-device-advanced-section,
+.fx-device-panel .fx-device-advanced-section + .fx-device-version-section {
   margin-top: var(--fx-3);
 }
 .fx-section-label-clickable { cursor: pointer; }
@@ -3097,10 +3445,12 @@ label.fx-source-setting { cursor: pointer; }
 /* DevicePanel Version section — between AdvancedSettings and the remove
  * footer. Shows deployed SHA + behind state + inline "Update this device"
  * button. */
-.fx-device-version-section {
+.fx-device-version-section,
+.fx-device-advanced-section {
   margin-top: var(--fx-3);
 }
-.fx-device-version-card {
+.fx-device-version-card,
+.fx-device-advanced-card {
   display: flex;
   flex-direction: column;
   gap: var(--fx-2);

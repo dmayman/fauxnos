@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  IconX,
-  IconChevronDown,
+  IconXFilled,
+  IconUnlink,
+  IconChevronDownFilled,
   IconBrandSpotifyFilled,
   IconBuildingBroadcastTowerFilled,
   IconMicrophoneFilled,
@@ -9,8 +10,8 @@ import {
   IconHeadphonesFilled,
   IconPlayerPlayFilled,
   IconPlayerPauseFilled,
-  IconPlayerSkipBackFilled,
-  IconPlayerSkipForwardFilled,
+  IconPlayerTrackPrevFilled,
+  IconPlayerTrackNextFilled,
 } from '@tabler/icons-react'
 
 /* Drag-handle glyph: two thin parallel bars, matching the Figma kitchen-row
@@ -124,7 +125,7 @@ function useInterpolatedPosition(playback) {
  * checked and non-spotify locked in multi-room. Anchored top-right of the
  * outer card for V1/V3, inline in the row for V2/V4.
  * ────────────────────────────────────────────────────────────────────────── */
-function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientId, onSwitchSource, anchored = false }) {
+function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientId, onSwitchSource, onUngroupAll, onConfigure, anchored = false }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef(null)
 
@@ -146,7 +147,7 @@ function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientI
         title={currentSourceId || 'Select source'}
       >
         <SourceIcon sourceId={currentSourceId} size={24} />
-        <IconChevronDown size={24} aria-hidden />
+        <IconChevronDownFilled size={24} aria-hidden />
       </button>
       {open && (
         <SourcePopover
@@ -156,6 +157,8 @@ function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientI
           anchorRef={triggerRef}
           onClose={() => setOpen(false)}
           onSelect={handleSelect}
+          onUngroupAll={onUngroupAll}
+          onConfigure={onConfigure}
         />
       )}
     </>
@@ -249,7 +252,7 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
             </div>
             <div className="fx-group-progress-actions">
               <button type="button" className="fx-icon-btn" onClick={onPrev} aria-label="Previous">
-                <IconPlayerSkipBackFilled size={16} stroke={0} />
+                <IconPlayerTrackPrevFilled size={16} stroke={0} />
               </button>
               <button type="button" className="fx-icon-btn" onClick={onPlayPause} aria-label={displayedPlaying ? 'Pause' : 'Play'}>
                 {displayedPlaying
@@ -257,7 +260,7 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
                   : <IconPlayerPlayFilled size={18} stroke={0} />}
               </button>
               <button type="button" className="fx-icon-btn" onClick={onNext} aria-label="Next">
-                <IconPlayerSkipForwardFilled size={16} stroke={0} />
+                <IconPlayerTrackNextFilled size={16} stroke={0} />
               </button>
             </div>
           </div>
@@ -275,7 +278,7 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
  * snapshot on the first publish of a drag and discards it after a short
  * idle window, so successive drags compose naturally.
  * ────────────────────────────────────────────────────────────────────────── */
-function AllRow({ clients, mqtt }) {
+function AllRow({ clients, mqtt, homeClientId, onReturnHome, inlineSourceTrigger }) {
   const readVol = useCallback(
     (c) => mqtt.volumes[c.id] ?? c.config?.volume?.percent ?? 0,
     [mqtt.volumes],
@@ -317,9 +320,24 @@ function AllRow({ clients, mqtt }) {
   }
 
   return (
-    <div className="fx-group-row-v2 is-all">
+    <div className={`fx-group-row-v2 is-all${inlineSourceTrigger ? ' with-source' : ''}`}>
       <div className="fx-group-row-name">
         <span className="fx-name-device fx-group-row-name-label">All</span>
+        <button
+          type="button"
+          className="fx-group-member-x"
+          onClick={() => {
+            clients.forEach(c => {
+              if (c.id !== homeClientId) onReturnHome(c.id)
+            })
+          }}
+          title="Ungroup all"
+          aria-label="Ungroup all"
+          style={{ marginLeft: 8 }}
+        >
+          <IconUnlink size={14} stroke={2.5} />
+          <span className="fx-group-member-x-label">Ungroup all</span>
+        </button>
       </div>
       <div className="fx-group-row-volume">
         <button
@@ -340,6 +358,7 @@ function AllRow({ clients, mqtt }) {
           ariaLabel="All devices volume"
         />
       </div>
+      {inlineSourceTrigger}
     </div>
   )
 }
@@ -412,11 +431,12 @@ function DeviceRow({
             type="button"
             className="fx-group-member-x"
             onClick={() => onReturnHome(client.id)}
-            title="Remove from group"
-            aria-label="Remove from group"
+            title="Ungroup"
+            aria-label="Ungroup"
             style={{ marginLeft: 8 }}
           >
-            <IconX size={12} stroke={2} />
+            <IconUnlink size={14} stroke={2.5} />
+            <span className="fx-group-member-x-label">Ungroup</span>
           </button>
         )}
       </div>
@@ -521,8 +541,13 @@ export default function GroupCard({
   const isEmptyMedia = isMulti && !hasMedia // V4 zero-state
   // Anchored trigger sits over the media card; inline only when there's
   // no media card to anchor against (V2).
-  const showAnchoredTrigger = showMediaCard
-  const showInlineTrigger = !showMediaCard
+  // TEMP TEST 2026-05-26: source trigger lives inline next to the first row
+  // (All in multi, single device in V3) instead of anchored top-right of
+  // the media card. To revert, restore:
+  //   const showAnchoredTrigger = showMediaCard
+  //   const showInlineTrigger = !showMediaCard
+  const showAnchoredTrigger = false
+  const showInlineTrigger = true
 
   // Card itself is never draggable — drag affordance lives on the device
   // name. The slider's pointer-down events would otherwise fight the
@@ -535,6 +560,14 @@ export default function GroupCard({
     onDragOverGroup()
   }
 
+  const handleUngroupAll = () => {
+    sorted.forEach(c => {
+      if (c.id !== homeClientId) onReturnHome(c.id)
+    })
+  }
+
+  const handleConfigure = () => onOpenDevice(homeClientId)
+
   const inlineTrigger = showInlineTrigger ? (
     <SourceTrigger
       sources={group.sources || []}
@@ -543,6 +576,8 @@ export default function GroupCard({
       groupId={group.id}
       homeClientId={homeClientId}
       onSwitchSource={onSwitchSource}
+      onUngroupAll={handleUngroupAll}
+      onConfigure={handleConfigure}
     />
   ) : null
 
@@ -554,6 +589,8 @@ export default function GroupCard({
       groupId={group.id}
       homeClientId={homeClientId}
       onSwitchSource={onSwitchSource}
+      onUngroupAll={handleUngroupAll}
+      onConfigure={handleConfigure}
       anchored
     />
   ) : null
@@ -587,7 +624,15 @@ export default function GroupCard({
         )}
         {anchoredTrigger}
         <div className="fx-group-rows">
-          {isMulti && <AllRow clients={sorted} mqtt={mqtt} />}
+          {isMulti && (
+            <AllRow
+              clients={sorted}
+              mqtt={mqtt}
+              homeClientId={homeClientId}
+              onReturnHome={onReturnHome}
+              inlineSourceTrigger={inlineTrigger}
+            />
+          )}
           {sorted.map(c => (
             <DeviceRow
               key={c.id}
@@ -602,7 +647,7 @@ export default function GroupCard({
               onReturnHome={onReturnHome}
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
-              inlineSourceTrigger={c.id === homeClientId ? inlineTrigger : null}
+              inlineSourceTrigger={!isMulti && c.id === homeClientId ? inlineTrigger : null}
             />
           ))}
         </div>
