@@ -3,6 +3,14 @@ import { Speaker, Plus } from 'lucide-react'
 import GroupCard from './GroupCard'
 import { apiFetch } from '../api'
 
+// Mirrors GroupCard's home-client resolution so we can look up playback in
+// the same place the card will. `mqtt.playback` is keyed by home client id.
+const resolveHomeClientId = (g) =>
+  g.home_client_id
+  || (g.clients?.length === 1 ? g.clients[0]?.id : null)
+  || (g.stream_id?.match(/source_(fauxnos\d+)_/)?.[1])
+  || g.clients?.[0]?.id
+
 export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevice, onAddDevice }) {
   const [dragClientId, setDragClientId] = useState(null)
   const [dropTargetGroupId, setDropTargetGroupId] = useState(null)
@@ -24,8 +32,20 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
     nameMap[c.client_id] = c.name
   }
 
-  // Filter to groups with clients
-  const activeGroups = effectiveGroups.filter(g => g.clients?.length > 0)
+  // Filter to groups with clients, then sort: playing > grouped > idle.
+  // Stable within each tier via the index tiebreak so cards don't jitter
+  // when unrelated state (e.g. volume) changes.
+  const tierOf = (g) => {
+    const home = resolveHomeClientId(g)
+    if (home && mqtt.playback[home]?.is_playing) return 0
+    if ((g.clients?.length || 0) > 1) return 1
+    return 2
+  }
+  const activeGroups = effectiveGroups
+    .filter(g => g.clients?.length > 0)
+    .map((g, i) => ({ g, i, t: tierOf(g) }))
+    .sort((a, b) => a.t - b.t || a.i - b.i)
+    .map(x => x.g)
 
   // Locate a client object by id across all groups in `base`. We need the
   // object (not just the id) so we can re-insert it into a different

@@ -1,0 +1,1 @@
+import{j as s}from"./index-CC66Kmb7.js";import{g as e}from"./iconData-B12PncNZ.js";function i({name:o,size:t=16,ariaHidden:r=!0}){const n=e(o);return n?s.jsx("span",{className:"fx-custom-icon",style:{width:t,height:t},"aria-hidden":r,dangerouslySetInnerHTML:{__html:n}}):null}export{i as default};
