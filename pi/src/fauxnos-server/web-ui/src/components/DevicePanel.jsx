@@ -85,28 +85,64 @@ function hostnameOf(url) {
 
 function HelpPopover({ children }) {
   const [open, setOpen] = useState(false)
+  // Popover uses position:fixed (vs absolute) so it escapes any ancestor
+  // with overflow:hidden — the device panel container clips otherwise.
+  // We compute viewport-relative coords from the icon's bounding rect on
+  // each open; recompute on scroll/resize while open so the popover
+  // tracks the icon if the panel scrolls.
+  const [pos, setPos] = useState(null)
   const wrapRef = useRef(null)
+  const recompute = () => {
+    if (!wrapRef.current) return
+    const rect = wrapRef.current.getBoundingClientRect()
+    const top = rect.bottom + 4
+    // Anchor right-side when icon is in the right half — both left & right
+    // are explicit (`auto` on the other) so the CSS's `left: 0` default
+    // doesn't fight us and snap the popover back to the viewport edge.
+    if (rect.left > window.innerWidth / 2) {
+      setPos({ top, right: Math.max(8, window.innerWidth - rect.right), left: 'auto' })
+    } else {
+      setPos({ top, left: rect.left, right: 'auto' })
+    }
+  }
   useEffect(() => {
     if (!open) return undefined
-    const handler = (e) => {
+    const onDown = (e) => {
       if (!wrapRef.current?.contains(e.target)) setOpen(false)
     }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
+    document.addEventListener('mousedown', onDown)
+    window.addEventListener('scroll', recompute, true)
+    window.addEventListener('resize', recompute)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      window.removeEventListener('scroll', recompute, true)
+      window.removeEventListener('resize', recompute)
+    }
   }, [open])
+  const handleOpen = () => {
+    if (!open) recompute()
+    setOpen(v => !v)
+  }
   return (
     <div className="fx-help-wrap" ref={wrapRef}>
       <button
         type="button"
         className="fx-icon-btn sm"
-        onClick={() => setOpen(v => !v)}
+        onClick={handleOpen}
         title="Help"
         aria-label="Help"
         aria-expanded={open}
       >
         <IconHelpCircleFilled size={14} />
       </button>
-      {open && <div className="fx-popover fx-help-popover">{children}</div>}
+      {open && pos && (
+        <div
+          className="fx-popover fx-help-popover"
+          style={{ position: 'fixed', ...pos }}
+        >
+          {children}
+        </div>
+      )}
     </div>
   )
 }
@@ -970,6 +1006,7 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
   // (URL + payload-with-placeholder + encoding) but the placeholder is
   // {{ip}}, and fauxnos fires this when its LAN IP changes (devices
   // that can't resolve mDNS need a way to learn the new broker address).
+  const [brokerUpdateEnabled, setBrokerUpdateEnabled] = useState(!!evc.broker_update_enabled)
   const [brokerUpdateApi, setBrokerUpdateApi] = useState(evc.broker_update_api || '')
   const [brokerUpdatePayload, setBrokerUpdatePayload] = useState(
     evc.broker_update_payload
@@ -1007,6 +1044,7 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
         : ''
     )
     setContentType(e.content_type || 'json')
+    setBrokerUpdateEnabled(!!e.broker_update_enabled)
     setBrokerUpdateApi(e.broker_update_api || '')
     setBrokerUpdatePayload(
       e.broker_update_payload
@@ -1057,6 +1095,7 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
           // VinylTable's existing config), and new devices just get the
           // canonical-default fallback at dispatch time.
           // Broker-IP push (orthogonal to transport)
+          broker_update_enabled: brokerUpdateEnabled,
           broker_update_api: brokerUpdateApi,
           broker_update_payload: parsedBrokerPayload,
           broker_update_content_type: brokerUpdateContentType,
@@ -1073,7 +1112,8 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
       setSaving(false)
     }
   }, [client.client_id, enabled, transport, url, payload, contentType,
-      brokerUpdateApi, brokerUpdatePayload, brokerUpdateContentType, onRefresh])
+      brokerUpdateEnabled, brokerUpdateApi, brokerUpdatePayload,
+      brokerUpdateContentType, onRefresh])
 
   // Manual "Push current IP" — fires the broker-update HTTP call
   // immediately, regardless of last-pushed state. Useful after
@@ -1108,9 +1148,9 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
             Use external volume
           </label>
           <HelpPopover>
-            Route this device's volume slider to an external endpoint (HTTP or
-            MQTT) instead of attenuating locally. The external controller
-            owns attenuation; fauxnos pins the local chain at unity.
+            Send volume to a hardware controller (amp, smart speaker) instead
+            of attenuating locally. Fauxnos's local audio chain is pinned at
+            full volume — your controller owns attenuation end-to-end.
           </HelpPopover>
         </div>
         <input
@@ -1123,10 +1163,6 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
       </div>
       {enabled && (
         <div className="fx-ir-card fx-stack" style={{ gap: 'var(--fx-3)' }}>
-          <p className="fx-small fx-mute" style={{ margin: 0 }}>
-            Volume slider sends each move to your device. Local PA/snapcast is
-            pinned at unity — the external controller owns attenuation.
-          </p>
           {/* Transport radio — picks which transport's fields are live. */}
           <div>
             <label className="fx-label">Transport</label>
@@ -1156,13 +1192,8 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
 
           {transport === 'http' && (
             <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
-              <p className="fx-small fx-mute" style={{ margin: 0 }}>
-                Use <code>{'{{volume}}'}</code> as a placeholder for the 0-100
-                slider value. Append <code>/N</code> if your device expects a
-                different scale (e.g. <code>{'{{volume}}/100'}</code>).
-              </p>
               <div>
-                <label className="fx-label">API URL</label>
+                <label className="fx-label">URL</label>
                 <input
                   className="fx-input"
                   type="url"
@@ -1172,7 +1203,14 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
                 />
               </div>
               <div>
-                <label className="fx-label">Payload</label>
+                <div className="fx-ir-label-group" style={{ marginBottom: 'var(--fx-1)' }}>
+                  <label className="fx-label" style={{ margin: 0 }}>Payload</label>
+                  <HelpPopover>
+                    Use <code>{'{{volume}}'}</code> for the 0-100 slider value.
+                    Append <code>/N</code> for different scales
+                    (e.g. <code>{'{{volume}}/100'}</code>).
+                  </HelpPopover>
+                </div>
                 <textarea
                   className="fx-textarea"
                   rows={3}
@@ -1191,113 +1229,166 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
                 </select>
               </div>
               <div>
-                <label className="fx-label">Inbound webhook (your device POSTs here on knob turn)</label>
+                <div className="fx-ir-label-group" style={{ marginBottom: 'var(--fx-1)' }}>
+                  <label className="fx-label" style={{ margin: 0 }}>Inbound webhook</label>
+                  <HelpPopover>
+                    Configure your device to POST <code>{'{"value": N}'}</code>
+                    (N in 0-100) here whenever its local volume changes.
+                  </HelpPopover>
+                </div>
                 <input
                   className="fx-input"
                   type="text"
                   readOnly
                   value={inboundWebhookUrl}
                   onClick={e => e.target.select()}
-                  title="Click to select. Configure your device to POST {value: N} (N in 0-100) to this URL whenever its volume changes locally."
-                  style={{ fontFamily: 'var(--fx-font-mono, monospace)', fontSize: 'var(--fx-fs-sm)' }}
+                  style={{ fontFamily: 'var(--fx-mono, monospace)', fontSize: 'var(--fx-text-sm)' }}
                 />
               </div>
             </div>
           )}
 
           {transport === 'mqtt' && (
-            <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
-              <p className="fx-small fx-mute" style={{ margin: 0 }}>
-                Topics are fixed per device — no configuration here. Configure
-                your hardware controller to use the broker and topics below.
-                Payloads are plain integers 0-100.
-              </p>
-              <div className="fx-panel-card" style={{ padding: 'var(--fx-3)' }}>
-                <div className="fx-small" style={{ marginBottom: 'var(--fx-2)', fontWeight: 600 }}>
-                  Configure your device with:
+            <div className="fx-panel-card" style={{ padding: 'var(--fx-3)' }}>
+              <div className="fx-ir-label-group" style={{ marginBottom: 'var(--fx-2)' }}>
+                <div className="fx-small" style={{ fontWeight: 600 }}>
+                  Configure your device
                 </div>
-                <div className="fx-small fx-mute" style={{ fontFamily: 'var(--fx-font-mono, monospace)', lineHeight: 1.6 }}>
-                  <div>Broker: {brokerHost}:{brokerPort} (TCP, no auth)</div>
-                  <div>Subscribe: fauxnos/{client.client_id}/volume/set</div>
-                  <div>Publish: fauxnos/{client.client_id}/volume/state</div>
+                <HelpPopover>
+                  Topics are fixed per device. Payloads are plain integers
+                  0-100. Broker uses TCP on port 1883 with no auth.
+                </HelpPopover>
+              </div>
+              <div className="fx-stack" style={{ gap: 'var(--fx-2)', fontSize: 'var(--fx-text-sm)' }}>
+                <div>
+                  <div style={{ color: 'var(--fx-text-2)' }}>Broker</div>
+                  {brokerUpdateEnabled ? (
+                    <span style={{ color: 'var(--fx-text-2)', fontStyle: 'italic' }}>
+                      Pushed to your device automatically
+                    </span>
+                  ) : (
+                    <code style={{ fontFamily: 'var(--fx-mono, monospace)', wordBreak: 'break-all' }}>
+                      fauxnos.local:{brokerPort}
+                    </code>
+                  )}
+                </div>
+                <div>
+                  <div style={{ color: 'var(--fx-text-2)' }}>Subscribe to</div>
+                  <code style={{ fontFamily: 'var(--fx-mono, monospace)', wordBreak: 'break-all' }}>
+                    fauxnos/{client.client_id}/volume/set
+                  </code>
+                </div>
+                <div>
+                  <div style={{ color: 'var(--fx-text-2)' }}>Publish to</div>
+                  <code style={{ fontFamily: 'var(--fx-mono, monospace)', wordBreak: 'break-all' }}>
+                    fauxnos/{client.client_id}/volume/state
+                  </code>
                 </div>
               </div>
             </div>
           )}
 
-          {/* Broker-IP push — orthogonal to transport. Only relevant for
-              devices that can't resolve mDNS (Particle Photon being the
-              canonical case); other devices just hit fauxnos.local and
-              ignore this. URL/payload/encoding mirror the HTTP transport
-              fields above, with {{ip}} as the substitution placeholder. */}
+          {/* Keep broker IP updated — for devices that can't resolve mDNS
+              (e.g. Particle Photon). When checked, fauxnos pushes its
+              current LAN IP via a user-supplied HTTP endpoint whenever
+              the IP changes. When unchecked, the device is expected to
+              resolve fauxnos.local on its own. */}
           <hr style={{ border: 0, borderTop: '1px solid var(--fx-line)', margin: 0 }} />
           <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
-            <div className="fx-source-setting-label" style={{ fontWeight: 600 }}>
-              Push broker IP on change
-            </div>
-            <p className="fx-small fx-mute" style={{ margin: 0 }}>
-              For devices that can't resolve <code>fauxnos.local</code> (e.g.
-              Particle Photon). When fauxnos's LAN IP changes, this endpoint
-              gets called so the device can reconnect to the new broker.
-              Use <code>{'{{ip}}'}</code> as a placeholder for the IP.
-              {lanIp && <> Current fauxnos IP: <code>{lanIp}</code>.</>}
-            </p>
-            <div>
-              <label className="fx-label">API URL</label>
+            <div className="fx-source-setting">
+              <div className="fx-ir-label-group">
+                <label
+                  htmlFor={`evc-broker-update-${client.client_id}`}
+                  className="fx-source-setting-label"
+                  style={{ fontWeight: 600, cursor: 'pointer' }}
+                >
+                  Keep broker IP updated
+                </label>
+                <HelpPopover>
+                  If your device can't resolve <code>fauxnos.local</code>
+                  (e.g. Particle Photon), enable this and fauxnos will push
+                  its current LAN IP whenever DHCP changes it.
+                </HelpPopover>
+              </div>
               <input
-                className="fx-input"
-                type="url"
-                value={brokerUpdateApi}
-                onChange={e => setBrokerUpdateApi(e.target.value)}
-                placeholder="https://api.particle.io/v1/devices/<id>/setBroker"
+                id={`evc-broker-update-${client.client_id}`}
+                className="fx-checkbox"
+                type="checkbox"
+                checked={brokerUpdateEnabled}
+                onChange={e => setBrokerUpdateEnabled(e.target.checked)}
               />
             </div>
-            <div>
-              <label className="fx-label">Payload</label>
-              <textarea
-                className="fx-textarea"
-                rows={3}
-                value={brokerUpdatePayload}
-                onChange={e => setBrokerUpdatePayload(e.target.value)}
-                placeholder={brokerUpdateContentType === 'form'
-                  ? '{"arg": "{{ip}}", "access_token": "…"}'
-                  : '{"value": "{{ip}}"}'}
-              />
-            </div>
-            <div>
-              <label className="fx-label">Encoding</label>
-              <select
-                className="fx-select"
-                value={brokerUpdateContentType}
-                onChange={e => setBrokerUpdateContentType(e.target.value)}
-              >
-                <option value="json">JSON</option>
-                <option value="form">Form (x-www-form-urlencoded)</option>
-              </select>
-            </div>
-            <div className="fx-stack" style={{ flexDirection: 'row', gap: 'var(--fx-2)', alignItems: 'center' }}>
+            {brokerUpdateEnabled && (
+              <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
+                <p className="fx-small fx-mute" style={{ margin: 0 }}>
+                  Your device firmware needs a cloud function (e.g. Particle's
+                  <code> setBroker</code>) that accepts an IP string and
+                  reconfigures its MQTT client to point at it.
+                </p>
+                <div>
+                  <label className="fx-label">URL</label>
+                  <input
+                    className="fx-input"
+                    type="url"
+                    value={brokerUpdateApi}
+                    onChange={e => setBrokerUpdateApi(e.target.value)}
+                    placeholder="https://api.particle.io/v1/devices/<id>/setBroker"
+                  />
+                </div>
+                <div>
+                  <div className="fx-ir-label-group" style={{ marginBottom: 'var(--fx-1)' }}>
+                    <label className="fx-label" style={{ margin: 0 }}>Payload</label>
+                    <HelpPopover>
+                      Use <code>{'{{ip}}'}</code> as the placeholder for fauxnos's
+                      current LAN IP.
+                    </HelpPopover>
+                  </div>
+                  <textarea
+                    className="fx-textarea"
+                    rows={3}
+                    value={brokerUpdatePayload}
+                    onChange={e => setBrokerUpdatePayload(e.target.value)}
+                    placeholder={brokerUpdateContentType === 'form'
+                      ? '{"arg": "{{ip}}", "access_token": "…"}'
+                      : '{"value": "{{ip}}"}'}
+                  />
+                </div>
+                <div>
+                  <label className="fx-label">Encoding</label>
+                  <select
+                    className="fx-select"
+                    value={brokerUpdateContentType}
+                    onChange={e => setBrokerUpdateContentType(e.target.value)}
+                  >
+                    <option value="json">JSON</option>
+                    <option value="form">Form (x-www-form-urlencoded)</option>
+                  </select>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="fx-stack" style={{ flexDirection: 'row', gap: 'var(--fx-2)', alignItems: 'center', flexWrap: 'wrap' }}>
+            <button className="fx-btn primary" onClick={handleSave} disabled={saving}>
+              {saved ? <><IconCheckFilled size={14} /> Saved</> : <><IconCheckFilled size={14} /> Save</>}
+            </button>
+            {brokerUpdateEnabled && (
               <button
                 className="fx-btn"
                 onClick={handlePushBrokerIp}
                 disabled={pushing || !brokerUpdateApi.trim()}
               >
-                {pushing ? 'Pushing…' : 'Push current IP now'}
+                {pushing ? 'Pushing…' : 'Push IP now'}
               </button>
-              {pushMessage && (
-                <span
-                  className="fx-small"
-                  style={{ color: pushMessage.kind === 'ok' ? 'var(--fx-text-2)' : 'var(--fx-err)' }}
-                >
-                  {pushMessage.text}
-                </span>
-              )}
-            </div>
-          </div>
-
-          <div>
-            <button className="fx-btn primary" onClick={handleSave} disabled={saving}>
-              {saved ? <><IconCheckFilled size={14} /> Saved</> : <><IconCheckFilled size={14} /> Save</>}
-            </button>
+            )}
+            {pushMessage && (
+              <span
+                className="fx-small"
+                style={{ color: pushMessage.kind === 'ok' ? 'var(--fx-text-2)' : 'var(--fx-err)' }}
+              >
+                {pushMessage.text}
+              </span>
+            )}
           </div>
         </div>
       )}

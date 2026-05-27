@@ -175,6 +175,7 @@ class ConfigManager:
             # but the placeholder is {{ip}} (fauxnos's current LAN IPv4),
             # not {{volume}}. Fired on server startup when the detected IP
             # differs from the last-pushed value, or via manual UI button.
+            "broker_update_enabled":       False,
             "broker_update_api":           "",
             "broker_update_payload":       {},
             "broker_update_content_type":  "json" }
@@ -199,11 +200,22 @@ class ConfigManager:
             "mqtt_topic_out": "",
             "mqtt_payload_out": "{{volume}}/100",
             "mqtt_topic_in": "",
+            "broker_update_enabled": False,
             "broker_update_api": "",
             "broker_update_payload": {},
             "broker_update_content_type": "json",
         }
         changed = False
+        # Existing configs that already have a non-empty broker_update_api
+        # should auto-flip enabled→True at migration time so live VinylTable
+        # configs don't silently lose the push behavior they were relying on.
+        for client in cfg.get("clients", []) or []:
+            if not isinstance(client, dict):
+                continue
+            evc = client.get("external_volume_controller") or {}
+            if (evc.get("broker_update_api") or "").strip() and "broker_update_enabled" not in evc:
+                evc["broker_update_enabled"] = True
+                changed = True
         for client in cfg.get("clients", []) or []:
             if not isinstance(client, dict):
                 continue

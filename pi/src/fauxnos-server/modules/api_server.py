@@ -1560,6 +1560,7 @@ class FauxnosAPIServer:
                     "mqtt_payload_out": evc.get("mqtt_payload_out", "{{volume}}/100"),
                     "mqtt_topic_in": evc.get("mqtt_topic_in", ""),
                     # Broker-IP push (Particle setBroker style)
+                    "broker_update_enabled": bool(evc.get("broker_update_enabled", False)),
                     "broker_update_api": evc.get("broker_update_api", ""),
                     "broker_update_payload": evc.get("broker_update_payload", {}),
                     "broker_update_content_type": evc.get("broker_update_content_type", "json"),
@@ -3218,6 +3219,8 @@ rm -- "$0"
         evc = self._get_client_external_volume_controller(client_id)
         if evc is None:
             return jsonify({"ok": False, "error": f"Client {client_id} not found"}), 404
+        if not evc.get("broker_update_enabled"):
+            return jsonify({"ok": False, "error": "broker_update_enabled is off"}), 400
         if not (evc.get("broker_update_api") or "").strip():
             return jsonify({"ok": False, "error": "broker_update_api not configured"}), 400
         result = self._push_broker_update_for_client(client_id, ip)
@@ -3348,6 +3351,11 @@ rm -- "$0"
             if not cid:
                 continue
             evc = client.get("external_volume_controller") or {}
+            # Skip unless the user explicitly opted in via the checkbox.
+            # A leftover URL alone (e.g. saved by an old build) shouldn't
+            # auto-fire on every server restart.
+            if not evc.get("broker_update_enabled"):
+                continue
             if not (evc.get("broker_update_api") or "").strip():
                 continue
             if not force and last_pushed.get(cid) == ip:
