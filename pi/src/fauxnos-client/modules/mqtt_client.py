@@ -54,6 +54,8 @@ class MQTTClient:
                  ir_feedback_volume_callback: Optional[Callable[[int], None]] = None,
                  eq_callback: Optional[Callable[[bool, Optional[Dict[str, float]]], bool]] = None,
                  eq_getter: Optional[Callable[[], Dict]] = None,
+                 evc_state_callback: Optional[Callable[[bool], None]] = None,
+                 evc_mirror_callback: Optional[Callable[[int], None]] = None,
                  broker_host: Optional[str] = None,
                  broker_port: int = 1883):
         """
@@ -106,6 +108,8 @@ class MQTTClient:
         self.ir_feedback_volume_callback = ir_feedback_volume_callback
         self.eq_callback = eq_callback
         self.eq_getter = eq_getter
+        self.evc_state_callback = evc_state_callback
+        self.evc_mirror_callback = evc_mirror_callback
 
         # MQTT client setup
         self.client = mqtt.Client(client_id=f"fauxnos-{self.device_id}")
@@ -159,6 +163,16 @@ class MQTTClient:
             f"set/clients/{self.device_id}/ir/feedback_volume",
             # EQ — JSON payload, see _handle_command's "eq" branch.
             f"set/clients/{self.device_id}/eq",
+            # External volume controller config (retained, server-published).
+            # Tells the client whether its local audio chain should be pinned
+            # at unity (external authority owns attenuation) — see
+            # SourceManager.set_external_volume_state.
+            f"config/clients/{self.device_id}/external_volume_controller",
+            # External-volume authoritative-value mirror: server publishes
+            # here whenever the external device reports a new volume (knob
+            # turn, UI-slider round-trip echo). Client pushes to go-librespot
+            # so the Spotify phone slider tracks the external authority.
+            f"set/clients/{self.device_id}/external_volume_mirror",
             f"get/clients/{self.device_id}/volume",
             f"get/clients/{self.device_id}/status",
             f"get/clients/{self.device_id}/activity",
@@ -201,6 +215,38 @@ class MQTTClient:
             sub_action = parts[4] if len(parts) >= 5 else None
             tail = parts[5] if len(parts) >= 6 else None
             if device_id != self.device_id:
+                return
+
+            # config/clients/<id>/external_volume_controller — retained
+            # payload (JSON) telling us whether this device is in
+            # external-volume mode. Routed before the generic handler
+            # because it's a "config" command_type, not "set"/"get".
+            if (
+                command_type == "config"
+                and action == "external_volume_controller"
+                and self.evc_state_callback is not None
+            ):
+                try:
+                    cfg = json.loads(payload) if payload else {}
+                    self.evc_state_callback(bool(cfg.get("enabled", False)))
+                except Exception as e:
+                    logger.warning(f"Failed to parse EVC config payload: {e}")
+                return
+
+            # set/clients/<id>/external_volume_mirror — server-published
+            # authoritative value from the external device (Photon knob /
+            # UI round-trip). Mirror it to go-librespot so the Spotify
+            # phone slider tracks. Routed before _handle_command because
+            # it's an out-of-band "set" sub-action not in that switch.
+            if (
+                command_type == "set"
+                and action == "external_volume_mirror"
+                and self.evc_mirror_callback is not None
+            ):
+                try:
+                    self.evc_mirror_callback(int(payload))
+                except Exception as e:
+                    logger.warning(f"Failed to handle EVC mirror payload {payload!r}: {e}")
                 return
 
             # 6-part topics (extra trailing identifier) are handled

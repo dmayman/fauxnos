@@ -140,6 +140,17 @@ class FauxnosClient:
             ir_feedback_volume_callback=self._set_ir_feedback_volume,
             eq_callback=self.eq_controller.set_state,
             eq_getter=self.eq_controller.get_state,
+            # External volume controller: server publishes the device's EVC
+            # state on a retained config topic; we forward the `enabled`
+            # bool to source_manager so it knows whether to pin the local
+            # audio chain at unity (and skip go-librespot phone pushes /
+            # snapcast attenuation) versus business-as-usual.
+            evc_state_callback=self.source_manager.set_external_volume_state,
+            # External-volume authoritative-value mirror: server publishes
+            # whenever the external authority reports a new value (knob
+            # turn, UI-slider round-trip echo). source_manager pushes
+            # that value to go-librespot so Spotify phone slider tracks.
+            evc_mirror_callback=self.source_manager.apply_external_mirror,
         )
 
         # Flag for graceful shutdown

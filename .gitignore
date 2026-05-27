@@ -6,6 +6,9 @@ pi_backups/
 
 # Local agent state
 .claude/
+# aelfrice (MCP memory store) — local-only working data for the
+# brain-graph DB. Re-created on demand; should never be in the repo.
+data/
 
 # Audio source projects — large binary DAW project folders (Ableton / Logic).
 # The bounced WAVs land in pi/src/fauxnos-client/sounds/ which IS tracked;

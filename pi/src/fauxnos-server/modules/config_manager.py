@@ -75,7 +75,8 @@ class ConfigManager:
 
         changed_sha = self._migrate_legacy_deployed_sha(cfg)
         changed_home_group = self._migrate_drop_home_group(cfg)
-        if changed_sha or changed_home_group:
+        changed_evc = self._migrate_external_volume_controller(cfg)
+        if changed_sha or changed_home_group or changed_evc:
             # Write the migrated shape back so subsequent loads are
             # no-ops and any consumer reading the file directly sees
             # the new field names.
@@ -86,6 +87,8 @@ class ConfigManager:
                     self.logger.info("server_config: migrated legacy deployed_sha → deployed_client_sha")
                 if changed_home_group:
                     self.logger.info("server_config: dropped legacy home_group field(s) (now derived from home_source ↔ stream_id)")
+                if changed_evc:
+                    self.logger.info("server_config: added missing external_volume_controller defaults to clients")
             except Exception as e:
                 # Persistence failure is non-fatal — the in-memory dict is
                 # already migrated, so the server runs correctly this
@@ -140,6 +143,67 @@ class ConfigManager:
                 # the new field, drop the stale duplicate.
                 client.pop("deployed_sha", None)
                 changed = True
+        return changed
+
+    @staticmethod
+    def _migrate_external_volume_controller(cfg: Dict[str, Any]) -> bool:
+        """Ensure every client has a fully-populated `external_volume_controller` blob.
+
+        Added 2026-05-26 to support routing the device-wide volume slider
+        through an external endpoint instead of attenuating via PulseAudio
+        or snapcast. When `enabled` is true, the fauxnos UI sends each
+        slider move out via the configured transport; the device's local
+        audio chain is pinned at unity so the external controller owns
+        attenuation end-to-end.
+
+        Schema supports two transports:
+
+          { "enabled": bool,
+            "transport": "http" | "mqtt",
+            # HTTP fields — outbound POST when transport=http:
+            "control_api":    "https://…",
+            "control_payload": {…} | "raw string",
+            "content_type":   "json" | "form",
+            # MQTT fields — broker is always fauxnos's own mosquitto
+            # (LAN-local, no auth), so the user doesn't configure it:
+            "mqtt_topic_out":   "device/setVolume",  # we publish here
+            "mqtt_payload_out": "{{volume}}/100",     # template
+            "mqtt_topic_in":    "device/volume" }     # we subscribe here
+
+        `{{volume}}` is substituted with the current 0-100 slider value at
+        dispatch time, in both HTTP and MQTT outbound payloads.
+
+        Additive at the field level: clients that already had a partial
+        blob (from earlier 2026-05-26 deploy) get the new MQTT fields
+        filled in with defaults without losing any HTTP config the user
+        already entered. Idempotent — running this twice changes nothing.
+        """
+        defaults = {
+            "enabled": False,
+            "transport": "http",
+            # HTTP defaults
+            "control_api": "",
+            "control_payload": {},
+            "content_type": "json",
+            # MQTT defaults
+            "mqtt_topic_out": "",
+            "mqtt_payload_out": "{{volume}}/100",
+            "mqtt_topic_in": "",
+        }
+        changed = False
+        for client in cfg.get("clients", []) or []:
+            if not isinstance(client, dict):
+                continue
+            evc = client.get("external_volume_controller")
+            if evc is None:
+                client["external_volume_controller"] = dict(defaults)
+                changed = True
+                continue
+            # Fill in any missing keys (additive) without touching user values
+            for k, v in defaults.items():
+                if k not in evc:
+                    evc[k] = v if not isinstance(v, dict) else dict(v)
+                    changed = True
         return changed
 
     def _create_default_config(self) -> Dict[str, Any]:

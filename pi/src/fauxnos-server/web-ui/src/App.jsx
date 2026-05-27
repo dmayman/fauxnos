@@ -55,7 +55,18 @@ export default function App() {
         setGroups(groupsData.groups || [])
         setStreams(groupsData.streams || [])
       }
-      if (clientsData) setClients(clientsData.clients || [])
+      if (clientsData) {
+        const list = clientsData.clients || []
+        setClients(list)
+        // Push the external-volume routing map into useMqtt so its
+        // publishVolume routes each client correctly. We only include
+        // clients with enabled=true — others fall through to MQTT.
+        const map = {}
+        for (const c of list) {
+          if (c?.external_volume_controller?.enabled) map[c.client_id] = true
+        }
+        mqtt.setExternalVolumeMap?.(map)
+      }
       if (statusData) setServerStatus(statusData)
       if (versionData) setServerVersion(versionData)
     } catch { /* ignore */ }

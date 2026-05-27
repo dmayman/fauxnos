@@ -927,8 +927,280 @@ function AddCustomSourceForm({ clientId, onAdded, onCancel }) {
 }
 
 /**
- * Advanced Settings — currently just DAC overlay. Collapsed by default
- * because a wrong overlay choice can leave the Pi without audio until
+ * ExternalVolumeControllerSection — opt-in routing of this device's volume
+ * slider through an external endpoint instead of attenuating locally. Used
+ * for room amps that own their own volume (e.g. a Particle Photon's
+ * TDA7468-based vinyl table). When enabled:
+ *   • UI slider POSTs to /api/clients/<id>/external_volume per move
+ *   • Server sends the value out via the configured transport (HTTP or MQTT)
+ *   • Server pins the client's local audio chain to volume=100 (unity)
+ *
+ * Two transports, chosen by a radio:
+ *   HTTP — outbound is a POST you configure (URL + payload template + encoding).
+ *          Inbound is a webhook URL fauxnos exposes; the device POSTs there
+ *          when its local volume changes.
+ *   MQTT — outbound is a publish to the topic you pick. Inbound is fauxnos
+ *          subscribing to a topic the device publishes on knob turn. Broker
+ *          is always fauxnos's own mosquitto — shown read-only, never edited.
+ *
+ * Save writes ALL fields (both blocks) so toggling transport doesn't lose
+ * what you typed in the other one.
+ */
+function ExternalVolumeControllerSection({ client, onRefresh }) {
+  const evc = client.external_volume_controller || {}
+  const [enabled, setEnabled] = useState(!!evc.enabled)
+  const [transport, setTransport] = useState(evc.transport || 'http')
+  // HTTP fields
+  const [url, setUrl] = useState(evc.control_api || '')
+  const [payload, setPayload] = useState(
+    evc.control_payload
+      ? (typeof evc.control_payload === 'string'
+          ? evc.control_payload
+          : JSON.stringify(evc.control_payload))
+      : ''
+  )
+  const [contentType, setContentType] = useState(evc.content_type || 'json')
+  // MQTT fields
+  const [mqttTopicOut, setMqttTopicOut] = useState(evc.mqtt_topic_out || '')
+  const [mqttPayloadOut, setMqttPayloadOut] = useState(evc.mqtt_payload_out || '{{volume}}/100')
+  const [mqttTopicIn, setMqttTopicIn] = useState(evc.mqtt_topic_in || '')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  // The "Connect your device to" block needs to show users where their
+  // device should point. We derive from window.location so the UI works
+  // identically over fauxnos.local, fauxnos000.local, or a raw IP.
+  // MQTT broker port is the standard 1883 (mosquitto's TCP listener).
+  // The webhook origin is just the same origin the UI is loaded from.
+  const brokerHost = typeof window !== 'undefined' ? window.location.hostname : 'fauxnos.local'
+  const brokerPort = 1883
+  const webhookOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://fauxnos.local'
+  const inboundWebhookUrl = `${webhookOrigin}/api/clients/${client.client_id}/external_volume_inbound`
+
+  // Re-sync state when the prop changes (panel re-opened, App refreshed).
+  useEffect(() => {
+    const e = client.external_volume_controller || {}
+    setEnabled(!!e.enabled)
+    setTransport(e.transport || 'http')
+    setUrl(e.control_api || '')
+    setPayload(
+      e.control_payload
+        ? (typeof e.control_payload === 'string' ? e.control_payload : JSON.stringify(e.control_payload))
+        : ''
+    )
+    setContentType(e.content_type || 'json')
+    setMqttTopicOut(e.mqtt_topic_out || '')
+    setMqttPayloadOut(e.mqtt_payload_out || '{{volume}}/100')
+    setMqttTopicIn(e.mqtt_topic_in || '')
+  }, [client.external_volume_controller])
+
+  const handleSave = useCallback(async () => {
+    setSaving(true)
+    let parsedPayload = null
+    if (payload.trim()) {
+      try { parsedPayload = JSON.parse(payload) } catch { parsedPayload = payload }
+    }
+    try {
+      await apiFetch(`/api/clients/${client.client_id}/external_volume_controller`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          enabled,
+          transport,
+          // Write BOTH blocks every time. Switching transport doesn't
+          // discard the other side's config — users can flip back without
+          // having to retype URLs / topics.
+          control_api: url,
+          control_payload: parsedPayload,
+          content_type: contentType,
+          mqtt_topic_out: mqttTopicOut,
+          mqtt_payload_out: mqttPayloadOut,
+          mqtt_topic_in: mqttTopicIn,
+        }),
+      })
+      setSaved(true)
+      setTimeout(() => setSaved(false), 1500)
+      // Triggers /api/clients reload — useMqtt's external routing map and
+      // the server's MQTT subscription set both reconcile from it.
+      onRefresh?.()
+    } catch (e) {
+      alert(`Save failed: ${e.message}`)
+    } finally {
+      setSaving(false)
+    }
+  }, [client.client_id, enabled, transport, url, payload, contentType,
+      mqttTopicOut, mqttPayloadOut, mqttTopicIn, onRefresh])
+
+  return (
+    <div className="fx-advanced-evc">
+      <div className="fx-advanced-title">External volume controller</div>
+      <label className="fx-source-setting">
+        <span className="fx-source-setting-label">Use external volume</span>
+        <input
+          className="fx-checkbox"
+          type="checkbox"
+          checked={enabled}
+          onChange={e => setEnabled(e.target.checked)}
+        />
+      </label>
+      {enabled && (
+        <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
+          <p className="fx-small fx-mute" style={{ margin: 0 }}>
+            Volume slider sends each move to your device. Local PA/snapcast is
+            pinned at unity — the external controller owns attenuation.
+          </p>
+          {/* Transport radio — picks which transport's fields are live. */}
+          <div>
+            <label className="fx-label">Transport</label>
+            <div className="fx-stack" style={{ flexDirection: 'row', gap: 'var(--fx-3)' }}>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--fx-1)' }}>
+                <input
+                  type="radio"
+                  name={`evc-transport-${client.client_id}`}
+                  value="http"
+                  checked={transport === 'http'}
+                  onChange={() => setTransport('http')}
+                />
+                HTTP
+              </label>
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 'var(--fx-1)' }}>
+                <input
+                  type="radio"
+                  name={`evc-transport-${client.client_id}`}
+                  value="mqtt"
+                  checked={transport === 'mqtt'}
+                  onChange={() => setTransport('mqtt')}
+                />
+                MQTT
+              </label>
+            </div>
+          </div>
+
+          {transport === 'http' && (
+            <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
+              <p className="fx-small fx-mute" style={{ margin: 0 }}>
+                Use <code>{'{{volume}}'}</code> as a placeholder for the 0-100
+                slider value. Append <code>/N</code> if your device expects a
+                different scale (e.g. <code>{'{{volume}}/100'}</code>).
+              </p>
+              <div>
+                <label className="fx-label">API URL</label>
+                <input
+                  className="fx-input"
+                  type="url"
+                  value={url}
+                  onChange={e => setUrl(e.target.value)}
+                  placeholder="https://api.particle.io/v1/devices/<id>/setVolume"
+                />
+              </div>
+              <div>
+                <label className="fx-label">Payload</label>
+                <textarea
+                  className="fx-textarea"
+                  rows={3}
+                  value={payload}
+                  onChange={e => setPayload(e.target.value)}
+                  placeholder={contentType === 'form'
+                    ? '{"arg": "{{volume}}/100", "access_token": "…"}'
+                    : '{"value": "{{volume}}"}'}
+                />
+              </div>
+              <div>
+                <label className="fx-label">Encoding</label>
+                <select className="fx-select" value={contentType} onChange={e => setContentType(e.target.value)}>
+                  <option value="json">JSON</option>
+                  <option value="form">Form (x-www-form-urlencoded)</option>
+                </select>
+              </div>
+              <div>
+                <label className="fx-label">Inbound webhook (your device POSTs here on knob turn)</label>
+                <input
+                  className="fx-input"
+                  type="text"
+                  readOnly
+                  value={inboundWebhookUrl}
+                  onClick={e => e.target.select()}
+                  title="Click to select. Configure your device to POST {value: N} (N in 0-100) to this URL whenever its volume changes locally."
+                  style={{ fontFamily: 'var(--fx-font-mono, monospace)', fontSize: 'var(--fx-fs-sm)' }}
+                />
+              </div>
+            </div>
+          )}
+
+          {transport === 'mqtt' && (
+            <div className="fx-stack" style={{ gap: 'var(--fx-3)' }}>
+              <p className="fx-small fx-mute" style={{ margin: 0 }}>
+                Use <code>{'{{volume}}'}</code> as a placeholder for the 0-100
+                slider value. Append <code>/N</code> if your device expects a
+                different scale (e.g. <code>{'{{volume}}/100'}</code>). Inbound
+                payloads are parsed as plain integers 0-100 (or <code>N/M</code>).
+              </p>
+              <div>
+                <label className="fx-label">Outbound topic (fauxnos publishes on slider move)</label>
+                <input
+                  className="fx-input"
+                  type="text"
+                  value={mqttTopicOut}
+                  onChange={e => setMqttTopicOut(e.target.value)}
+                  placeholder="vinyltable/setVolume"
+                />
+              </div>
+              <div>
+                <label className="fx-label">Outbound payload template</label>
+                <input
+                  className="fx-input"
+                  type="text"
+                  value={mqttPayloadOut}
+                  onChange={e => setMqttPayloadOut(e.target.value)}
+                  placeholder="{{volume}}/100"
+                />
+              </div>
+              <div>
+                <label className="fx-label">Inbound topic (fauxnos subscribes; your device publishes on knob turn)</label>
+                <input
+                  className="fx-input"
+                  type="text"
+                  value={mqttTopicIn}
+                  onChange={e => setMqttTopicIn(e.target.value)}
+                  placeholder="vinyltable/volume"
+                />
+              </div>
+              {/* Read-only broker info — users need this to configure
+                  their device, but the broker itself is part of fauxnos
+                  (mosquitto on the server), so the user never picks it. */}
+              <div className="fx-panel-card" style={{ padding: 'var(--fx-2) var(--fx-3)' }}>
+                <div className="fx-small" style={{ marginBottom: 'var(--fx-1)', fontWeight: 600 }}>
+                  Connect your device to:
+                </div>
+                <div className="fx-small fx-mute" style={{ fontFamily: 'var(--fx-font-mono, monospace)' }}>
+                  Broker: {brokerHost}:{brokerPort} (TCP, no auth)
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div>
+            <button className="fx-btn primary" onClick={handleSave} disabled={saving}>
+              {saved ? <><IconCheckFilled size={14} /> Saved</> : <><IconCheckFilled size={14} /> Save</>}
+            </button>
+          </div>
+        </div>
+      )}
+      {!enabled && (
+        // When OFF we still expose Save so the user can persist "turn this off."
+        // Otherwise toggling off + closing the panel leaves saved state at on.
+        <div style={{ marginTop: 'var(--fx-2)' }}>
+          <button className="fx-btn" onClick={handleSave} disabled={saving}>
+            {saved ? <><IconCheckFilled size={14} /> Saved</> : 'Save'}
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Advanced Settings — DAC overlay + external volume controller. Collapsed by
+ * default because a wrong overlay choice can leave the Pi without audio until
  * recovery, so we want it out of the casual-tweak path.
  */
 function AdvancedSettings({ client, overlays, onRefresh }) {
@@ -1036,6 +1308,7 @@ function AdvancedSettings({ client, overlays, onRefresh }) {
               Locked: install.sh's analog-input detection keys off this exact value.
             </p>
           )}
+          <ExternalVolumeControllerSection client={client} onRefresh={onRefresh} />
         </div>
       )}
     </div>

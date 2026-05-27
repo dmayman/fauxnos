@@ -57,12 +57,133 @@ class SourceManager:
         self.current_source: Optional[str] = None
         self.source_volumes: Dict[str, int] = {}
 
+        # External volume controller state (per-device flag). When True,
+        # this client's local audio chain is pinned at unity gain and
+        # the actual attenuation happens OUTSIDE fauxnos (e.g. a
+        # Particle Photon receiving setVolume commands). The mqtt_client
+        # keeps this in sync by subscribing to the retained
+        # `config/clients/<id>/external_volume_controller` topic the
+        # server publishes. When the flag is True:
+        #   - _set_source_volume forces snapcast=100 (not attenuating)
+        #     and skips the go-librespot phone-slider push
+        #   - on_external_volume_change (phone slider WS event) skips
+        #     the snapcast.set_volume(N) call AND POSTs the new value
+        #     to the server's /external_volume endpoint so it routes
+        #     out via the configured transport
+        self.external_volume_enabled: bool = False
+
         # Initialize volumes from config
         for source_id, source in config_manager.sources.items():
             self.source_volumes[source_id] = source.starting_volume
 
         # Try to load previous state
         self._load_state()
+
+    def apply_external_mirror(self, volume: int):
+        """Apply an authoritative external-volume value to local mirrors.
+
+        Called when the server publishes `set/clients/<id>/external_volume_mirror`,
+        which happens whenever the actual volume authority (e.g. a Particle
+        Photon's knob, or the round-trip echo after a UI slider move) reports
+        a new value. In external mode the audio chain is already pinned at
+        unity, so the only thing to "apply" locally is the Spotify phone-
+        slider mirror: push the value to go-librespot's /player/volume so the
+        Spotify Connect UI tracks the authoritative number.
+
+        go-librespot fires a WS event on every /player/volume change. Its
+        echo-suppression (ECHO_SUPPRESS_S in go_librespot.py) keeps that
+        from feeding back into on_external_volume_change.
+
+        Also: if the value matches what we last received-or-pushed to
+        go-librespot, skip the round trip entirely. The mirror topic
+        fires for EVERY external update — including the round-trip echo
+        from a UI-slider-move (UI → /external_volume → Photon →
+        vinyltable/volume → server → mirror → here). For those echoes
+        we already pushed the same value through; re-pushing would just
+        burn a WS event with no actual phone-slider movement to mirror.
+        This dedup is what breaks the feedback loop when echo-suppression
+        timing falls short (e.g. go-librespot WS arrives ~350ms after
+        our POST, past the 300ms window).
+
+        No-op if external is disabled (defensive).
+        """
+        if not self.external_volume_enabled:
+            return
+        if self.go_librespot is None:
+            return
+        volume = max(0, min(100, int(volume)))
+        if getattr(self, "_last_mirror_pushed", None) == volume:
+            self.logger.debug(f"EVC mirror: {volume}% already pushed, skipping")
+            return
+        self._last_mirror_pushed = volume
+        self.logger.info(f"EVC mirror: pushing {volume}% to go-librespot")
+        try:
+            self.go_librespot.set_volume(volume)
+        except Exception as e:
+            self.logger.warning(f"go-librespot mirror push failed for v={volume}: {e}")
+
+    def _forward_to_external_volume(self, volume: int):
+        """POST a volume value to the server's external-volume dispatch endpoint.
+
+        Used when the phone (Spotify Connect slider) moves the volume and
+        external_volume_controller is enabled — instead of attenuating
+        snapcast locally, we hand the value to the server which routes it
+        out via the configured transport (HTTP or MQTT) to the actual
+        volume authority. Fire-and-forget with a short timeout: we don't
+        block the WS-event handler thread on a slow Particle round trip,
+        and we don't surface failures audibly to the user (the snapcast
+        pin already happened defensively before this call).
+        """
+        try:
+            client_id = self.config_manager.device_config.name
+            host = self.config_manager.server_host
+            url = f"http://{host}:8080/api/clients/{client_id}/external_volume"
+            requests.post(url, json={"value": int(volume)}, timeout=2.0)
+        except Exception as e:
+            # Log but don't raise — phone WS handler must not crash.
+            self.logger.warning(
+                f"External volume forward failed (slider may not reach the external controller): {e}"
+            )
+
+    def set_external_volume_state(self, enabled: bool):
+        """Update the external-volume-controller flag.
+
+        Called by mqtt_client when a `config/clients/<id>/external_volume_controller`
+        retained message arrives. Idempotent — only logs on transitions
+        so we don't spam at every reconnect (the retained payload fires
+        on every subscribe).
+
+        On the OFF→ON transition we proactively pin snapcast to 100 for
+        every source's snapcast-controlled sink. Otherwise: if the user
+        toggled external ON while audio was attenuated locally (say 30%),
+        the local stage would stay at 30% until somebody called set_volume.
+        Without this, the actual chain would be 30% (local) × N% (external)
+        until the next slider move. Idempotent — set_volume(100) is a no-op
+        if snapcast was already at 100.
+        """
+        if bool(enabled) == self.external_volume_enabled:
+            return
+        self.external_volume_enabled = bool(enabled)
+        self.logger.info(
+            f"External volume controller {'ENABLED' if enabled else 'disabled'} "
+            f"— local audio chain will be {'pinned at unity' if enabled else 'used normally'}"
+        )
+        if self.external_volume_enabled:
+            try:
+                client_id = self.config_manager.device_config.name
+                self.snapcast.set_volume(100, client_id)
+                # Also pin every PA sink we manage. Mostly defensive — the
+                # active source's sink already gets pinned on every
+                # _set_source_volume call, but if no slider move happens
+                # after the toggle we'd leave non-active sinks wherever.
+                for source_id, source in self.config_manager.sources.items():
+                    if source.type == 'internal' and source.sink:
+                        try:
+                            self.pulse.set_sink_volume(source.sink, 100)
+                        except Exception:
+                            pass
+            except Exception as e:
+                self.logger.warning(f"EVC enable: failed to pin local chain — {e}")
 
     def _load_state(self):
         """Load previous state from disk"""
@@ -273,14 +394,30 @@ class SourceManager:
             # on_external_volume_change which applies the same dual
             # action. PA snapsink stays pinned at 100 (defensive —
             # idempotent set; same instruction cost as a no-op check).
+            #
+            # EXCEPTION — external_volume_enabled: when the device is
+            # in external-volume-controller mode, the audio chain
+            # is pinned at unity end-to-end. Snapcast goes to 100
+            # (not `volume`) so the external controller owns
+            # attenuation, and we skip the go-librespot push so the
+            # phone slider doesn't snap to whatever value we got told
+            # to "set" (the user set their phone slider; if we POST
+            # back to go-librespot, it overwrites their gesture).
             client_id = self.config_manager.device_config.name
             self.pulse.set_sink_volume(sink_name, 100)
+            snapcast_target = 100 if self.external_volume_enabled else volume
 
-            if not self.snapcast.set_volume(volume, client_id):
+            if not self.snapcast.set_volume(snapcast_target, client_id):
                 self.logger.debug(
-                    f"snapcast set_volume({volume}%) failed for '{client_id}' "
+                    f"snapcast set_volume({snapcast_target}%) failed for '{client_id}' "
                     f"(client may not be connected yet)"
                 )
+            if self.external_volume_enabled:
+                # Skip the go-librespot push entirely — we don't want
+                # the phone slider snapping. Persist the saved value
+                # below (handled by caller) so the UI's per-source
+                # memory still works for next-time-this-source-is-active.
+                return
 
             if self.go_librespot is None:
                 self.logger.warning(
@@ -379,11 +516,39 @@ class SourceManager:
             and self.current_source == source_id
         ):
             client_id = self.config_manager.device_config.name
-            if not self.snapcast.set_volume(volume, client_id):
-                self.logger.debug(
-                    f"snapcast set_volume({volume}%) failed for '{client_id}' "
-                    f"on external change — audio may lag phone slider"
-                )
+            if self.external_volume_enabled:
+                # External-volume mode: don't attenuate locally — keep
+                # snapcast pinned at unity. Instead forward the new
+                # value to the server's /external_volume endpoint so
+                # the configured transport (HTTP or MQTT) carries it
+                # to the actual volume authority (e.g. a Particle
+                # Photon). The server's response also pins our local
+                # chain to 100 as a belt-and-suspenders idempotent
+                # write; we don't await that here — the slider should
+                # feel instant from the user's perspective.
+                self.snapcast.set_volume(100, client_id)  # defensive pin
+                # Echo suppression: if this WS event is the confirmation
+                # of a value we just pushed via apply_external_mirror,
+                # don't forward it back through /external_volume — that
+                # would dispatch another setVolume to the external
+                # device, which would publish its (possibly rounded)
+                # value, which would mirror back, … the cascade ends
+                # at a Photon rounding fixed-point but it's still wrong.
+                # Value-based echo suppression (vs the time-based one
+                # in go_librespot.py) catches the case where the WS
+                # event arrives past the time window but still matches.
+                if getattr(self, "_last_mirror_pushed", None) == volume:
+                    self.logger.debug(
+                        f"on_external_volume_change({volume}): echo of mirror push, skip forward"
+                    )
+                else:
+                    self._forward_to_external_volume(volume)
+            else:
+                if not self.snapcast.set_volume(volume, client_id):
+                    self.logger.debug(
+                        f"snapcast set_volume({volume}%) failed for '{client_id}' "
+                        f"on external change — audio may lag phone slider"
+                    )
 
         self._save_state()
         self.logger.info(

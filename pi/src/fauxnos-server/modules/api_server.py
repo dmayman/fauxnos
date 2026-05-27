@@ -247,6 +247,31 @@ class FauxnosAPIServer:
         def delete_source(client_id, source_id):
             return self.handle_delete_source(client_id, source_id)
 
+        # ── External volume controller (per-client) ───────────────────────────
+        # GET/PUT manage the configuration blob (enabled + URL + payload).
+        # POST /external_volume fires a single volume change through it —
+        # the UI calls this in place of the direct MQTT publish when this
+        # client has external_volume_controller.enabled=true.
+
+        @app.route('/api/clients/<client_id>/external_volume_controller', methods=['GET'])
+        def get_external_volume_controller(client_id):
+            return self.handle_get_external_volume_controller(client_id)
+
+        @app.route('/api/clients/<client_id>/external_volume_controller', methods=['PUT'])
+        def update_external_volume_controller(client_id):
+            return self.handle_update_external_volume_controller(client_id)
+
+        @app.route('/api/clients/<client_id>/external_volume', methods=['POST'])
+        def dispatch_external_volume(client_id):
+            return self.handle_external_volume_dispatch(client_id)
+
+        # Inbound webhook — external device POSTs here when its local
+        # volume changes (knob turn, etc.). The HTTP-transport equivalent
+        # of the MQTT subscription leg.
+        @app.route('/api/clients/<client_id>/external_volume_inbound', methods=['POST'])
+        def inbound_external_volume(client_id):
+            return self.handle_external_volume_inbound(client_id)
+
         # ── Snapcast groups proxy ─────────────────────────────────────────────
 
         @app.route('/api/groups', methods=['GET'])
@@ -563,6 +588,13 @@ class FauxnosAPIServer:
                         # needs_reboot, deployed_at. None-fields render as
                         # "unknown — first update will sync".
                         "deploy": deploy_map.get(client.id),
+                        # External volume controller blob (mirrors per-source
+                        # external_switch shape). When enabled, the UI routes
+                        # this client's volume slider through the configured
+                        # HTTP API instead of attenuating locally.
+                        "external_volume_controller": self._get_client_external_volume_controller(client.id) or {
+                            "enabled": False, "control_api": "", "control_payload": {}, "content_type": "json",
+                        },
                     }
                     for client in clients
                 ]
@@ -1478,6 +1510,127 @@ class FauxnosAPIServer:
                 return True
         return False
 
+    # ── External volume controller (per-client) ────────────────────────────
+    # When enabled, the device-wide volume slider routes through an external
+    # HTTP API (e.g. a Particle Photon's `setVolume` cloud function) instead
+    # of attenuating in the local PA/snapcast chain. The client's local audio
+    # is pinned at unity (volume=100) so the external controller owns
+    # attenuation end-to-end. Schema mirrors per-source `external_switch`.
+
+    def _get_client_external_volume_controller(self, client_id: str) -> Optional[dict]:
+        """Read the external_volume_controller blob for a client.
+
+        Returns the blob with all keys normalized (so callers don't need
+        to .get default on every field), or None if the client doesn't
+        exist. The migration in config_manager ensures the blob exists
+        for every client on load; this is just a defensive read.
+
+        Two transports — `transport` field picks which set of fields is
+        live. The "other" transport's fields stay in storage so toggling
+        doesn't lose user config.
+        """
+        for client in self.config_manager.server_config.get("clients", []):
+            if client.get("id") == client_id:
+                evc = client.get("external_volume_controller") or {}
+                return {
+                    "enabled": bool(evc.get("enabled", False)),
+                    "transport": evc.get("transport", "http"),
+                    # HTTP
+                    "control_api": evc.get("control_api", ""),
+                    "control_payload": evc.get("control_payload", {}),
+                    "content_type": evc.get("content_type", "json"),
+                    # MQTT
+                    "mqtt_topic_out": evc.get("mqtt_topic_out", ""),
+                    "mqtt_payload_out": evc.get("mqtt_payload_out", "{{volume}}/100"),
+                    "mqtt_topic_in": evc.get("mqtt_topic_in", ""),
+                }
+        return None
+
+    def _set_client_external_volume_controller(self, client_id: str, patch: dict) -> bool:
+        """Merge a patch into the external_volume_controller blob.
+
+        Additive (mirrors handle_update_source): only the keys present
+        in `patch` are overwritten; everything else is left intact.
+        Returns False if the client isn't in server_config.
+        """
+        for client in self.config_manager.server_config.get("clients", []):
+            if client.get("id") == client_id:
+                current = client.get("external_volume_controller") or {}
+                for key, value in patch.items():
+                    current[key] = value
+                client["external_volume_controller"] = current
+                self.config_manager.save_server_config()
+                # Republish the retained config so the client picks up the
+                # new state immediately — without this, the client would
+                # keep using its cached flag until the next server boot.
+                self._publish_external_volume_controller_state(client_id, current)
+                return True
+        return False
+
+    def _publish_external_volume_controller_state(self, client_id: str, evc: dict):
+        """Push a client's EVC state to a retained MQTT topic for the client to consume.
+
+        The client subscribes to `config/clients/<own_id>/external_volume_controller`
+        and uses the `enabled` flag to decide whether to (a) pin its local
+        audio chain at unity instead of attenuating, and (b) route phone-
+        slider events (Spotify Connect WS) through the server's external
+        dispatch endpoint. We send the full blob (not just the bool) so a
+        future client revision can act on more fields without a protocol
+        change. Retained so a client reconnecting after a network blip
+        immediately sees the current state.
+        """
+        topic = f"config/clients/{client_id}/external_volume_controller"
+        try:
+            client = getattr(self, "_mqtt_client", None)
+            if client is None:
+                return
+            payload = json.dumps({
+                "enabled": bool(evc.get("enabled", False)),
+                # Keep the payload minimal — the client only needs `enabled`
+                # today, but we ship the transport so future client code
+                # can adapt (e.g. tell the user "you're using MQTT" in logs).
+                "transport": evc.get("transport", "http"),
+            })
+            client.publish(topic, payload, retain=True)
+        except Exception as e:
+            self.log(f"EVC state publish failed for {client_id}: {e}", "WARNING")
+
+    def _broadcast_external_volume_controller_state(self):
+        """Publish retained EVC state for every client. Called on startup
+        so clients reconnecting after a server restart see fresh state."""
+        for client in self.config_manager.server_config.get("clients", []):
+            cid = client.get("id")
+            if not cid:
+                continue
+            evc = client.get("external_volume_controller") or {}
+            self._publish_external_volume_controller_state(cid, evc)
+
+    @staticmethod
+    def _render_volume_payload(payload, value: int):
+        """Substitute the `{{volume}}` placeholder in a payload.
+
+        - dict: shallow walk, replace any string value containing the
+                token with the int rendered as a string (works for the
+                form-encoded Particle case: {"arg": "{{volume}}"}).
+        - str:  plain string replace (raw form bodies / opaque payloads).
+        - other (None, numbers): returned as-is — nothing to render.
+
+        We don't deep-walk nested dicts/lists; if the user has a complex
+        payload structure they can either keep it flat or pre-encode it
+        as a string. The 99% case is a single-level Particle form body.
+        """
+        if isinstance(payload, dict):
+            rendered = {}
+            for k, v in payload.items():
+                if isinstance(v, str) and "{{volume}}" in v:
+                    rendered[k] = v.replace("{{volume}}", str(value))
+                else:
+                    rendered[k] = v
+            return rendered
+        if isinstance(payload, str):
+            return payload.replace("{{volume}}", str(value))
+        return payload
+
     def handle_get_sources(self, client_id: str):
         """Handle GET /api/clients/<client_id>/sources"""
         try:
@@ -1591,6 +1744,185 @@ class FauxnosAPIServer:
             return jsonify({"status": "deleted"})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    # ── External volume controller handlers ────────────────────────────────────
+
+    def handle_get_external_volume_controller(self, client_id: str):
+        """GET /api/clients/<id>/external_volume_controller."""
+        evc = self._get_client_external_volume_controller(client_id)
+        if evc is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+        return jsonify(evc)
+
+    def handle_update_external_volume_controller(self, client_id: str):
+        """PUT /api/clients/<id>/external_volume_controller — patch the blob.
+
+        Accepts any subset of {enabled, transport, control_api, control_payload,
+        content_type, mqtt_topic_out, mqtt_payload_out, mqtt_topic_in}.
+        Missing keys are left at their existing value (mirrors
+        handle_update_source's additive merge pattern).
+
+        After persisting, reconciles MQTT subscriptions so the inbound
+        topic (if any) is live or torn down immediately — no service
+        restart needed for the new binding to take effect.
+        """
+        try:
+            data = request.get_json()
+            if not data or not isinstance(data, dict):
+                return jsonify({"error": "No JSON object provided"}), 400
+            if not self._set_client_external_volume_controller(client_id, data):
+                return jsonify({"error": f"Client {client_id} not found"}), 404
+            # Reapply MQTT subscriptions: adds/removes the inbound topic
+            # to match the new config. Safe no-op if listener client isn't
+            # connected yet (the reconcile bails out cleanly).
+            self._refresh_external_volume_subscriptions()
+            return jsonify({
+                "status": "updated",
+                "external_volume_controller": self._get_client_external_volume_controller(client_id),
+            })
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def handle_external_volume_dispatch(self, client_id: str):
+        """POST /api/clients/<id>/external_volume — dispatch a volume change.
+
+        Called by the UI volume slider when this client's
+        external_volume_controller is enabled, in place of the direct
+        MQTT publish to `set/clients/<id>/volume`. Does two things:
+
+          1. Routes the value out via the configured transport:
+             - HTTP: POST to `control_api` with `{{volume}}` substituted
+             - MQTT: publish to `mqtt_topic_out` with `{{volume}}` substituted
+          2. Publishes `set/clients/<id>/volume = 100` over fauxnos's
+             internal MQTT to pin the local PA/snapcast stage at unity
+             — the external controller owns attenuation end-to-end.
+
+        Body: {"value": <0-100>}
+
+        Response includes the transport-specific status so the UI can
+        surface meaningful errors (HTTP status code vs MQTT publish ok).
+        """
+        try:
+            data = request.get_json() or {}
+            try:
+                value = int(data.get("value"))
+            except (TypeError, ValueError):
+                return jsonify({"error": "value must be an integer 0-100"}), 400
+            if not (0 <= value <= 100):
+                return jsonify({"error": "value out of range (0-100)"}), 400
+
+            evc = self._get_client_external_volume_controller(client_id)
+            if evc is None:
+                return jsonify({"error": f"Client {client_id} not found"}), 404
+            if not evc.get("enabled"):
+                return jsonify({"error": "External volume controller is not enabled for this client"}), 409
+
+            transport = evc.get("transport", "http")
+            result = {"status": "ok", "transport": transport, "value": value}
+
+            if transport == "http":
+                api_url = evc.get("control_api")
+                if not api_url:
+                    return jsonify({"error": "control_api not configured"}), 400
+                rendered = self._render_volume_payload(evc.get("control_payload"), value)
+                try:
+                    if evc.get("content_type") == "form":
+                        resp = http_requests.post(api_url, data=rendered, timeout=5)
+                    else:
+                        resp = http_requests.post(api_url, json=rendered, timeout=5)
+                    result["external_status"] = resp.status_code
+                    self.log(f"External volume HTTP for {client_id}: {resp.status_code} (v={value})", "SUCCESS")
+                except Exception as e:
+                    self.log(f"External volume HTTP error for {client_id}: {e}", "WARNING")
+                    return jsonify({"error": f"External API call failed: {e}"}), 502
+
+            elif transport == "mqtt":
+                topic = evc.get("mqtt_topic_out")
+                if not topic:
+                    return jsonify({"error": "mqtt_topic_out not configured"}), 400
+                # mqtt_payload_out is a plain string template (MQTT payloads
+                # are bytes — we keep them simple strings, not JSON dicts).
+                template = evc.get("mqtt_payload_out") or "{{volume}}"
+                payload_str = template.replace("{{volume}}", str(value))
+                ok = self._publish_mqtt(topic, payload_str)
+                if not ok:
+                    return jsonify({"error": "MQTT publish failed (broker connection?)"}), 502
+                result["mqtt_topic"] = topic
+                result["mqtt_payload"] = payload_str
+                self.log(f"External volume MQTT for {client_id}: {topic} = {payload_str}", "SUCCESS")
+
+            else:
+                return jsonify({"error": f"Unknown transport: {transport!r}"}), 400
+
+            # NOTE — we used to publish `set/clients/<id>/volume = 100` here
+            # to pin the client's local chain at unity, but that pin echoed
+            # back through the client's status republish, briefly snapping
+            # the UI slider to 100 before the Photon's authoritative value
+            # arrived (visible "flicker" on every drag). The client now
+            # consults the retained `config/clients/<id>/external_volume_controller`
+            # topic and pins snapcast=100 internally inside _set_source_volume
+            # whenever external_volume_enabled is True, so the server-side
+            # pin is redundant. Dropped 2026-05-27 to fix the UI flicker.
+
+            return jsonify(result)
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def handle_external_volume_inbound(self, client_id: str):
+        """POST /api/clients/<id>/external_volume_inbound — receive a volume update from an external device.
+
+        Used by the HTTP transport's inbound leg: the user wires their
+        external device to POST here whenever its volume changes locally
+        (e.g. a physical knob turn). We republish to fauxnos's internal
+        `status/clients/<id>/volume`, which the UI's useMqtt hook already
+        subscribes to — slider updates automatically.
+
+        Available regardless of the configured transport — fauxnos doesn't
+        care how the event arrived, just that it's authoritative for this
+        client. (The MQTT transport's inbound leg uses an MQTT subscription
+        instead; same end effect.)
+
+        Body: {"value": <0-100>}
+        """
+        try:
+            data = request.get_json() or {}
+            try:
+                value = int(data.get("value"))
+            except (TypeError, ValueError):
+                return jsonify({"error": "value must be an integer 0-100"}), 400
+            if not (0 <= value <= 100):
+                return jsonify({"error": "value out of range (0-100)"}), 400
+
+            evc = self._get_client_external_volume_controller(client_id)
+            if evc is None:
+                return jsonify({"error": f"Client {client_id} not found"}), 404
+            # We don't gate on enabled — even a disabled config can accept
+            # inbound updates (the user might be wiring up before flipping
+            # the switch). The UI will still display whatever we publish.
+
+            self._publish_external_volume_to_consumers(client_id, value)
+            self.log(f"External volume inbound for {client_id}: {value}", "SUCCESS")
+            return jsonify({"status": "ok", "value": value})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    def _publish_external_volume_to_consumers(self, client_id: str, value: int):
+        """Broadcast an inbound external-volume update to every consumer.
+
+        Two consumers, two topics:
+          - `status/clients/<id>/volume`  — what fauxnos's UI listens to.
+            Updates the slider on every browser/phone running the UI.
+          - `set/clients/<id>/external_volume_mirror` — what the fauxnos
+            CLIENT listens to (when external is enabled). The client
+            pushes the value down to go-librespot so the Spotify phone
+            slider tracks the authoritative external volume. Separate
+            topic so the client never receives its own status echoes.
+
+        Called from both inbound paths — HTTP webhook (handle_external_volume_inbound)
+        and MQTT subscription (_handle_external_volume_mqtt_inbound).
+        """
+        self._publish_mqtt(f"status/clients/{client_id}/volume", str(value))
+        self._publish_mqtt(f"set/clients/{client_id}/external_volume_mirror", str(value))
 
     # ── Snapcast group handlers ────────────────────────────────────────────────
 
@@ -2858,9 +3190,19 @@ rm -- "$0"
         corresponding external API call if one is configured.  This keeps
         external hardware (e.g. Particle Photon input mux) in sync on boot
         and whenever the source changes from any control surface.
+
+        Also subscribes (dynamically — driven by per-client config) to
+        every external-volume MQTT inbound topic so the UI slider can
+        mirror a physical knob turn. See refresh_external_volume_subscriptions().
         """
         import paho.mqtt.client as mqtt_lib
         import threading
+
+        # Map of mqtt_topic_in → client_id. on_message uses this to route
+        # an inbound volume event back to the fauxnos client whose UI
+        # slider should update. Kept in sync by
+        # refresh_external_volume_subscriptions() on every config change.
+        self._evc_topic_to_client = {}
 
         def on_connect(client, userdata, flags, rc):
             if rc == 0:
@@ -2884,8 +3226,27 @@ rm -- "$0"
                     "MQTT listener connected, subscribed to "
                     "mode/hello/ir-state/ir-learn_event/eq"
                 )
+                # Subscribe to every configured external-volume inbound
+                # topic. Done inside on_connect so subscriptions survive
+                # broker reconnects (the listener will fire on_connect
+                # again if mosquitto restarts).
+                self._refresh_external_volume_subscriptions(client)
+                # Broadcast current EVC state for every client (retained)
+                # so they pick up the flag on connect. Without this, a
+                # client reconnecting after the server restarted would
+                # keep using its stale cached flag until the next PUT.
+                self._broadcast_external_volume_controller_state()
 
         def on_message(client, userdata, msg):
+            # External-volume MQTT inbound: topic is user-chosen, not in
+            # the status/clients/... namespace, so it doesn't follow the
+            # rest of this handler's path-based parsing. Check the
+            # reverse map first; if it's an EVC topic, route and return.
+            target_client_id = self._evc_topic_to_client.get(msg.topic)
+            if target_client_id:
+                self._handle_external_volume_mqtt_inbound(target_client_id, msg.payload)
+                return
+
             parts = msg.topic.split("/")
             if len(parts) < 4:
                 return
@@ -2982,6 +3343,84 @@ rm -- "$0"
             self.log(f"External API for {client_id}/{source_id}: {resp.status_code}", "SUCCESS")
         except Exception as e:
             self.log(f"External API error for {client_id}/{source_id}: {e}", "WARNING")
+
+    def _refresh_external_volume_subscriptions(self, mqtt_client=None):
+        """Reconcile MQTT subscriptions for external-volume inbound topics.
+
+        Walks every client's external_volume_controller config, computes the
+        set of (topic → client_id) bindings that should currently be live,
+        and adjusts subscriptions on the listener client to match. Safe to
+        call from on_connect (reapplies after broker reconnect) AND from
+        the PUT handler (picks up config changes immediately).
+
+        Only subscribes when transport=mqtt AND enabled AND topic non-empty.
+        Topics shared across multiple clients are not supported (last writer
+        wins in the reverse map) — keep your topics unique per device.
+        """
+        mqtt_client = mqtt_client or getattr(self, "_mqtt_client", None)
+        if mqtt_client is None:
+            return
+
+        # Build the desired set
+        desired = {}  # topic → client_id
+        for client in self.config_manager.server_config.get("clients", []):
+            evc = client.get("external_volume_controller") or {}
+            if not evc.get("enabled"):
+                continue
+            if evc.get("transport") != "mqtt":
+                continue
+            topic = evc.get("mqtt_topic_in") or ""
+            if not topic:
+                continue
+            desired[topic] = client.get("id")
+
+        current = self._evc_topic_to_client
+        # Unsubscribe from topics that are no longer wanted
+        for topic in list(current.keys()):
+            if topic not in desired:
+                try:
+                    mqtt_client.unsubscribe(topic)
+                except Exception as e:
+                    self.log(f"EVC unsubscribe {topic} failed: {e}", "WARNING")
+        # Subscribe to new topics
+        for topic, cid in desired.items():
+            if topic not in current:
+                try:
+                    mqtt_client.subscribe(topic)
+                    self.log(f"EVC subscribed: {topic} → {cid}", "SUCCESS")
+                except Exception as e:
+                    self.log(f"EVC subscribe {topic} failed: {e}", "WARNING")
+
+        # Atomic swap — reverse map now matches the broker's subscription state
+        self._evc_topic_to_client = desired
+
+    def _handle_external_volume_mqtt_inbound(self, client_id: str, payload_bytes: bytes):
+        """Republish an inbound MQTT volume event into fauxnos's internal status topic.
+
+        Same effect as handle_external_volume_inbound (HTTP), just triggered
+        by the MQTT subscription instead. Payload is expected to be a plain
+        integer 0-100 as ASCII; we clamp and log on parse failure rather
+        than throwing (an external device shouldn't be able to crash us
+        with malformed events).
+        """
+        try:
+            text = payload_bytes.decode("utf-8", errors="replace").strip()
+            # Accept either "75" or "75/100" — be lenient with external devices.
+            slash = text.find("/")
+            if slash > 0:
+                v = int(text[:slash])
+                r = int(text[slash + 1:])
+                if r <= 0:
+                    raise ValueError("bad range")
+                value = max(0, min(100, int(round(v * 100.0 / r))))
+            else:
+                value = int(text)
+        except Exception as e:
+            self.log(f"EVC inbound parse error for {client_id} (raw={payload_bytes!r}): {e}", "WARNING")
+            return
+        value = max(0, min(100, value))
+        self._publish_external_volume_to_consumers(client_id, value)
+        self.log(f"EVC inbound MQTT for {client_id}: {value}", "SUCCESS")
 
     # ── Server runner ──────────────────────────────────────────────────────────
 
