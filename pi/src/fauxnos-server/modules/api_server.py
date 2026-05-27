@@ -203,6 +203,16 @@ class FauxnosAPIServer:
         def get_eq_presets():
             return self.handle_get_eq_presets()
 
+        # ── Playback proxy (go-librespot) ─────────────────────────────────────
+
+        @app.route('/api/clients/<client_id>/playback', methods=['GET'])
+        def get_client_playback(client_id):
+            return self.handle_get_client_playback(client_id)
+
+        @app.route('/api/clients/<client_id>/playback/<action>', methods=['POST'])
+        def post_client_playback(client_id, action):
+            return self.handle_post_client_playback(client_id, action)
+
         @app.route('/api/clients/<client_id>/ir/stream', methods=['GET'])
         def stream_client_ir(client_id):
             return self.handle_stream_client_ir(client_id)
@@ -1192,6 +1202,74 @@ class FauxnosAPIServer:
             'bands': [str(h) for h in self.EQ_BANDS_HZ],
         })
 
+    # ── Playback proxy (go-librespot) ─────────────────────────────────────
+
+    def _client_librespot_port(self, client_id: str) -> Optional[int]:
+        """Return the client's go-librespot HTTP/WS port, or None if the
+        client doesn't exist. Avoids leaking the config_manager shape
+        into the request handlers."""
+        try:
+            client = self.config_manager.get_client_config(client_id)
+            return client.server_port if client else None
+        except Exception:
+            return None
+
+    def handle_get_client_playback(self, client_id: str):
+        """GET /api/clients/<id>/playback — proxy go-librespot's /status.
+
+        Mostly a fallback for UIs that haven't seen the retained MQTT
+        topic yet (the steady-state path is MQTT). Returns the raw
+        go-librespot body untouched so the snapshot has full fidelity
+        for debugging.
+        """
+        port = self._client_librespot_port(client_id)
+        if port is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+        try:
+            r = http_requests.get(f"http://localhost:{port}/status", timeout=2.0)
+            return (r.text, r.status_code, {'Content-Type': 'application/json'})
+        except http_requests.RequestException as e:
+            return jsonify({"error": f"go-librespot unreachable: {e}"}), 502
+
+    def handle_post_client_playback(self, client_id: str, action: str):
+        """POST /api/clients/<id>/playback/<action> — proxy a transport
+        command to go-librespot.
+
+        Whitelisted actions:
+          play, pause, playpause, next, prev, seek
+
+        For seek, body is {"position_ms": <int>}.
+        """
+        port = self._client_librespot_port(client_id)
+        if port is None:
+            return jsonify({"error": f"Client {client_id} not found"}), 404
+
+        action = (action or '').lower()
+        valid = {'play', 'pause', 'playpause', 'next', 'prev', 'seek'}
+        if action not in valid:
+            return jsonify({"error": f"Unknown action: {action}",
+                            "valid": sorted(valid)}), 400
+
+        body = None
+        if action == 'seek':
+            data = request.get_json(silent=True) or {}
+            try:
+                pos = int(data.get('position_ms'))
+            except (TypeError, ValueError):
+                return jsonify({"error": "seek requires {position_ms: int}"}), 400
+            # go-librespot's /player/seek takes {position} in milliseconds.
+            body = {"position": pos}
+
+        url = f"http://localhost:{port}/player/{action}"
+        try:
+            r = http_requests.post(url, json=body, timeout=2.0) if body is not None \
+                else http_requests.post(url, timeout=2.0)
+            # Empty body is normal for transport commands; pass through
+            # the status so the UI can act on 4xx/5xx if needed.
+            return (r.text or '', r.status_code, {'Content-Type': 'application/json'})
+        except http_requests.RequestException as e:
+            return jsonify({"error": f"go-librespot unreachable: {e}"}), 502
+
     def _ingest_client_eq_state(self, client_id: str, eq_block: dict):
         """Write the client's EQ state into server_config (mirror update).
 
@@ -1559,9 +1637,29 @@ class FauxnosAPIServer:
 
             stream_list = [{"id": s.get("id", ""), "status": s.get("status", "")} for s in streams]
 
+            # Build a set of known client ids so we can fall back to
+            # stream-id parsing when the home-source map misses. Streams
+            # are named `source_<client_id>_<source_name>` (e.g.
+            # `source_fauxnos001_airplay`), so the home client is encoded
+            # in the stream name itself — independent of which source
+            # variant is active. The home_source_map only knows the
+            # client's *default* source (usually spotify); switching the
+            # group to airplay otherwise drops home_cid → empty sources.
+            known_client_ids = {c.get("id") for c in raw_clients if c.get("id")}
+
+            def _client_id_from_stream(sid: str) -> Optional[str]:
+                if not sid or not sid.startswith("source_"):
+                    return None
+                rest = sid[len("source_"):]
+                # Greedy match against known client ids — fauxnos<NNN>.
+                for cid in known_client_ids:
+                    if rest == cid or rest.startswith(cid + "_"):
+                        return cid
+                return None
+
             for group in groups:
                 stream_id = group.get("stream_id")
-                home_cid = home_source_map.get(stream_id)
+                home_cid = home_source_map.get(stream_id) or _client_id_from_stream(stream_id)
                 group["home_client_id"] = home_cid
 
                 if home_cid:

@@ -1,0 +1,71 @@
+import { useEffect, useState } from 'react'
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Tuning store — TEMPORARY.
+ *
+ * Lets the user dial in OKLCH clamp ranges for the album-art accent system
+ * via a floating control panel. Once final values are settled they'll be
+ * baked into `buildArtTokens` in GroupCard.jsx and this whole file
+ * (+ TuningPanel.jsx) gets deleted.
+ *
+ * Defaults reflect the values dialed in 2026-05-25; the panel can still
+ * iterate from there.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+export const DEFAULT_TUNING = {
+  cardTintL_dark:   0.275,
+  cardTintCmin_dark: 0.005,
+  cardTintCmax_dark: 0.03,
+  cardTintL_light:  0.965,
+  cardTintCmin_light: 0.005,
+  cardTintCmax_light: 0.01,
+  accentLmin_dark: 0.72,
+  accentLmax_dark: 0.89,
+  accentLmin_light: 0.69,
+  accentLmax_light: 0.70,
+  accentCmin: 0.075,
+  accentCmax: 0.11,
+  trackAlpha_dark: 0.12,
+  trackAlpha_light: 0.19,
+}
+
+const STORAGE_KEY = 'fauxnos.tuning.v1'
+
+function loadInitial() {
+  if (typeof window === 'undefined') return DEFAULT_TUNING
+  try {
+    const raw = window.localStorage.getItem(STORAGE_KEY)
+    if (!raw) return DEFAULT_TUNING
+    return { ...DEFAULT_TUNING, ...JSON.parse(raw) }
+  } catch {
+    return DEFAULT_TUNING
+  }
+}
+
+let state = loadInitial()
+const listeners = new Set()
+
+export function getTuning() {
+  return state
+}
+
+export function setTuning(updates) {
+  state = { ...state, ...updates }
+  try { window.localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) } catch { /* ignore */ }
+  listeners.forEach(l => l(state))
+}
+
+export function resetTuning() {
+  state = { ...DEFAULT_TUNING }
+  try { window.localStorage.removeItem(STORAGE_KEY) } catch { /* ignore */ }
+  listeners.forEach(l => l(state))
+}
+
+export function useTuning() {
+  const [val, setVal] = useState(state)
+  useEffect(() => {
+    listeners.add(setVal)
+    return () => { listeners.delete(setVal) }
+  }, [])
+  return val
+}

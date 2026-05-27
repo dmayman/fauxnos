@@ -1,5 +1,4 @@
 import { useState, useEffect, useRef } from 'react'
-import { Volume1, Volume2, VolumeX } from 'lucide-react'
 
 /**
  * VolumeSlider — custom track-fill slider.
@@ -26,6 +25,43 @@ import { Volume1, Volume2, VolumeX } from 'lucide-react'
  * (see GroupCard's .fx-group-name-subtitle) so the slider area
  * height stays invariant across source switches.
  */
+
+// Solid speaker icon — speaker body is filled; waves render as strokes
+// (filled crescents read as smudges at 16px). State: 'mute' (X), 'low'
+// (1 wave), 'high' (2 waves). The `mute` variant is only used at vol 0.
+export function VolumeIcon({ size = 16, state }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      <path
+        d="M11 4.3L6.4 8H4a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.4l4.6 3.7a1 1 0 0 0 1.6-.8V5.1a1 1 0 0 0-1.6-.8z"
+        fill="currentColor"
+      />
+      {state === 'high' && (
+        <>
+          <path d="M16 9a4 4 0 0 1 0 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          <path d="M19 6a8 8 0 0 1 0 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        </>
+      )}
+      {state === 'low' && (
+        <path d="M16 9a4 4 0 0 1 0 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      )}
+      {state === 'mute' && (
+        <>
+          <path d="M17 9l5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+          <path d="M22 9l-5 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        </>
+      )}
+    </svg>
+  )
+}
+
 export default function VolumeSlider({
   clientId, value, mqtt,
   variant = '',
@@ -36,6 +72,11 @@ export default function VolumeSlider({
 }) {
   const [localVal, setLocalVal] = useState(value)
   const draggingRef = useRef(false)
+  // Restore-on-unmute target. Default to 50 if the user has only ever
+  // seen a 0 value. We refresh this whenever a settled (non-drag) echo
+  // arrives with a positive volume, so unmute returns to the value the
+  // user actually left, not whatever transient value passed through.
+  const lastNonZeroRef = useRef(value > 0 ? value : 50)
 
   const mqttVol = mqtt?.volumes?.[clientId]
   const displayVol = mqttVol ?? value
@@ -46,15 +87,28 @@ export default function VolumeSlider({
     if (!draggingRef.current) setLocalVal(displayVol)
   }, [displayVol])
 
+  useEffect(() => {
+    if (!draggingRef.current && displayVol > 0) {
+      lastNonZeroRef.current = displayVol
+    }
+  }, [displayVol])
+
   const pct = Math.max(0, Math.min(100, localVal))
   const pctStr = `${pct}%`
-  const Icon = pct === 0 ? VolumeX : pct < 40 ? Volume1 : Volume2
+  const iconState = pct === 0 ? 'mute' : pct < 40 ? 'low' : 'high'
+
+  const toggleMute = () => {
+    const next = pct === 0 ? (lastNonZeroRef.current || 50) : 0
+    if (pct > 0) lastNonZeroRef.current = pct
+    setLocalVal(next)
+    mqtt?.publishVolume?.(clientId, next)
+  }
 
   if (external) {
     return (
       <div className={`fx-volume fx-volume-external ${variant}`}>
         {!hideIcon && (
-          <span className="fx-volume-icon"><Icon size={16} /></span>
+          <span className="fx-volume-icon"><VolumeIcon size={16} state={iconState} /></span>
         )}
         {/* Empty track for shape continuity — no fill, no thumb, no input.
             The ::after pseudo on the parent reserves a 32px right slot
@@ -67,7 +121,14 @@ export default function VolumeSlider({
   return (
     <div className={`fx-volume ${variant}`}>
       {!hideIcon && (
-        <span className="fx-volume-icon"><Icon size={16} /></span>
+        <button
+          type="button"
+          className="fx-volume-icon fx-volume-icon-btn"
+          onClick={toggleMute}
+          aria-label={pct === 0 ? 'Unmute' : 'Mute'}
+        >
+          <VolumeIcon size={16} state={iconState} />
+        </button>
       )}
       <div className="fx-volume-track">
         <div className="fx-volume-fill" style={{ width: pctStr }} />

@@ -10,6 +10,12 @@ export function useMqtt() {
   const [modes, setModes] = useState({})
   // calibrations: { [deviceId]: { [sourceId]: 0..100 } }
   const [calibrations, setCalibrations] = useState({})
+  // tracks:    { [deviceId]: { source, title, artist, album, art_url, duration_ms, uri } }
+  // playback:  { [deviceId]: { is_playing, position_ms, updated_at } }
+  // playback_manager.py publishes both retained, so a mid-session UI
+  // join sees current state without waiting for the next event.
+  const [tracks, setTracks] = useState({})
+  const [playback, setPlayback] = useState({})
   const clientRef = useRef(null)
 
   // Track last publish time per client to suppress echoes
@@ -21,7 +27,8 @@ export function useMqtt() {
   const calThrottleRef = useRef({})     // key: `${cid}/${sid}` → { timerId, pendingValue }
 
   useEffect(() => {
-    const wsUrl = `ws://${location.hostname}:9001`
+    const mqttHost = import.meta.env.DEV ? 'fauxnos000.local' : location.hostname
+    const wsUrl = `ws://${mqttHost}:9001`
     const client = mqtt.connect(wsUrl, { reconnectPeriod: 5000 })
     clientRef.current = client
 
@@ -32,6 +39,9 @@ export function useMqtt() {
       client.subscribe('status/clients/+/hello')
       // Per-source calibration: 5-part topic with source_id at the tail
       client.subscribe('status/clients/+/calibration/+')
+      // Now-playing topics published by server's PlaybackManager.
+      client.subscribe('status/clients/+/track')
+      client.subscribe('status/clients/+/playback')
       // Ask every connected client to broadcast hello so we get
       // initial state (including pa_calibrations) without waiting.
       client.publish('get/clients/all/status', '')
@@ -82,6 +92,37 @@ export function useMqtt() {
             }))
           }
         } catch (e) { /* ignore */ }
+      } else if (action === 'track') {
+        // Retained empty payload = session inactive → drop the track.
+        const body = msg.toString()
+        if (!body) {
+          setTracks(prev => {
+            if (!(deviceId in prev)) return prev
+            const next = { ...prev }
+            delete next[deviceId]
+            return next
+          })
+          return
+        }
+        try {
+          const payload = JSON.parse(body)
+          setTracks(prev => ({ ...prev, [deviceId]: payload }))
+        } catch (e) { /* ignore malformed */ }
+      } else if (action === 'playback') {
+        const body = msg.toString()
+        if (!body) {
+          setPlayback(prev => {
+            if (!(deviceId in prev)) return prev
+            const next = { ...prev }
+            delete next[deviceId]
+            return next
+          })
+          return
+        }
+        try {
+          const payload = JSON.parse(body)
+          setPlayback(prev => ({ ...prev, [deviceId]: payload }))
+        } catch (e) { /* ignore malformed */ }
       }
     })
 
@@ -174,6 +215,8 @@ export function useMqtt() {
     volumes,
     modes,
     calibrations,
+    tracks,
+    playback,
     publishVolume,
     setMode,
     publishCalibration,

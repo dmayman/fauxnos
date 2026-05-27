@@ -1,5 +1,7 @@
 import { forwardRef } from 'react'
 import { ChevronDown, ArrowDownToLine, GitBranch } from 'lucide-react'
+import { IconSunFilled, IconMoonFilled, IconDeviceDesktopFilled } from '@tabler/icons-react'
+import { useTheme } from '../hooks/useTheme'
 
 /**
  * Page header — fauxnos wordmark on the left, two update pills + devices
@@ -25,7 +27,7 @@ import { ChevronDown, ArrowDownToLine, GitBranch } from 'lucide-react'
  * per-device update button) lives in DevicePanel.
  */
 const Header = forwardRef(function Header(
-  { status, mqttConnected, onToggleDevices, popoverOpen, serverVersion, clients, onUpdateServer, onUpdateClients },
+  { status, mqttConnected, onToggleDevices, popoverOpen },
   ref,
 ) {
   const ok = status?.status === 'running'
@@ -37,16 +39,11 @@ const Header = forwardRef(function Header(
     <header className="fx-header">
       <h1 className="fx-header-wordmark">fauxnos</h1>
       <div className="fx-row" style={{ gap: 'var(--fx-2)', alignItems: 'center' }}>
-        <UpdatePills
-          serverVersion={serverVersion}
-          clients={clients}
-          onUpdateServer={onUpdateServer}
-          onUpdateClients={onUpdateClients}
-        />
+        <ThemeToggle />
         <button
           ref={ref}
           type="button"
-          className={`fx-btn ghost sm fx-header-pill${popoverOpen ? ' active' : ''}`}
+          className={`fx-btn ghost fx-header-pill${popoverOpen ? ' active' : ''}`}
           onClick={onToggleDevices}
           title="Show devices"
           aria-haspopup="menu"
@@ -54,7 +51,7 @@ const Header = forwardRef(function Header(
         >
           <span className={`fx-dot ${ok ? 'ok' : 'err'}`} />
           <span>{label}</span>
-          <ChevronDown size={14} aria-hidden />
+          <ChevronDown size={16} aria-hidden />
         </button>
       </div>
     </header>
@@ -72,7 +69,7 @@ const Header = forwardRef(function Header(
  * If neither is set: render the small ghost SHA chip (existing behavior
  * when everything is up to date).
  */
-function UpdatePills({ serverVersion, clients, onUpdateServer, onUpdateClients }) {
+export function UpdatePills({ serverVersion, clients, onUpdateServer, onUpdateClients }) {
   if (!serverVersion) return null
 
   const {
@@ -195,6 +192,35 @@ function buildClientsTooltip(clientsNeedingUpdate, total, repoNeedsPull) {
     lines.push('(server will pull from github first so clients get fresh files)')
   }
   return lines.join('\n')
+}
+
+/* Three-state segmented toggle: system / light / dark. Sits in the header
+   next to the devices pill. Persists via useTheme. */
+function ThemeToggle() {
+  const { theme, setTheme } = useTheme()
+  const options = [
+    { id: 'light',  Icon: IconSunFilled,           label: 'Light' },
+    { id: 'system', Icon: IconDeviceDesktopFilled, label: 'Follow system' },
+    { id: 'dark',   Icon: IconMoonFilled,          label: 'Dark' },
+  ]
+  return (
+    <div className="fx-theme-toggle" role="radiogroup" aria-label="Theme">
+      {options.map(o => (
+        <button
+          key={o.id}
+          type="button"
+          role="radio"
+          aria-checked={theme === o.id}
+          className={theme === o.id ? 'active' : ''}
+          title={o.label}
+          aria-label={o.label}
+          onClick={() => setTheme(o.id)}
+        >
+          <o.Icon size={14} stroke={2} />
+        </button>
+      ))}
+    </div>
+  )
 }
 
 export default Header
