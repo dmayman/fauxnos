@@ -1238,22 +1238,8 @@ body {
   padding: var(--fx-6) var(--fx-5) var(--fx-6);
 }
 
-/* Viewport-edge drop indicator. Active only while a removable device is
-   being dragged AND the cursor isn't currently over a group card —
-   mutually exclusive with the per-card .fx-drop highlight, so the user
-   never sees two drop affordances competing. Dropping in this state
-   returns the device to its own home group.
-   The stroke is flush to the viewport edge (no inset) and solid so it
-   reads as the canonical "drop zone is here" stroke. pointer-events:
-   none so it doesn't intercept the drop event itself. */
-body.fx-dragging-background::after {
-  content: "";
-  position: fixed;
-  inset: 0;
-  border: 2px solid var(--fx-text);
-  pointer-events: none;
-  z-index: 1000;
-}
+/* No background-drop affordance — drops on a card join that group; drops
+   anywhere else do nothing (or return-home for a multi-room member). */
 @media (max-width: 600px) {
   .fx-main { padding: var(--fx-4) var(--fx-3) var(--fx-6); }
 }
@@ -1677,6 +1663,36 @@ body.fx-dragging-background::after {
   position: relative;
   width: 100%;
 }
+/* Drag image — synthesized V2-single card placed off-screen at document.body
+   so setDragImage has a fully-rendered element to snapshot. The inner
+   .fx-group-card-v2.v2-single picks up its natural styling from the cascade;
+   we only override the box-shadow to lift it slightly above the resting
+   card's shadow. */
+.fx-device-drag-ghost {
+  position: fixed;
+  top: -10000px;
+  left: 0;
+  pointer-events: none;
+  z-index: 10000;
+}
+.fx-device-drag-card {
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.20);
+}
+/* Match the inactive (V2-single) card's exact height (74px). The cloned row
+   has no source-trigger so it would otherwise collapse to slider+name height;
+   forcing a 40px min-height on the row gives us 1 border + 16 pad + 40 row +
+   16 pad + 1 border = 74px. */
+.fx-device-drag-card .fx-group-row-v2 {
+  min-height: 40px;
+}
+[data-theme="dark"] .fx-device-drag-card {
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .fx-device-drag-card {
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+  }
+}
 .fx-group-card-v2 {
   position: relative;
   background: var(--fx-surface-1);
@@ -1715,8 +1731,17 @@ body.fx-dragging-background::after {
 .fx-group-card-v2.v4-empty {
   background: var(--fx-surface-2);
 }
+.fx-group-card-v2.is-drag-placeholder {
+  background: var(--fx-surface-3);
+  border: 0;
+  box-shadow: none;
+}
+.fx-group-card-v2.is-drag-placeholder > * {
+  visibility: hidden;
+}
 .fx-group-card-v2.fx-card-hover {
   transition:
+    background 460ms cubic-bezier(0.34, 1.5, 0.64, 1),
     border-color var(--fx-dur) var(--fx-ease),
     box-shadow var(--fx-dur) var(--fx-ease);
 }
@@ -1744,20 +1769,68 @@ body.fx-dragging-background::after {
   border-color: var(--fx-line-strong);
 }
 /* Drop indicator — matches the viewport-edge background indicator
-   (2px solid --fx-text). Non-media cards take the dark stroke on the
-   outer chrome; media cards keep the outer tint and put the stroke on
-   the inner .fx-group-rows sub-card so the album-art area isn't fenced
-   off from the drop affordance. Uses outline (not border/box-shadow)
-   so the indicator appears/disappears instantly — the card's existing
-   box-shadow transition would otherwise morph the soft drop shadow
-   into the tight ring over 180ms and back, which reads as glitchy. */
-.fx-group-card-v2:not([data-has-media="true"]).fx-drop {
+   (2px solid --fx-text). It lives on the outer card for every variant so
+   the active drag target reads as the whole device card, not the inner
+   rows panel. Uses outline (not border/box-shadow) so the existing soft
+   card shadow never morphs into a tight ring during dragover. */
+.fx-group-card-v2.fx-drop {
   outline: 2px solid var(--fx-text);
   outline-offset: -2px;
 }
-.fx-group-card-v2[data-has-media="true"].fx-drop .fx-group-rows {
+/* Multi-device cards constrain the drop target to the inner rows sub-card
+   (the white-background "device portion") so the album-art region isn't a
+   valid drop zone. Same outline treatment as the single-card variant. */
+.fx-group-rows.fx-drop {
   outline: 2px solid var(--fx-text);
   outline-offset: -2px;
+}
+
+/* Reveal animation when the media card appears on a previously
+   media-less single-device card (V2 → V3). The wrapper owns the whole
+   motion: height, offset, and opacity all transition together so the
+   media card and its contents travel as one unit. */
+.fx-media-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+  transform: translateY(0);
+  opacity: 1;
+  transition:
+    grid-template-rows 460ms cubic-bezier(0.34, 1.5, 0.64, 1),
+    transform 460ms cubic-bezier(0.34, 1.5, 0.64, 1),
+    opacity 260ms var(--fx-ease);
+  position: relative;
+  z-index: 0;
+  will-change: grid-template-rows, transform, opacity;
+}
+.fx-media-reveal-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+.fx-media-reveal.is-entering {
+  grid-template-rows: 0fr;
+  transform: translateY(18px);
+  opacity: 0;
+}
+/* Rows section sits in front so the media card reads as emerging from
+   behind it. Also smooth the V2 ↔ V3 style swap so the floating-sub-card
+   chrome (white bg, border-top, rounded, shadow) fades in alongside the
+   reveal instead of snapping. */
+.fx-group-card-v2 .fx-group-rows {
+  position: relative;
+  z-index: 1;
+  transition:
+    background 460ms cubic-bezier(0.34, 1.5, 0.64, 1),
+    border-radius 460ms cubic-bezier(0.34, 1.5, 0.64, 1),
+    border-top-color 460ms cubic-bezier(0.34, 1.5, 0.64, 1),
+    box-shadow 460ms cubic-bezier(0.34, 1.5, 0.64, 1),
+    padding 460ms cubic-bezier(0.34, 1.5, 0.64, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-media-reveal,
+  .fx-media-reveal-inner,
+  .fx-group-card-v2 .fx-group-rows {
+    transition: none;
+  }
 }
 
 /* Inner sub-card (V1/V3 only) — sits above the device rows.
@@ -2055,6 +2128,16 @@ body.fx-dragging-background::after {
 .fx-group-row-v2.with-source {
   grid-template-columns: 150px 1fr auto;
 }
+/* Multi-card row placeholder — gray pill matching the dragged ghost's shape,
+   so the "what was here" outline reads as a device card outline rather than
+   an empty row slot. */
+.fx-group-row-v2.is-drag-placeholder {
+  background: var(--fx-surface-3);
+  border-radius: 999px;
+}
+.fx-group-row-v2.is-drag-placeholder > * {
+  visibility: hidden;
+}
 
 /* Device rows are darker by default (single-device groups); muted only
    when there's more than one device in the card (V1 + V4 multi variants).
@@ -2275,7 +2358,7 @@ button.fx-group-row-volume-icon:focus-visible {
    right when the row is active. */
 .fx-source-popover {
   position: fixed;
-  z-index: 260;
+  z-index: 600;
   width: 192px;
   padding: 16px;
   display: flex;

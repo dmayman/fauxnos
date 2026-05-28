@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   IconXFilled,
   IconUnlink,
@@ -88,6 +88,44 @@ function SourceIcon({ sourceId, size = 24 }) {
     sourceId ? IconExternalLinkFilled :
     IconHeadphonesFilled
   return <Icon size={size} aria-hidden />
+}
+
+/* Drag image: a self-contained V2-pill snapshot of the dragged row, regardless
+   of the source card's variant. We don't clone the source card — its layout
+   (media region, art tokens, multi-row stack) leaks into the drag image and
+   fights setDragImage's bounding box. Instead we synthesize a fresh
+   `.fx-group-card-v2.v2-single` shell and drop a stripped row inside, so the
+   natural CSS cascade renders it correctly. Lives at document.body off-screen
+   and is removed on dragend. */
+function buildDeviceDragGhost(row, cardRect) {
+  if (!row || !cardRect) return null
+
+  const ghost = document.createElement('div')
+  ghost.className = 'fx-device-drag-ghost'
+  ghost.style.width = `${cardRect.width}px`
+
+  const card = document.createElement('div')
+  card.className = 'fx-group-card-v2 v2-single fx-device-drag-card'
+  card.setAttribute('data-has-media', 'false')
+
+  const rows = document.createElement('div')
+  rows.className = 'fx-group-rows'
+
+  const clone = row.cloneNode(true)
+  clone.classList.remove('with-source', 'is-drag-placeholder')
+  clone.querySelectorAll(
+    '.fx-row-drag, .fx-group-member-x, .fx-source-trigger, .fx-group-row-name-subtitle'
+  ).forEach((n) => n.remove())
+
+  rows.appendChild(clone)
+  card.appendChild(rows)
+  ghost.appendChild(card)
+  document.body.appendChild(ghost)
+  return ghost
+}
+
+function cleanupDeviceDragGhost() {
+  document.querySelectorAll('.fx-device-drag-ghost').forEach(node => node.remove())
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -383,7 +421,7 @@ function AllRow({ clients, mqtt, homeClientId, onReturnHome, inlineSourceTrigger
 function DeviceRow({
   client, isHome, isMulti, isOnly, isAirplayHome, hasMedia,
   nameMap, mqtt, onReturnHome, onDragStart, onDragEnd,
-  inlineSourceTrigger,
+  inlineSourceTrigger, isDragPlaceholder,
 }) {
   const name = nameMap[client.id] || client.host?.name || client.id
   const vol = mqtt.volumes[client.id] ?? client.config?.volume?.percent ?? 0
@@ -412,20 +450,40 @@ function DeviceRow({
     }
     e.dataTransfer.setData('text/plain', client.id)
     e.dataTransfer.effectAllowed = 'move'
-    if (rowRef.current) e.dataTransfer.setDragImage(rowRef.current, 0, 0)
+    const row = rowRef.current
+    const card = row?.closest('.fx-group-card-v2')
+    if (row && card) {
+      const rowRect = row.getBoundingClientRect()
+      const cardRect = card.getBoundingClientRect()
+      const ghost = buildDeviceDragGhost(row, cardRect)
+      if (ghost) {
+        // .v2-single .fx-group-rows pads 16/24/16/32 — the cloned row sits at
+        // that offset from the ghost's top-left. Mirror the user's grab point
+        // within the row into the same point on the ghost.
+        const SHELL_PAD_LEFT = 32
+        const SHELL_PAD_TOP = 16
+        const offsetX = (e.clientX - rowRect.left) + SHELL_PAD_LEFT
+        const offsetY = (e.clientY - rowRect.top) + SHELL_PAD_TOP
+        e.dataTransfer.setDragImage(ghost, offsetX, offsetY)
+      }
+    }
     onDragStart(client.id)
+  }
+  const handleNameDragEnd = (e) => {
+    cleanupDeviceDragGhost()
+    onDragEnd?.(e)
   }
 
   return (
     <div
       ref={rowRef}
-      className={`fx-group-row-v2${inlineSourceTrigger ? ' with-source' : ''}`}
+      className={`fx-group-row-v2${inlineSourceTrigger ? ' with-source' : ''}${isDragPlaceholder ? ' is-drag-placeholder' : ''}`}
     >
       <div
         className={`fx-group-row-name${isRowDraggable ? ' draggable' : ''}`}
         draggable={isRowDraggable}
         onDragStart={isRowDraggable ? handleNameDragStart : undefined}
-        onDragEnd={isRowDraggable ? onDragEnd : undefined}
+        onDragEnd={isRowDraggable ? handleNameDragEnd : undefined}
       >
         {isRowDraggable && (
           <span className="fx-row-drag" aria-hidden>
@@ -496,7 +554,7 @@ function DeviceRow({
  * ────────────────────────────────────────────────────────────────────────── */
 export default function GroupCard({
   group, nameMap, mqtt,
-  isDragTarget, isDragging,
+  isDragTarget, isDragging, dragClientId, placeholderClientId,
   onDragStart, onDragEnd,
   onDragOverGroup, onDragLeaveGroup, onDropOnGroup,
   onReturnHome, onSwitchSource, onOpenDevice,
@@ -541,6 +599,12 @@ export default function GroupCard({
     : (hasMedia ? 'v3' : 'v2')
 
   const isSingleNoMedia = variant === 'v2'
+  const isDraggedSingleCard = !isMulti && sorted[0]?.id === placeholderClientId
+  // Source card: this group contains the device being dragged. Used to disable
+  // drop affordance on the source so the placeholder doesn't double as a drop
+  // target. Uses the immediate dragClientId (not the rAF-delayed placeholder)
+  // so the source is gated from the first dragover.
+  const isDragSource = !!dragClientId && group.clients.some(c => c.id === dragClientId)
   // Multi-room groups always show a media card — when no track is playing,
   // we render a skeleton "Connect Spotify to begin" zero state so users
   // understand the slot exists and what fills it. Single-device cards
@@ -548,6 +612,62 @@ export default function GroupCard({
   // playing, since the same group is just one row.
   const showMediaCard = hasMedia || isMulti // V1, V3, V4
   const isEmptyMedia = isMulti && !hasMedia // V4 zero-state
+
+  // Reveal animation: when the media card appears (was hidden, now visible),
+  // grow the card height while the entire media region moves as one piece.
+  // On exit the same shape runs in reverse — we keep the MediaCard mounted
+  // with the last known props until the transition finishes, then drop it.
+  // Two rAFs sandwich the enter initial-state paint so the transition fires
+  // instead of jumping straight to the final values.
+  const ANIM_MS = 460
+  const prevShowMediaRef = useRef(null)
+  const [renderMedia, setRenderMedia] = useState(showMediaCard)
+  const [mediaCollapsed, setMediaCollapsed] = useState(false)
+  const exitTimerRef = useRef(null)
+  const mediaPropsRef = useRef(null)
+  if (showMediaCard) {
+    // Snapshot every render while the card is supposed to be visible so the
+    // exit animation has stable content to display after `track` is cleared.
+    mediaPropsRef.current = {
+      clientId: homeClientId,
+      sourceId: currentSourceId,
+      track,
+      playback,
+      empty: isEmptyMedia,
+      groupName: nameMap[homeClientId] || homeClient?.host?.name || homeClientId,
+    }
+  }
+  useLayoutEffect(() => {
+    const prev = prevShowMediaRef.current
+    prevShowMediaRef.current = showMediaCard
+    if (prev === null) {
+      setRenderMedia(showMediaCard)
+      return
+    }
+    if (exitTimerRef.current) {
+      clearTimeout(exitTimerRef.current)
+      exitTimerRef.current = null
+    }
+    if (showMediaCard && !prev) {
+      setRenderMedia(true)
+      setMediaCollapsed(true)
+      const r1 = requestAnimationFrame(() => {
+        requestAnimationFrame(() => setMediaCollapsed(false))
+      })
+      return () => cancelAnimationFrame(r1)
+    }
+    if (!showMediaCard && prev) {
+      setMediaCollapsed(true)
+      exitTimerRef.current = setTimeout(() => {
+        setRenderMedia(false)
+        setMediaCollapsed(false)
+        exitTimerRef.current = null
+      }, ANIM_MS)
+    }
+  }, [showMediaCard])
+  useEffect(() => () => {
+    if (exitTimerRef.current) clearTimeout(exitTimerRef.current)
+  }, [])
   // Anchored trigger sits over the media card; inline only when there's
   // no media card to anchor against (V2).
   // TEMP TEST 2026-05-26: source trigger lives inline next to the first row
@@ -564,6 +684,9 @@ export default function GroupCard({
   // alike.
 
   const handleDragOver = (e) => {
+    // Source card is never a drop target — without preventDefault the drop
+    // event won't fire and the browser shows the no-drop cursor.
+    if (isDragSource) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'move'
     onDragOverGroup()
@@ -604,16 +727,29 @@ export default function GroupCard({
     />
   ) : null
 
+  // Drop zone: single cards keep the whole outer card as the target (the
+  // card body is the device portion). Multi cards constrain the drop zone
+  // to the inner `.fx-group-rows` sub-card so the album-art region isn't
+  // treated as a valid drop target. fx-drop outline follows the same
+  // placement so the indicator hugs the actual drop area.
+  const dropHandlers = {
+    onDragOver: handleDragOver,
+    onDragLeave: onDragLeaveGroup,
+    onDrop: (e) => { e.preventDefault(); onDropOnGroup() },
+  }
+  const cardDropHandlers = isMulti ? {} : dropHandlers
+  const rowsDropHandlers = isMulti ? dropHandlers : {}
+  const cardDropClass = !isMulti && isDragTarget ? ' fx-drop' : ''
+  const rowsDropClass = isMulti && isDragTarget ? ' fx-drop' : ''
+
   return (
-    <div className="fx-group-row-v2-wrap">
+    <div className="fx-group-row-v2-wrap" data-group-card-id={group.home_client_id || group.id}>
       <div
         ref={cardRef}
-        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${isDragTarget ? ' fx-drop' : ''}`}
+        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}`}
         data-has-media={hasMedia ? 'true' : 'false'}
         style={artStyle}
-        onDragOver={handleDragOver}
-        onDragLeave={onDragLeaveGroup}
-        onDrop={(e) => { e.preventDefault(); onDropOnGroup() }}
+        {...cardDropHandlers}
         onDoubleClick={(e) => {
           // Quick path to settings: double-click name area opens device panel
           if (e.target.closest('.fx-group-row-name')) {
@@ -621,18 +757,15 @@ export default function GroupCard({
           }
         }}
       >
-        {showMediaCard && (
-          <MediaCard
-            clientId={homeClientId}
-            sourceId={currentSourceId}
-            track={track}
-            playback={playback}
-            empty={isEmptyMedia}
-            groupName={nameMap[homeClientId] || homeClient?.host?.name || homeClientId}
-          />
+        {renderMedia && mediaPropsRef.current && (
+          <div className={`fx-media-reveal${mediaCollapsed ? ' is-entering' : ''}`}>
+            <div className="fx-media-reveal-inner">
+              <MediaCard {...mediaPropsRef.current} />
+            </div>
+          </div>
         )}
         {anchoredTrigger}
-        <div className="fx-group-rows">
+        <div className={`fx-group-rows${rowsDropClass}`} {...rowsDropHandlers}>
           {isMulti && (
             <AllRow
               clients={sorted}
@@ -657,6 +790,7 @@ export default function GroupCard({
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
               inlineSourceTrigger={!isMulti && c.id === homeClientId ? inlineTrigger : null}
+              isDragPlaceholder={isMulti && c.id === placeholderClientId}
             />
           ))}
         </div>

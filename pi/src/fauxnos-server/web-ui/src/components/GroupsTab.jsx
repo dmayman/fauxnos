@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react'
+import { useState, useCallback, useRef, useEffect, useMemo, useLayoutEffect } from 'react'
 import { Speaker, Plus } from 'lucide-react'
 import GroupCard from './GroupCard'
 import { apiFetch } from '../api'
@@ -11,8 +11,11 @@ const resolveHomeClientId = (g) =>
   || (g.stream_id?.match(/source_(fauxnos\d+)_/)?.[1])
   || g.clients?.[0]?.id
 
+const hasTrackMeta = (track) => !!track && (track.title || track.artist)
+
 export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevice, onAddDevice }) {
   const [dragClientId, setDragClientId] = useState(null)
+  const [placeholderClientId, setPlaceholderClientId] = useState(null)
   const [dropTargetGroupId, setDropTargetGroupId] = useState(null)
   // Refs track the live drag because dragend fires after dropOnGroup's
   // setDragClientId(null), so reading state from a closure can race.
@@ -25,6 +28,13 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
   const [optimisticGroups, setOptimisticGroups] = useState(null)
   useEffect(() => { setOptimisticGroups(null) }, [groups])
   const effectiveGroups = optimisticGroups || groups
+  // Ungroup anchors: when a device is ungrouped from a multi-card we pin its
+  // newly-standalone home group to sit immediately below the source card,
+  // overriding the default tier sort. Entries are cleared when the device
+  // joins another group again or its source multi-card disappears.
+  const [ungroupAnchors, setUngroupAnchors] = useState(() => new Map())
+  const gridRef = useRef(null)
+  const prevGroupRectsRef = useRef(new Map())
 
   // Name lookup
   const nameMap = {}
@@ -32,20 +42,96 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
     nameMap[c.client_id] = c.name
   }
 
-  // Filter to groups with clients, then sort: playing > grouped > idle.
+  // Stream-id pattern `source_fauxnosNNN_*` encodes the home device. A
+  // client's "home group" is the group whose stream_id starts with that
+  // client's own id — it always exists in the data (even when empty and
+  // therefore hidden from the visible list). Defined up here because the
+  // anchor reordering in activeGroups below depends on it.
+  const isHomeGroupOf = (group, clientId) => {
+    const m = group.stream_id?.match(/source_(fauxnos\d+)_/)
+    return m?.[1] === clientId
+  }
+
+  // Filter to groups with clients, then sort: media > playing > grouped > idle.
+  // Track metadata is the authoritative "this card has media" signal used by
+  // GroupCard, so rechecking this on every render keeps media devices pinned
+  // above inactive devices even when playback state arrives late or briefly
+  // reports not-playing.
   // Stable within each tier via the index tiebreak so cards don't jitter
   // when unrelated state (e.g. volume) changes.
   const tierOf = (g) => {
     const home = resolveHomeClientId(g)
-    if (home && mqtt.playback[home]?.is_playing) return 0
-    if ((g.clients?.length || 0) > 1) return 1
-    return 2
+    if (home && hasTrackMeta(mqtt.tracks[home])) return 0
+    if (home && mqtt.playback[home]?.is_playing) return 1
+    if ((g.clients?.length || 0) > 1) return 2
+    return 3
   }
-  const activeGroups = effectiveGroups
+  const tierSorted = effectiveGroups
     .filter(g => g.clients?.length > 0)
     .map((g, i) => ({ g, i, t: tierOf(g) }))
     .sort((a, b) => a.t - b.t || a.i - b.i)
     .map(x => x.g)
+  // Apply ungroup anchors after the tier sort. For each anchored (clientId,
+  // sourceGroupId) entry, move clientId's home group to sit immediately after
+  // sourceGroupId. Multiple anchors against the same source land in
+  // most-recent-first order (so the latest ungroup is closest to the card).
+  const activeGroups = (() => {
+    if (ungroupAnchors.size === 0) return tierSorted
+    const result = [...tierSorted]
+    ungroupAnchors.forEach((sourceGroupId, clientId) => {
+      const homeIdx = result.findIndex(
+        g => g.clients?.some(c => c.id === clientId) && isHomeGroupOf(g, clientId)
+      )
+      const sourceIdx = result.findIndex(g => g.id === sourceGroupId)
+      if (homeIdx === -1 || sourceIdx === -1) return
+      let target = sourceIdx + 1
+      if (homeIdx === target) return
+      const [home] = result.splice(homeIdx, 1)
+      if (homeIdx < target) target -= 1
+      result.splice(target, 0, home)
+    })
+    return result
+  })()
+  // FLIP and React key by home_client_id rather than group.id. The
+  // optimistic ungroup path synthesizes a group with id `optimistic_X_home`
+  // which the server then replaces with a real id — using home_client_id
+  // keeps the React component (and FLIP rect lookup) stable across that
+  // swap, so the post-ungroup refresh no longer unmounts/flashes the card.
+  const stableKey = (g) => g.home_client_id || g.id
+  const activeGroupOrderKey = activeGroups.map(stableKey).join('|')
+
+  useLayoutEffect(() => {
+    const grid = gridRef.current
+    if (!grid) return
+    const cards = Array.from(grid.querySelectorAll('[data-group-card-id]'))
+    const previous = prevGroupRectsRef.current
+    const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+    if (!reduceMotion) {
+      cards.forEach((node) => {
+        const id = node.getAttribute('data-group-card-id')
+        const prev = previous.get(id)
+        const next = node.getBoundingClientRect()
+        if (!prev) return
+        const dy = prev.top - next.top
+        if (Math.abs(dy) < 1) return
+        node.animate(
+          [
+            { transform: `translateY(${dy}px)` },
+            { transform: 'translateY(0)' },
+          ],
+          {
+            duration: 320,
+            easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)',
+          },
+        )
+      })
+    }
+
+    prevGroupRectsRef.current = new Map(
+      cards.map(node => [node.getAttribute('data-group-card-id'), node.getBoundingClientRect()])
+    )
+  }, [activeGroupOrderKey])
 
   // Locate a client object by id across all groups in `base`. We need the
   // object (not just the id) so we can re-insert it into a different
@@ -57,15 +143,6 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
       if (found) return found
     }
     return null
-  }
-
-  // Stream-id pattern `source_fauxnosNNN_*` encodes the home device. A
-  // client's "home group" is the group whose stream_id starts with that
-  // client's own id — it always exists in the data (even when empty and
-  // therefore hidden from the visible list).
-  const isHomeGroupOf = (group, clientId) => {
-    const m = group.stream_id?.match(/source_(fauxnos\d+)_/)
-    return m?.[1] === clientId
   }
 
   const handleJoinGroup = useCallback(async (clientId, targetHomeClientId) => {
@@ -96,6 +173,22 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
   }, [onRefresh, groups])
 
   const handleReturnHome = useCallback(async (clientId) => {
+    // Record an ungroup anchor so the new home card pins right below the
+    // source multi-card instead of dropping to the bottom of the tier sort.
+    // Only meaningful when the device is currently in a multi-device group.
+    const sourceMulti = (optimisticGroups || groups).find(
+      g => (g.clients?.length || 0) > 1 && g.clients.some(c => c.id === clientId)
+    )
+    if (sourceMulti) {
+      setUngroupAnchors(prev => {
+        const next = new Map(prev)
+        // Reinsert so the newest anchor sorts to the front when multiple
+        // devices are ungrouped from the same source (Map iteration order).
+        next.delete(clientId)
+        next.set(clientId, sourceMulti.id)
+        return next
+      })
+    }
     // Optimistic: pull clientId out of whatever group it's in and drop
     // it back into its own home group. The home group exists in `groups`
     // as long as the server returns it (even empty); when it doesn't —
@@ -137,7 +230,31 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
       console.error('Return home failed:', e)
       onRefresh()
     }
-  }, [onRefresh, groups])
+  }, [onRefresh, groups, optimisticGroups])
+
+  // Drop stale ungroup anchors: when the device has rejoined another group
+  // (or its source multi-card no longer exists) the anchor is no longer
+  // meaningful, so let the natural tier sort take over again.
+  useEffect(() => {
+    if (ungroupAnchors.size === 0) return
+    setUngroupAnchors(prev => {
+      let changed = false
+      const next = new Map(prev)
+      prev.forEach((sourceGroupId, clientId) => {
+        const homeGroup = groups.find(
+          g => g.clients?.some(c => c.id === clientId) && isHomeGroupOf(g, clientId)
+        )
+        const sourceExists = groups.find(g => g.id === sourceGroupId)
+        if (!homeGroup || !sourceExists) {
+          next.delete(clientId)
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+    // isHomeGroupOf is a stable in-component helper
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups])
 
   const handleSwitchSource = useCallback(async (groupId, homeClientId, sourceId) => {
     // Optimistic update — show new source immediately
@@ -157,6 +274,9 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
   const handleDragStart = useCallback((clientId) => {
     dragRef.current = { clientId, droppedOnGroup: false }
     setDragClientId(clientId)
+    requestAnimationFrame(() => {
+      if (dragRef.current.clientId === clientId) setPlaceholderClientId(clientId)
+    })
   }, [])
 
   // Fires on every drag termination — whether dropped on a group, dropped on
@@ -167,7 +287,9 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
     const { clientId, droppedOnGroup } = dragRef.current
     dragRef.current = { clientId: null, droppedOnGroup: false }
     setDragClientId(null)
+    setPlaceholderClientId(null)
     setDropTargetGroupId(null)
+    setActiveSlotIndex(null)
     if (!clientId || droppedOnGroup) return
 
     const sourceGroup = groups.find(g => g.clients?.some(c => c.id === clientId))
@@ -177,9 +299,11 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
     if (eligible) handleReturnHome(clientId)
   }, [groups, handleReturnHome])
 
-  // "Removable" means dropping on the background actually does something —
+  // "Removable" means dropping on background/slot actually changes anything —
   // the dragged client is in a multi-device group AND it's not the home
-  // device of that group (home can't be ejected).
+  // device of that group (home can't be ejected). For non-removable drags
+  // (e.g. dragging a standalone device), slot drops still resolve cleanly
+  // but the API call is a no-op since the device is already where it'd land.
   const isRemovableDrag = useMemo(() => {
     if (!dragClientId) return false
     const sourceGroup = effectiveGroups.find(
@@ -189,17 +313,6 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
       && (sourceGroup.clients?.length || 0) > 1
       && sourceGroup.home_client_id !== dragClientId
   }, [dragClientId, effectiveGroups])
-
-  // Viewport-stroke indicator: live only while the cursor is over the
-  // background (no group card claimed it). Mutually exclusive with the
-  // per-card .fx-drop highlight so the user never sees two competing
-  // drop affordances at once.
-  const showBackgroundDropZone = isRemovableDrag && !dropTargetGroupId
-  useEffect(() => {
-    if (!showBackgroundDropZone) return
-    document.body.classList.add('fx-dragging-background')
-    return () => document.body.classList.remove('fx-dragging-background')
-  }, [showBackgroundDropZone])
 
   // Document-level dragover/drop. Without these, the browser treats the
   // page background as a non-drop region: the drag image plays a revert
@@ -220,6 +333,7 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
         handleReturnHome(clientId)
       }
       setDragClientId(null)
+      setPlaceholderClientId(null)
       setDropTargetGroupId(null)
     }
     document.addEventListener('dragover', onDragOver)
@@ -253,6 +367,7 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
 
     handleJoinGroup(dragClientId, targetGroup.home_client_id)
     setDragClientId(null)
+    setPlaceholderClientId(null)
   }, [dragClientId, groups, handleJoinGroup])
 
   if (activeGroups.length === 0) {
@@ -275,17 +390,20 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
     )
   }
 
+  const isDragging = !!dragClientId
   return (
     <div className="fx-page">
-      <div className="fx-groups-grid">
-        {activeGroups.map(group => (
+      <div className="fx-groups-grid" ref={gridRef}>
+        {activeGroups.map((group) => (
           <GroupCard
-            key={group.id}
+            key={stableKey(group)}
             group={group}
             nameMap={nameMap}
             mqtt={mqtt}
             isDragTarget={dropTargetGroupId === group.id}
-            isDragging={!!dragClientId}
+            isDragging={isDragging}
+            dragClientId={dragClientId}
+            placeholderClientId={placeholderClientId}
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
             onDragOverGroup={() => handleDragOverGroup(group.id)}
