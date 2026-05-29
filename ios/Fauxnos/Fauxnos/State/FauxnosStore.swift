@@ -38,6 +38,16 @@ final class FauxnosStore: ObservableObject {
     private var mqtt: MQTTClient?
     private var refreshTask: Task<Void, Never>?
 
+    // Outbound volume state (FX-18). Mirrors web `useMqtt`: optimistic write,
+    // a per-client throttle so a drag sends at most every THROTTLE, and an
+    // echo-suppression window so the slow inbound status echo doesn't fight
+    // the optimistic value mid-drag.
+    private static let echoSuppress: TimeInterval = 2.0     // ECHO_SUPPRESS_MS
+    private static let throttle: UInt64 = 100_000_000       // THROTTLE_MS (ns)
+    private var lastVolumePublish: [String: Date] = [:]
+    private var volumeThrottleTask: [String: Task<Void, Never>] = [:]
+    private var volumePending: [String: Int] = [:]
+
     /// Topics mirror the set the web `useMqtt` hook subscribes to. The 5-part
     /// calibration topic carries `source_id` in its tail.
     private let subscriptions = [
@@ -124,9 +134,20 @@ final class FauxnosStore: ObservableObject {
         switch action {
         case "volume":
             if let v = Int(String(decoding: payload, as: UTF8.self)) {
+                // Echo suppression: while a publish to this client is still
+                // "fresh", our optimistic value wins and we drop the echo
+                // (avoids the slider snapping back mid-drag).
+                if let last = lastVolumePublish[deviceId],
+                   Date().timeIntervalSince(last) < Self.echoSuppress {
+                    return
+                }
                 volumes[deviceId] = v
             }
         case "mode":
+            // A mode change = new source context; the client republishes the
+            // new source's stored volume right after. Clear the suppression
+            // window so that volume echo isn't dropped (mirror web).
+            lastVolumePublish[deviceId] = nil
             modes[deviceId] = String(decoding: payload, as: UTF8.self)
         case "track":
             // Retained empty payload = session inactive → drop the track.
@@ -170,6 +191,47 @@ final class FauxnosStore: ObservableObject {
     /// Live volume for a client: MQTT overlay wins, else the REST snapshot value.
     func volume(for client: SnapClient) -> Int {
         volumes[client.id] ?? client.config.volume.percent
+    }
+
+    /// Whether a device's volume is owned outside fauxnos (AirPlay / iPhone is
+    /// the authority). The web detects this via the live `airplay` mode and
+    /// shows a "Volume controlled by iPhone" caption instead of a slider.
+    func isExternalVolume(_ clientId: String) -> Bool {
+        modes[clientId] == "airplay"
+    }
+
+    // MARK: - Volume control (FX-18)
+
+    /// Set one device's volume: optimistic overlay + throttled QoS-0 publish to
+    /// `set/clients/<id>/volume`. The resulting status echoes back over MQTT but
+    /// is suppressed for `echoSuppress` so the optimistic value stays stable
+    /// while dragging. Mirrors web `useMqtt.publishVolume`.
+    func publishVolume(_ value: Int, clientId: String) {
+        let v = max(0, min(100, value))
+        volumes[clientId] = v                       // optimistic
+        lastVolumePublish[clientId] = Date()        // open echo-suppress window
+
+        // Throttle: if a window is already running, just stash the latest value
+        // for the trailing-edge send.
+        if volumeThrottleTask[clientId] != nil {
+            volumePending[clientId] = v
+            return
+        }
+        sendVolume(v, clientId: clientId)
+        volumeThrottleTask[clientId] = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.throttle)
+            guard let self else { return }
+            if let pending = self.volumePending[clientId] {
+                self.sendVolume(pending, clientId: clientId)
+                self.lastVolumePublish[clientId] = Date()
+                self.volumePending[clientId] = nil
+            }
+            self.volumeThrottleTask[clientId] = nil
+        }
+    }
+
+    private func sendVolume(_ v: Int, clientId: String) {
+        mqtt?.publish(topic: "set/clients/\(clientId)/volume", payload: Data(String(v).utf8))
     }
 
     /// Current source id for a group: live mode wins, else the stream-name suffix.

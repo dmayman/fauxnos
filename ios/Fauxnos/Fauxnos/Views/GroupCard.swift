@@ -219,13 +219,16 @@ struct GroupCard: View {
         return String(format: "%d:%02d", total / 60, total % 60)
     }
 
-    // MARK: - Per-device volume (read-only — control is FX-18)
+    // MARK: - Volume (FX-18: group fan-out + per-device sliders)
 
+    @ViewBuilder
     private var volumeRows: some View {
+        let isMulti = group.clients.count > 1
+        if isMulti {
+            GroupVolumeSlider(clients: group.clients)
+        }
         ForEach(group.clients) { client in
-            DeviceVolumeRow(name: client.host.name,
-                            volume: store.volume(for: client),
-                            showName: group.clients.count > 1)
+            DeviceVolumeRow(client: client, showName: isMulti)
         }
     }
 }
@@ -282,32 +285,168 @@ private struct TransportButton: View {
     }
 }
 
-// MARK: - Per-device volume (read-only)
+// MARK: - Volume glyph
 
+/// SF-symbol speaker glyph that ramps with level — mute (slash) only at 0,
+/// matching the web `VolumeIcon` states (mute / low / high).
+private func volumeGlyph(_ v: Int) -> String {
+    if v == 0 { return "speaker.slash.fill" }
+    if v < 40 { return "speaker.wave.1.fill" }
+    return "speaker.wave.2.fill"
+}
+
+// MARK: - Per-device volume slider
+
+/// One device's live volume. Tap the glyph to mute/unmute (restores the last
+/// non-zero level). External-volume devices (AirPlay) show the controlled-by
+/// caption instead of a slider — we don't fight the iPhone for authority.
 struct DeviceVolumeRow: View {
-    let name: String
-    let volume: Int
+    @EnvironmentObject private var store: FauxnosStore
+    let client: SnapClient
     let showName: Bool
+
+    @State private var editing = false
+    @State private var dragValue: Double = 0
+    @State private var lastNonZero: Int = 50
+
+    private var current: Int { store.volume(for: client) }
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: volume == 0 ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .frame(width: 18)
-            if showName {
-                Text(name)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 96, alignment: .leading)
+            if store.isExternalVolume(client.id) {
+                Image(systemName: "airplayaudio")
+                    .font(.caption).foregroundStyle(.secondary).frame(width: 18)
+                if showName { nameLabel }
+                Text("Volume controlled by iPhone")
+                    .font(.caption).foregroundStyle(.tertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                     .lineLimit(1)
+            } else {
+                Button {
+                    if current > 0 { lastNonZero = current }
+                    let next = current == 0 ? max(lastNonZero, 1) : 0
+                    store.publishVolume(next, clientId: client.id)
+                } label: {
+                    Image(systemName: volumeGlyph(displayValue))
+                        .font(.caption).foregroundStyle(.secondary).frame(width: 18)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(displayValue == 0 ? "Unmute \(client.host.name)" : "Mute \(client.host.name)")
+
+                if showName { nameLabel }
+                Slider(value: binding, in: 0...100) { isEditing in
+                    editing = isEditing
+                    if isEditing { dragValue = Double(current) }
+                }
+                .tint(.accentColor)
+                .accessibilityLabel("\(client.host.name) volume")
+                Text("\(displayValue)")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
+                    .frame(width: 28, alignment: .trailing)
             }
-            ProgressView(value: Double(volume), total: 100)
-                .tint(.secondary)
-            Text("\(volume)")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.tertiary)
+        }
+    }
+
+    private var nameLabel: some View {
+        Text(client.host.name)
+            .font(.caption).foregroundStyle(.secondary)
+            .frame(width: 96, alignment: .leading).lineLimit(1)
+    }
+
+    private var displayValue: Int { editing ? Int(dragValue.rounded()) : current }
+
+    /// During a drag the slider reads the local value (so a lagging MQTT echo
+    /// can't yank it); each move publishes optimistically through the store.
+    private var binding: Binding<Double> {
+        Binding(
+            get: { editing ? dragValue : Double(current) },
+            set: { newVal in
+                dragValue = newVal
+                store.publishVolume(Int(newVal.rounded()), clientId: client.id)
+            }
+        )
+    }
+}
+
+// MARK: - Group ("All") volume slider — offset-preserving fan-out
+
+/// Group-level volume across a multi-room card. Displays the member average;
+/// dragging applies the delta to every member, preserving each device's offset
+/// from the average (pre-tuned room balance survives a global move) — mirroring
+/// the web `AllRow`. Mute/unmute snapshots and restores each member's level.
+struct GroupVolumeSlider: View {
+    @EnvironmentObject private var store: FauxnosStore
+    let clients: [SnapClient]
+
+    @State private var editing = false
+    @State private var dragAvg: Double = 0
+    @State private var baseAvg: Int = 0
+    @State private var baseVols: [String: Int] = [:]
+    @State private var preMute: [String: Int]?
+
+    private var avg: Int {
+        guard !clients.isEmpty else { return 0 }
+        let total = clients.reduce(0) { $0 + store.volume(for: $1) }
+        return Int((Double(total) / Double(clients.count)).rounded())
+    }
+
+    private var displayAvg: Int { editing ? Int(dragAvg.rounded()) : avg }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Button {
+                toggleMuteAll()
+            } label: {
+                Image(systemName: volumeGlyph(displayAvg))
+                    .font(.caption).foregroundStyle(.secondary).frame(width: 18)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(displayAvg == 0 ? "Unmute all" : "Mute all")
+
+            Text("All")
+                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                .frame(width: 96, alignment: .leading)
+
+            Slider(value: binding, in: 0...100) { isEditing in
+                editing = isEditing
+                if isEditing {
+                    baseAvg = avg
+                    dragAvg = Double(avg)
+                    baseVols = Dictionary(uniqueKeysWithValues: clients.map { ($0.id, store.volume(for: $0)) })
+                }
+            }
+            .tint(.accentColor)
+            .accessibilityLabel("All devices volume")
+
+            Text("\(displayAvg)")
+                .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
                 .frame(width: 28, alignment: .trailing)
+        }
+    }
+
+    private var binding: Binding<Double> {
+        Binding(
+            get: { editing ? dragAvg : Double(avg) },
+            set: { newVal in
+                dragAvg = newVal
+                let delta = Int(newVal.rounded()) - baseAvg
+                for c in clients {
+                    let base = baseVols[c.id] ?? store.volume(for: c)
+                    store.publishVolume(base + delta, clientId: c.id)  // store clamps 0…100
+                }
+            }
+        )
+    }
+
+    /// Mute all → snapshot each member and zero them; unmute → restore the
+    /// snapshot, so per-room balance is preserved across the toggle.
+    private func toggleMuteAll() {
+        if avg == 0, let saved = preMute {
+            for c in clients { store.publishVolume(saved[c.id] ?? 50, clientId: c.id) }
+            preMute = nil
+        } else {
+            preMute = Dictionary(uniqueKeysWithValues: clients.map { ($0.id, store.volume(for: $0)) })
+            for c in clients { store.publishVolume(0, clientId: c.id) }
         }
     }
 }

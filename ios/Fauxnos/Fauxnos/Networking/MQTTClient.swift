@@ -85,6 +85,18 @@ final class MQTTClient: NSObject {
         }
     }
 
+    /// Public outbound QoS-0 PUBLISH — the app's write path (FX-18 volume and
+    /// future control writes). Dispatched on the internal serial queue and
+    /// gated on a live CONNACK; a publish issued while disconnected is dropped
+    /// (callers already hold optimistic UI state and the value re-sends on the
+    /// next user move). Fire-and-forget, matching web's `useMqtt` QoS-0 publish.
+    func publish(topic: String, payload: Data) {
+        delegateQueue.addOperation { [weak self] in
+            guard let self, self.mqttConnected else { return }
+            self.sendPublish(topic: topic, payload: payload)
+        }
+    }
+
     // MARK: - Socket management (delegateQueue only)
 
     private func openSocket() {
@@ -197,8 +209,9 @@ final class MQTTClient: NSObject {
         subscribe()
         // Prime initial state: ask every connected device to broadcast `hello`
         // (and its retained track/playback), mirroring useMqtt.js. This is a
-        // get-request, not a control/write action.
-        publish(topic: "get/clients/all/status", payload: Data())
+        // get-request, not a control/write action. We're already on the
+        // delegate queue with a live connection, so call the encoder directly.
+        sendPublish(topic: "get/clients/all/status", payload: Data())
         startPing()
         emitConnected(true)
     }
@@ -250,8 +263,10 @@ final class MQTTClient: NSObject {
         sendRaw(framed(type: 0x82, body: body))          // SUBSCRIBE (flags 0010 required)
     }
 
-    /// QoS-0 publish. Used only for the `get/clients/all/status` state prime in M1.
-    private func publish(topic: String, payload: Data) {
+    /// QoS-0 publish encoder. Must be called on `delegateQueue` with a live
+    /// connection (the public `publish` and the CONNACK prime both guarantee
+    /// that). QoS 0 carries no packet id and expects no PUBACK.
+    private func sendPublish(topic: String, payload: Data) {
         var body = stringField(topic)
         body.append(contentsOf: payload)
         sendRaw(framed(type: 0x30, body: body))
