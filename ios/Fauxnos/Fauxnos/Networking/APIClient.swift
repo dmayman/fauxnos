@@ -91,8 +91,9 @@ struct APIClient {
     /// POST `path` with a JSON object body, ignoring the response payload
     /// (2xx = success; resulting state arrives over MQTT). A non-2xx surfaces
     /// the status so callers can distinguish e.g. the server's 409
-    /// `non_spotify_in_multiroom` ratchet.
-    func post(_ path: String, json body: [String: String]) async throws {
+    /// `non_spotify_in_multiroom` ratchet. `body` values may be String or Int
+    /// (e.g. seek's `{position_ms}`).
+    func post(_ path: String, json body: [String: Any]) async throws {
         guard let url = URL(string: "\(config.apiBaseURL.absoluteString)/\(path)") else {
             throw APIError.badURL
         }
@@ -125,6 +126,13 @@ struct APIClient {
     /// to go-librespot; the resulting playback state echoes back over MQTT.
     func sendPlayback(_ clientId: String, _ action: PlaybackAction) async throws {
         try await post("api/clients/\(clientId)/playback/\(action.rawValue)")
+    }
+
+    /// Seek a client's player to an absolute position. `POST /api/clients/<id>/
+    /// playback/seek {position_ms}` → go-librespot `/player/seek`. The new
+    /// position echoes back over MQTT `playback`.
+    func seek(_ clientId: String, positionMs: Int) async throws {
+        try await post("api/clients/\(clientId)/playback/seek", json: ["position_ms": positionMs])
     }
 
     /// Switch a group's active source. The server sets the snapcast stream,

@@ -273,6 +273,23 @@ final class FauxnosStore: ObservableObject {
         }
     }
 
+    /// Seek a group's playback to `positionMs`. Optimistically re-bases the
+    /// playback overlay (new position + fresh `updatedAt`, preserving the
+    /// play/pause state) so interpolation continues smoothly from the seeked
+    /// point; the MQTT echo then confirms. Mirrors web `MediaCard.onSeek`.
+    func seek(_ positionMs: Int, for group: SpeakerGroup) async {
+        guard let home = homeClientId(of: group) else { return }
+        let wasPlaying = playback[home]?.isPlaying ?? true
+        playback[home] = Playback(isPlaying: wasPlaying,
+                                  positionMs: positionMs,
+                                  updatedAt: Date().timeIntervalSince1970 * 1000)
+        do {
+            try await api.seek(home, positionMs: positionMs)
+        } catch {
+            apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
     // MARK: - Source switching (FX-19)
 
     /// Sources offerable for a group, mirroring the web popover: the server

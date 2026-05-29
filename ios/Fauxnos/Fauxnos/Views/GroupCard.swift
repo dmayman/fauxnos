@@ -24,6 +24,8 @@ struct GroupCard: View {
 
     @State private var showSourcePicker = false
     @State private var dropTargeted = false
+    @State private var scrubbing = false
+    @State private var scrubValue: Double = 0
 
     private var homeId: String? { store.homeClientId(of: group) }
     private var track: Track? { store.track(for: group) }
@@ -235,17 +237,31 @@ struct GroupCard: View {
         let duration = Double(track?.durationMs ?? 0)
         if duration > 0 {
             TimelineView(.periodic(from: .now, by: 0.5)) { context in
-                let pos = interpolatedPosition(at: context.date, duration: duration)
-                let fraction = min(max(pos / duration, 0), 1)
-                VStack(spacing: 4) {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.quaternary)
-                            Capsule().fill(Color.accentColor)
-                                .frame(width: geo.size.width * fraction)
+                // Live interpolated position; while scrubbing we freeze on the
+                // user's dragged value so the thumb doesn't fight interpolation.
+                let live = interpolatedPosition(at: context.date, duration: duration)
+                let pos = scrubbing ? scrubValue : live
+                VStack(spacing: 2) {
+                    Slider(
+                        value: Binding(
+                            get: { scrubbing ? scrubValue : live },
+                            set: { scrubValue = $0 }
+                        ),
+                        in: 0...duration
+                    ) { editing in
+                        if editing {
+                            scrubbing = true
+                            scrubValue = live
+                        } else {
+                            // Commit: seek to the released position. The store
+                            // re-bases playback optimistically, then the MQTT
+                            // echo confirms and interpolation resumes.
+                            let target = Int(scrubValue)
+                            Task { await store.seek(target, for: group) }
+                            scrubbing = false
                         }
                     }
-                    .frame(height: 4)
+                    .tint(.accentColor)
                     HStack {
                         Text(fmtTime(pos)).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                         Spacer()
