@@ -23,6 +23,7 @@ struct GroupCard: View {
     let group: SpeakerGroup
 
     @State private var showSourcePicker = false
+    @State private var dropTargeted = false
 
     private var homeId: String? { store.homeClientId(of: group) }
     private var track: Track? { store.track(for: group) }
@@ -54,15 +55,49 @@ struct GroupCard: View {
         }
         .padding(14)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            // Highlight when a dragged device is hovering this group as a join
+            // target.
+            RoundedRectangle(cornerRadius: 14)
+                .strokeBorder(Color.accentColor, lineWidth: dropTargeted ? 2.5 : 0)
+        }
+        .dropDestination(for: String.self) { items, _ in
+            guard let dropped = items.first else { return false }
+            let target = store.homeClientId(of: group) ?? group.id
+            Task { await store.joinGroup(clientId: dropped, targetHomeClientId: target) }
+            return true
+        } isTargeted: { dropTargeted = $0 }
+        .animation(.easeInOut(duration: 0.15), value: dropTargeted)
         .sheet(isPresented: $showSourcePicker) {
             SourcePickerSheet(group: group)
         }
+    }
+
+    /// Visible grip that lifts a device on long-press to drag it between groups.
+    /// Carries the device's client id; the drag preview is a compact name pill.
+    @ViewBuilder
+    func dragHandle(clientId: String, name: String) -> some View {
+        Image(systemName: "line.3.horizontal")
+            .font(.footnote)
+            .foregroundStyle(.tertiary)
+            .draggable(clientId) {
+                Label(name, systemImage: "hifispeaker.fill")
+                    .font(.subheadline)
+                    .padding(10)
+                    .background(.regularMaterial, in: Capsule())
+            }
+            .accessibilityLabel("Drag \(name) to another group to join it")
     }
 
     // MARK: - Header (title + source picker + active indicator)
 
     private var header: some View {
         HStack(spacing: 10) {
+            // Single-device groups drag as a whole via this handle; multi-room
+            // members each carry their own handle in the device rows below.
+            if group.clients.count == 1, let home = homeId {
+                dragHandle(clientId: home, name: title)
+            }
             Image(systemName: group.clients.count > 1 ? "hifispeaker.2.fill" : "hifispeaker.fill")
                 .font(.title3)
                 .foregroundStyle(store.isPlaying(group) ? Color.accentColor : .secondary)
@@ -247,7 +282,12 @@ struct GroupCard: View {
             GroupVolumeSlider(clients: group.clients)
         }
         ForEach(group.clients) { client in
-            DeviceVolumeRow(client: client, showName: isMulti)
+            DeviceVolumeRow(
+                client: client,
+                showName: isMulti,
+                isHome: client.id == homeId,
+                isMulti: isMulti
+            )
         }
     }
 }
@@ -400,6 +440,8 @@ struct DeviceVolumeRow: View {
     @EnvironmentObject private var store: FauxnosStore
     let client: SnapClient
     let showName: Bool
+    var isHome: Bool = false
+    var isMulti: Bool = false
 
     @State private var editing = false
     @State private var dragValue: Double = 0
@@ -407,8 +449,27 @@ struct DeviceVolumeRow: View {
 
     private var current: Int { store.volume(for: client) }
 
+    /// Non-home members of a multi-room group can be dragged out and ungrouped.
+    /// The home member isn't draggable — dragging it would disband the group
+    /// (mirrors web, where the home row has no drag/ungroup affordance).
+    private var canRegroup: Bool { isMulti && !isHome }
+
     var body: some View {
         HStack(spacing: 8) {
+            if canRegroup {
+                Image(systemName: "line.3.horizontal")
+                    .font(.footnote).foregroundStyle(.tertiary).frame(width: 14)
+                    .draggable(client.id) {
+                        Label(client.host.name, systemImage: "hifispeaker.fill")
+                            .font(.subheadline).padding(10)
+                            .background(.regularMaterial, in: Capsule())
+                    }
+                    .accessibilityLabel("Drag \(client.host.name) to another group")
+            } else if isMulti {
+                // Reserve the grip column so the home row aligns with members.
+                Color.clear.frame(width: 14, height: 1)
+            }
+
             if store.isExternalVolume(client.id) {
                 Image(systemName: "airplayaudio")
                     .font(.caption).foregroundStyle(.secondary).frame(width: 18)
@@ -439,6 +500,17 @@ struct DeviceVolumeRow: View {
                 Text("\(displayValue)")
                     .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
                     .frame(width: 28, alignment: .trailing)
+            }
+
+            if canRegroup {
+                Button {
+                    Task { await store.returnHome(clientId: client.id) }
+                } label: {
+                    Image(systemName: "rectangle.portrait.and.arrow.right")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Ungroup \(client.host.name)")
             }
         }
     }

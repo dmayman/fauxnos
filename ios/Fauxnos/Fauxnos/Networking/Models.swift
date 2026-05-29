@@ -38,6 +38,17 @@ struct SpeakerGroup: Decodable, Identifiable {
     let availableStreams: [StreamInfo]?
 }
 
+extension SpeakerGroup {
+    /// Rebuild this group with a different member list — used for optimistic
+    /// join/return-home moves (the struct is otherwise immutable). Mirrors the
+    /// web's functional `{ ...g, clients }` group remapping.
+    func replacingClients(_ clients: [SnapClient]) -> SpeakerGroup {
+        SpeakerGroup(id: id, name: name, streamId: streamId, muted: muted,
+                     homeClientId: homeClientId, clients: clients,
+                     sources: sources, availableStreams: availableStreams)
+    }
+}
+
 struct StreamInfo: Decodable, Identifiable {
     let id: String
     let status: String

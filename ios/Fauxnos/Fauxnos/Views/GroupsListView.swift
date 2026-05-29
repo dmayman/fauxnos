@@ -29,23 +29,28 @@ struct GroupsListView: View {
     @ViewBuilder
     private var content: some View {
         if store.groups.isEmpty {
-            emptyOrError
+            // ScrollView so pull-to-refresh still works while empty/erroring.
+            ScrollView { emptyOrError.frame(maxWidth: .infinity).padding(.top, 80) }
         } else {
-            List {
-                ForEach(store.groups) { group in
-                    GroupCard(group: group)
-                        .listRowSeparator(.hidden)
-                        .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+            // ScrollView + LazyVStack (not List) so the FX-20 drag-and-drop
+            // grouping behaves predictably — List intercepts drags for its own
+            // reordering and makes `.draggable`/`.dropDestination` flaky.
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(store.groups) { group in
+                        GroupCard(group: group)
+                    }
+                    if let updated = store.lastUpdated {
+                        Text("Updated \(updated.formatted(date: .omitted, time: .standard))")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.top, 4)
+                    }
                 }
-                if let updated = store.lastUpdated {
-                    Text("Updated \(updated.formatted(date: .omitted, time: .standard))")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .listRowSeparator(.hidden)
-                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
             }
-            .listStyle(.plain)
         }
     }
 

@@ -299,4 +299,69 @@ final class FauxnosStore: ObservableObject {
             // optimistic value if the switch was rejected (e.g. 409).
         }
     }
+
+    // MARK: - Grouping (FX-20)
+
+    private func findClient(_ id: String) -> SnapClient? {
+        for g in groups { if let c = g.clients.first(where: { $0.id == id }) { return c } }
+        return nil
+    }
+
+    /// Move a device into a target group (whose home is `targetHomeClientId`).
+    /// Optimistically remaps membership — pulling the device from its current
+    /// group and appending it to the target, dropping any group it leaves empty
+    /// — then POSTs and refreshes to reconcile with server reality. Mirrors web
+    /// `handleJoinGroup`. No-op if it's already in the target group.
+    func joinGroup(clientId: String, targetHomeClientId: String) async {
+        guard clientId != targetHomeClientId else { return }
+        if let target = groups.first(where: { homeClientId(of: $0) == targetHomeClientId }),
+           target.clients.contains(where: { $0.id == clientId }) {
+            return  // already a member
+        }
+        guard let moving = findClient(clientId) else { return }
+        groups = groups.compactMap { g in
+            let without = g.clients.filter { $0.id != clientId }
+            if homeClientId(of: g) == targetHomeClientId {
+                return g.replacingClients(without + [moving])
+            }
+            return without.isEmpty ? nil : g.replacingClients(without)
+        }
+        do {
+            try await api.joinGroup(clientId: clientId, targetClientId: targetHomeClientId)
+        } catch {
+            apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
+        }
+        await refresh()
+    }
+
+    /// Return a device to its own home group (ungroup). Optimistically pulls it
+    /// from its current group into its home group, synthesizing that home group
+    /// if the server had dropped it while empty. Mirrors web `handleReturnHome`.
+    func returnHome(clientId: String) async {
+        if let moving = findClient(clientId) {
+            var foundHome = false
+            var updated: [SpeakerGroup] = groups.compactMap { g in
+                let without = g.clients.filter { $0.id != clientId }
+                if homeClientId(of: g) == clientId {
+                    foundHome = true
+                    return g.replacingClients(without + [moving])
+                }
+                return without.isEmpty ? nil : g.replacingClients(without)
+            }
+            if !foundHome {
+                updated.append(SpeakerGroup(
+                    id: "optimistic_\(clientId)_home", name: nil,
+                    streamId: "source_\(clientId)_spotify", muted: false,
+                    homeClientId: clientId, clients: [moving],
+                    sources: [], availableStreams: []))
+            }
+            groups = updated
+        }
+        do {
+            try await api.returnHome(clientId: clientId)
+        } catch {
+            apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
+        }
+        await refresh()
+    }
 }

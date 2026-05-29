@@ -137,6 +137,21 @@ struct APIClient {
             "source_id": sourceId,
         ])
     }
+
+    /// Move a device into the target group (the group whose home is
+    /// `targetClientId`). Mirrors web's `POST /api/groups/join`.
+    func joinGroup(clientId: String, targetClientId: String) async throws {
+        try await post("api/groups/join", json: [
+            "client_id": clientId,
+            "target_client_id": targetClientId,
+        ])
+    }
+
+    /// Return a device to its own home group (ungroup). Mirrors web's
+    /// `POST /api/groups/return-home`.
+    func returnHome(clientId: String) async throws {
+        try await post("api/groups/return-home", json: ["client_id": clientId])
+    }
 }
 
 /// Transport actions the server whitelists (`handle_post_client_playback`).
