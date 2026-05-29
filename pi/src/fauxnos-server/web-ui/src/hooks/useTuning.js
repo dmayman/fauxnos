@@ -13,20 +13,36 @@ import { useEffect, useState } from 'react'
  * ────────────────────────────────────────────────────────────────────────── */
 
 export const DEFAULT_TUNING = {
-  cardTintL_dark:   0.275,
+  cardTintL_dark:   0.33,
   cardTintCmin_dark: 0.005,
-  cardTintCmax_dark: 0.03,
-  cardTintL_light:  0.965,
-  cardTintCmin_light: 0.005,
-  cardTintCmax_light: 0.01,
-  accentLmin_dark: 0.72,
-  accentLmax_dark: 0.89,
+  cardTintCmax_dark: 0.035,
+  // Inner device-rows sub-card bg (dark mode only): a darker shade of the
+  // card tint, emulating a ~50% black overlay on the media bg. Light mode
+  // leaves the inner surface white (--fx-surface-1), so there's no light value.
+  innerSurfaceL_dark: 0.19,
+  cardTintL_light:  0.95,
+  cardTintCmin_light: 0,
+  cardTintCmax_light: 0.025,
+  accentLmin_dark: 0.77,
+  accentLmax_dark: 0.85,
   accentLmin_light: 0.69,
   accentLmax_light: 0.70,
   accentCmin: 0.075,
   accentCmax: 0.11,
   trackAlpha_dark: 0.12,
   trackAlpha_light: 0.19,
+  // Scaffold-card simulated source color (H/C/L). Lives here so the
+  // inline scaffold in GroupsTab and the sliders in TuningPanel share
+  // a single source of truth, and the scaffold survives reloads.
+  scaffold_h: 28,
+  scaffold_c: 0.16,
+  scaffold_l: 0.58,
+  // When set, the scaffold renders this real album cover and the panel
+  // harvests its color into scaffold_h/c/l. null = synthetic swatch
+  // mode (sliders drive the color directly).
+  scaffold_art_url: null,
+  scaffold_art_title: null,
+  scaffold_art_subtitle: null,
 }
 
 const STORAGE_KEY = 'fauxnos.tuning.v1'

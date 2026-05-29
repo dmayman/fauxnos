@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect, Suspense, lazy } from 'react'
 import { IconPlusFilled } from '@tabler/icons-react'
+import CustomIcon from './CustomIcon'
 
-// Both lazy-load into the same chunk (they share iconData), so the heavy
-// icon dataset is loaded exactly once — only when the user opens the picker
-// or first renders a source row with a custom icon.
+// IconPicker stays lazy — it's the heavy component (full icon grid + search).
+// CustomIcon is tiny (renders one inline SVG via iconData lookup), so eager-
+// importing it avoids the flash-of-fallback when source rows first paint.
 const IconPicker = lazy(() => import('./IconPicker'))
-const CustomIcon = lazy(() => import('./CustomIcon'))
 
 export default function IconPickerButton({ value, onChange }) {
   const [open, setOpen] = useState(false)
@@ -31,9 +31,7 @@ export default function IconPickerButton({ value, onChange }) {
         aria-expanded={open}
       >
         {value ? (
-          <Suspense fallback={<IconPlusFilled size={18} aria-hidden />}>
-            <CustomIcon name={value} size={18} />
-          </Suspense>
+          <CustomIcon name={value} size={18} />
         ) : (
           <IconPlusFilled size={18} aria-hidden />
         )}

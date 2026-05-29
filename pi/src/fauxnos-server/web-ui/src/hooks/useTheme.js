@@ -10,6 +10,14 @@ import { useEffect, useState } from 'react'
  *   take over.
  * - Returns { theme, effective, setTheme } so the UI can show the user's
  *   pick (theme) while still reacting to the resolved mode (effective).
+ *
+ * Backed by a SHARED module-level store (same pattern as useTuning/useTokens).
+ * This matters: `--fx-*` tokens flip via the `data-theme` attribute on <html>,
+ * but the per-card `--art-*` tokens are computed in JS from `effective` and
+ * written as inline style. With per-component useState, toggling the theme
+ * only updated the toggling component's `effective`, leaving every GroupCard's
+ * art tokens stale. A single store means one setTheme re-renders every
+ * consumer, so the art tokens recompute too.
  */
 
 const STORAGE_KEY = 'fauxnos.theme'
@@ -25,7 +33,7 @@ function osDark() {
   return window.matchMedia('(prefers-color-scheme: dark)').matches
 }
 
-function apply(theme) {
+function applyAttr(theme) {
   if (typeof document === 'undefined') return
   const root = document.documentElement
   if (theme === 'light' || theme === 'dark') {
@@ -35,31 +43,43 @@ function apply(theme) {
   }
 }
 
-export function useTheme() {
-  const [theme, setThemeState] = useState(() => {
-    const t = readStored()
-    apply(t)
-    return t
+function resolve(theme) {
+  return theme === 'system' ? (osDark() ? 'dark' : 'light') : theme
+}
+
+let theme = readStored()
+let effective = resolve(theme)
+const listeners = new Set()
+
+applyAttr(theme)
+
+function notify() {
+  listeners.forEach((l) => l())
+}
+
+export function setTheme(t) {
+  theme = t
+  effective = resolve(t)
+  try { window.localStorage.setItem(STORAGE_KEY, t) } catch { /* ignore */ }
+  applyAttr(t)
+  notify()
+}
+
+// OS preference flips only matter while following the system theme.
+if (typeof window !== 'undefined') {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (theme !== 'system') return
+    effective = resolve(theme)
+    notify()
   })
-  const [effective, setEffective] = useState(() =>
-    theme === 'system' ? (osDark() ? 'dark' : 'light') : theme,
-  )
+}
 
+export function useTheme() {
+  const [, forceRender] = useState(0)
   useEffect(() => {
-    const mq = window.matchMedia('(prefers-color-scheme: dark)')
-    const recompute = () => {
-      setEffective(theme === 'system' ? (mq.matches ? 'dark' : 'light') : theme)
-    }
-    recompute()
-    mq.addEventListener('change', recompute)
-    return () => mq.removeEventListener('change', recompute)
-  }, [theme])
-
-  const setTheme = (t) => {
-    try { window.localStorage.setItem(STORAGE_KEY, t) } catch { /* ignore */ }
-    apply(t)
-    setThemeState(t)
-  }
-
+    const l = () => forceRender((n) => n + 1)
+    listeners.add(l)
+    return () => { listeners.delete(l) }
+  }, [])
   return { theme, effective, setTheme }
 }
