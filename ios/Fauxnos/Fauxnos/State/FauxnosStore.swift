@@ -189,4 +189,25 @@ final class FauxnosStore: ObservableObject {
         guard let home = homeClientId(of: group) else { return nil }
         return tracks[home]
     }
+
+    func playback(for group: SpeakerGroup) -> Playback? {
+        guard let home = homeClientId(of: group) else { return nil }
+        return playback[home]
+    }
+
+    // MARK: - Transport (FX-17)
+
+    /// Send a transport command to a group's home device. REST-write only —
+    /// the resulting playback state arrives over MQTT (`status/clients/<id>/
+    /// playback`), which remains the source of truth. Errors are surfaced via
+    /// `apiError`; callers can drive optimistic UI and let the MQTT echo
+    /// reconcile.
+    func sendPlayback(_ action: PlaybackAction, for group: SpeakerGroup) async {
+        guard let home = homeClientId(of: group) else { return }
+        do {
+            try await api.sendPlayback(home, action)
+        } catch {
+            apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
+        }
+    }
 }

@@ -66,6 +66,28 @@ struct APIClient {
         }
     }
 
+    /// POST `path` with no body, ignoring the response payload. Transport
+    /// commands return an empty body on success, so we only care that the
+    /// status is 2xx — the resulting state arrives over MQTT, not here.
+    func post(_ path: String) async throws {
+        guard let url = URL(string: "\(config.apiBaseURL.absoluteString)/\(path)") else {
+            throw APIError.badURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+
+        let response: URLResponse
+        do {
+            (_, response) = try await session.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw APIError.http(status: http.statusCode)
+        }
+    }
+
     func fetchGroups() async throws -> GroupsResponse {
         try await get("api/groups")
     }
@@ -73,4 +95,19 @@ struct APIClient {
     func fetchStatus() async throws -> ServerStatus {
         try await get("api/status")
     }
+
+    /// Send a transport command to a client's player. The server proxies this
+    /// to go-librespot; the resulting playback state echoes back over MQTT.
+    func sendPlayback(_ clientId: String, _ action: PlaybackAction) async throws {
+        try await post("api/clients/\(clientId)/playback/\(action.rawValue)")
+    }
+}
+
+/// Transport actions the server whitelists (`handle_post_client_playback`).
+/// `seek` is intentionally omitted — FX-17 has no scrub UI. Note the wire
+/// names: `playpause` toggles, and previous is `prev` (not `previous`).
+enum PlaybackAction: String {
+    case playpause
+    case next
+    case prev
 }
