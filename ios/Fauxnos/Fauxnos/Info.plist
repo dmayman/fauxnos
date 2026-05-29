@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  The Fauxnos server speaks cleartext on the LAN: REST over http://fauxnos.local
+	  and MQTT over ws://fauxnos.local:9001. App Transport Security blocks plain
+	  HTTP/WS by default, so NSAllowsLocalNetworking opts the whole app into
+	  cleartext loads to local (.local / link-local / unqualified) hosts only —
+	  public TLS enforcement stays on for anything else.
+	-->
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<!--
+	  iOS 14+ Local Network Privacy: reaching a device on the LAN (and resolving
+	  a .local mDNS name) prompts the user once. This string is the prompt body.
+	  The simulator doesn't gate local-network access, so this only matters on
+	  a real device.
+	-->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Fauxnos connects to your audio system on the local network to show and control your speakers.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_fauxnos._tcp</string>
+	</array>
+</dict>
+</plist>

@@ -2,16 +2,20 @@
 //  FauxnosApp.swift
 //  Fauxnos
 //
-//  Created by David Mayman on 5/21/25.
+//  App entry. Owns the single FauxnosStore and kicks off REST + MQTT on launch.
 //
 
 import SwiftUI
 
 @main
 struct FauxnosApp: App {
+    @StateObject private var store = FauxnosStore()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            GroupsListView()
+                .environmentObject(store)
+                .task { store.start() }
         }
     }
 }

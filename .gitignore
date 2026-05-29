@@ -23,3 +23,8 @@ m4l-batch-locator-export/
 # `git pull` on a server to either clobber that state or hit a merge
 # conflict on routine changes. The template is the canonical schema.
 pi/src/fauxnos-server/server_config.json
+
+# Local PM agent memory (durable repo-specific PM facts: Linear mapping,
+# conventions, recurring orchestration decisions). Kept local per user
+# choice — not shared via git. See ~/.claude/agents/pm.md.
+.claude/pm-memory.md
