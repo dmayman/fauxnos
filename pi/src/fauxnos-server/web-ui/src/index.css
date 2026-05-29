@@ -2147,6 +2147,13 @@ body {
   min-width: 0;
   cursor: inherit;
   user-select: none;
+  /* Fill the whole 150px grid track so the draggable hit area has no dead
+     zones: width:100% covers the gap between the name and the column's right
+     edge; align-self:stretch overrides the row grid's align-items:center so
+     the handle spans the full row height (the inner flex align-items:center
+     keeps the label visually centered — no appearance change). */
+  width: 100%;
+  align-self: stretch;
 }
 .fx-group-row-name.draggable { cursor: grab; }
 .fx-group-row-name.draggable:active { cursor: grabbing; }
