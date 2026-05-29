@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState, Suspense, lazy } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   IconCheckFilled,
   IconBrandSpotifyFilled,
@@ -7,10 +8,9 @@ import {
   IconExternalLinkFilled,
   IconHeadphonesFilled,
   IconUnlink,
-  IconSettingsFilled,
+  IconChevronRight,
 } from '@tabler/icons-react'
-
-const LazyCustomIcon = lazy(() => import('./CustomIcon'))
+import CustomIcon from './CustomIcon'
 
 function SourceIcon({ source, size = 24 }) {
   const id = source?.id
@@ -21,11 +21,7 @@ function SourceIcon({ source, size = 24 }) {
     id ? IconExternalLinkFilled :
     IconHeadphonesFilled
   if (source?.icon) {
-    return (
-      <Suspense fallback={<FallbackIcon size={size} aria-hidden />}>
-        <LazyCustomIcon name={source.icon} size={size} />
-      </Suspense>
-    )
+    return <CustomIcon name={source.icon} size={size} />
   }
   return <FallbackIcon size={size} aria-hidden />
 }
@@ -50,9 +46,7 @@ export default function SourcePopover({
     ? sources.filter(s => s.id === 'spotify')
     : sources
   const ref = useRef(null)
-  const configureRef = useRef(null)
   const [pos, setPos] = useState(null)
-  const [configurePos, setConfigurePos] = useState(null)
 
   useEffect(() => {
     const place = () => {
@@ -64,31 +58,16 @@ export default function SourcePopover({
     }
     place()
     window.addEventListener('resize', place)
-    return () => window.removeEventListener('resize', place)
-  }, [anchorRef])
-
-  // Configure FAB nests in the popover's bottom-right corner, with its
-  // center aligned to the corner so it reads as a tucked-in shortcut.
-  // Re-measure whenever the main popover's layout could shift.
-  useLayoutEffect(() => {
-    if (!onConfigure) return undefined
-    const place = () => {
-      if (!ref.current) return
-      const r = ref.current.getBoundingClientRect()
-      // 40px FAB → top -20 centers on popover bottom; right +16 nudges
-      // the button 36px left from the popover's right edge for visual
-      // balance against the inset row content.
-      setConfigurePos({ top: r.bottom - 20, right: window.innerWidth - r.right + 16 })
+    window.addEventListener('scroll', place, true)
+    return () => {
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
     }
-    place()
-    window.addEventListener('resize', place)
-    return () => window.removeEventListener('resize', place)
-  }, [pos, onConfigure, visibleSources.length, isMulti])
+  }, [anchorRef])
 
   useEffect(() => {
     const handler = (e) => {
       if (ref.current?.contains(e.target)) return
-      if (configureRef.current?.contains(e.target)) return
       if (anchorRef?.current?.contains(e.target)) return
       onClose()
     }
@@ -96,8 +75,7 @@ export default function SourcePopover({
     return () => document.removeEventListener('mousedown', handler)
   }, [onClose, anchorRef])
 
-  return (
-    <>
+  const popover = (
     <div
       className="fx-popover fx-source-popover"
       ref={ref}
@@ -146,20 +124,18 @@ export default function SourcePopover({
           </button>
         </div>
       )}
+      {onConfigure && (
+        <button
+          type="button"
+          className="fx-source-popover-configure"
+          onClick={() => { onConfigure(); onClose() }}
+        >
+          <span className="fx-source-popover-configure-label">Configure</span>
+          <IconChevronRight size={16} aria-hidden />
+        </button>
+      )}
     </div>
-    {onConfigure && (
-      <button
-        ref={configureRef}
-        type="button"
-        className="fx-source-popover-configure-fab"
-        onClick={() => { onConfigure(); onClose() }}
-        style={configurePos ? { top: configurePos.top, right: configurePos.right } : undefined}
-        aria-label="Configure"
-        title="Configure"
-      >
-        <IconSettingsFilled size={20} aria-hidden />
-      </button>
-    )}
-    </>
   )
+
+  return createPortal(popover, document.body)
 }

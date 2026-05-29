@@ -27,6 +27,18 @@ export const DEFAULT_TUNING = {
   accentCmax: 0.11,
   trackAlpha_dark: 0.12,
   trackAlpha_light: 0.19,
+  // Scaffold-card simulated source color (H/C/L). Lives here so the
+  // inline scaffold in GroupsTab and the sliders in TuningPanel share
+  // a single source of truth, and the scaffold survives reloads.
+  scaffold_h: 28,
+  scaffold_c: 0.16,
+  scaffold_l: 0.58,
+  // When set, the scaffold renders this real album cover and the panel
+  // harvests its color into scaffold_h/c/l. null = synthetic swatch
+  // mode (sliders drive the color directly).
+  scaffold_art_url: null,
+  scaffold_art_title: null,
+  scaffold_art_subtitle: null,
 }
 
 const STORAGE_KEY = 'fauxnos.tuning.v1'

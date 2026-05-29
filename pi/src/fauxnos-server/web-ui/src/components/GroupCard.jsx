@@ -32,9 +32,8 @@ import useAlbumArtColor from '../hooks/useAlbumArtColor'
 import { useTuning } from '../hooks/useTuning'
 import { useTheme } from '../hooks/useTheme'
 import { useSliderHover } from '../hooks/useSliderHover'
+import { buildArtTokens } from '../lib/artTokens'
 import { sendPlayback } from '../api'
-
-const clamp = (lo, v, hi) => Math.max(lo, Math.min(hi, v))
 
 /* Volume glyph ramps with the level: mute (X) is reserved for v === 0
    only — at low non-zero volumes we still show a wave, so the mute icon
@@ -43,36 +42,6 @@ function volIconState(v) {
   if (v === 0) return 'mute'
   if (v < 40) return 'low'
   return 'high'
-}
-
-/* Given a raw album-art OKLCH { h, c, l }, the active mode, and the live
-   tuning values, return the `--art-*` CSS variables ready to write as
-   inline style. */
-function buildArtTokens({ h, c, l }, isDark, t) {
-  if (isDark) {
-    const accentL = clamp(t.accentLmin_dark, l, t.accentLmax_dark)
-    const accentC = clamp(t.accentCmin,      c, t.accentCmax)
-    const tintC   = clamp(t.cardTintCmin_dark, c, t.cardTintCmax_dark)
-    return {
-      '--art-accent':            `oklch(${accentL} ${accentC} ${h})`,
-      '--art-accent-soft':       `oklch(${accentL} ${accentC} ${h} / 0.18)`,
-      '--art-card-tint':         `oklch(${t.cardTintL_dark} ${tintC} ${h})`,
-      '--art-slider-fill':       `oklch(${accentL} ${accentC} ${h})`,
-      '--art-slider-track-tint': `oklch(${accentL} ${accentC} ${h} / ${t.trackAlpha_dark})`,
-      '--art-progress-tint':     `oklch(${accentL} ${accentC} ${h} / ${t.trackAlpha_dark})`,
-    }
-  }
-  const accentL = clamp(t.accentLmin_light, l, t.accentLmax_light)
-  const accentC = clamp(t.accentCmin,       c, t.accentCmax)
-  const tintC   = clamp(t.cardTintCmin_light, c, t.cardTintCmax_light)
-  return {
-    '--art-accent':            `oklch(${accentL} ${accentC} ${h})`,
-    '--art-accent-soft':       `oklch(${accentL} ${accentC} ${h} / 0.10)`,
-    '--art-card-tint':         `oklch(${t.cardTintL_light} ${tintC} ${h})`,
-    '--art-slider-fill':       `oklch(${accentL} ${accentC} ${h})`,
-    '--art-slider-track-tint': `oklch(${accentL} ${accentC} ${h} / ${t.trackAlpha_light})`,
-    '--art-progress-tint':     `oklch(${accentL} ${accentC} ${h} / ${t.trackAlpha_light})`,
-  }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

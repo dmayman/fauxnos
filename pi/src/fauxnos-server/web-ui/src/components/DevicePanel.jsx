@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, Suspense, lazy } from 'react'
+import CustomIcon from './CustomIcon'
 
-const LazyCustomIcon = lazy(() => import('./CustomIcon'))
 const LazyIconPickerButton = lazy(() => import('./IconPickerButton'))
 import {
   IconBrandSpotifyFilled,
@@ -61,11 +61,7 @@ function SourceIcon({ source, size = 16 }) {
     id ? IconExternalLinkFilled :
     IconHeadphonesFilled
   if (source?.icon) {
-    return (
-      <Suspense fallback={<FallbackIcon size={size} aria-hidden />}>
-        <LazyCustomIcon name={source.icon} size={size} />
-      </Suspense>
-    )
+    return <CustomIcon name={source.icon} size={size} />
   }
   return <FallbackIcon size={size} aria-hidden />
 }

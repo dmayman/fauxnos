@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo, useLayoutEffect } from 'react'
 import { Speaker, Plus } from 'lucide-react'
 import GroupCard from './GroupCard'
+import ScaffoldGroupCard from './ScaffoldGroupCard'
 import { apiFetch } from '../api'
 
 // Mirrors GroupCard's home-client resolution so we can look up playback in
@@ -373,6 +374,9 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
   if (activeGroups.length === 0) {
     return (
       <div className="fx-page">
+        <div className="fx-groups-grid">
+          <ScaffoldGroupCard />
+        </div>
         <div className="fx-card fx-empty">
           <Speaker size={28} />
           <div className="fx-h3">No devices yet</div>
@@ -394,6 +398,7 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
   return (
     <div className="fx-page">
       <div className="fx-groups-grid" ref={gridRef}>
+        <ScaffoldGroupCard />
         {activeGroups.map((group) => (
           <GroupCard
             key={stableKey(group)}
