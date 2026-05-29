@@ -272,4 +272,31 @@ final class FauxnosStore: ObservableObject {
             apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
         }
     }
+
+    // MARK: - Source switching (FX-19)
+
+    /// Sources offerable for a group, mirroring the web popover: the server
+    /// enriches `/api/groups` with each group's `sources`, and multi-room
+    /// groups can only run Spotify (the lone snapcast-routed source) — others
+    /// are local-per-device and would silence the rest of the group.
+    func availableSources(for group: SpeakerGroup) -> [Source] {
+        let all = group.sources ?? []
+        return group.clients.count > 1 ? all.filter { $0.id == "spotify" } : all
+    }
+
+    /// Switch a group's active source via `POST /api/groups/source`. We set the
+    /// `mode` overlay optimistically so the UI reflects the choice immediately;
+    /// the MQTT `status/clients/<home>/mode` echo then confirms the same value,
+    /// so the selection sticks rather than bouncing back (the web reversion bug).
+    func switchSource(_ sourceId: String, in group: SpeakerGroup) async {
+        guard let home = homeClientId(of: group) else { return }
+        modes[home] = sourceId                       // optimistic; echo confirms
+        do {
+            try await api.setGroupSource(groupId: group.id, homeClientId: home, sourceId: sourceId)
+        } catch {
+            apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
+            // Let the next /api/groups refresh or mode echo reconcile the
+            // optimistic value if the switch was rejected (e.g. 409).
+        }
+    }
 }

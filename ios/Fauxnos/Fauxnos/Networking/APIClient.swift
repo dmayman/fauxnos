@@ -88,6 +88,31 @@ struct APIClient {
         }
     }
 
+    /// POST `path` with a JSON object body, ignoring the response payload
+    /// (2xx = success; resulting state arrives over MQTT). A non-2xx surfaces
+    /// the status so callers can distinguish e.g. the server's 409
+    /// `non_spotify_in_multiroom` ratchet.
+    func post(_ path: String, json body: [String: String]) async throws {
+        guard let url = URL(string: "\(config.apiBaseURL.absoluteString)/\(path)") else {
+            throw APIError.badURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        let response: URLResponse
+        do {
+            (_, response) = try await session.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw APIError.http(status: http.statusCode)
+        }
+    }
+
     func fetchGroups() async throws -> GroupsResponse {
         try await get("api/groups")
     }
@@ -100,6 +125,17 @@ struct APIClient {
     /// to go-librespot; the resulting playback state echoes back over MQTT.
     func sendPlayback(_ clientId: String, _ action: PlaybackAction) async throws {
         try await post("api/clients/\(clientId)/playback/\(action.rawValue)")
+    }
+
+    /// Switch a group's active source. The server sets the snapcast stream,
+    /// fires any external switch API, and publishes the `mode` change over MQTT
+    /// (which the store overlays). Mirrors web's `POST /api/groups/source`.
+    func setGroupSource(groupId: String, homeClientId: String, sourceId: String) async throws {
+        try await post("api/groups/source", json: [
+            "group_id": groupId,
+            "home_client_id": homeClientId,
+            "source_id": sourceId,
+        ])
     }
 }
 

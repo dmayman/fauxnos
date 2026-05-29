@@ -22,6 +22,8 @@ struct GroupCard: View {
     @EnvironmentObject private var store: FauxnosStore
     let group: SpeakerGroup
 
+    @State private var showSourcePicker = false
+
     private var homeId: String? { store.homeClientId(of: group) }
     private var track: Track? { store.track(for: group) }
     private var playback: Playback? { store.playback(for: group) }
@@ -52,9 +54,12 @@ struct GroupCard: View {
         }
         .padding(14)
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14))
+        .sheet(isPresented: $showSourcePicker) {
+            SourcePickerSheet(group: group)
+        }
     }
 
-    // MARK: - Header (title + active indicator)
+    // MARK: - Header (title + source picker + active indicator)
 
     private var header: some View {
         HStack(spacing: 10) {
@@ -73,15 +78,39 @@ struct GroupCard: View {
                     .foregroundStyle(Color.accentColor)
                     .symbolEffect(.variableColor.iterative, options: .repeating)
             }
+            sourceChip
         }
     }
 
     private var subtitle: String {
-        var parts: [String] = []
-        if let source, !source.isEmpty { parts.append(source.capitalized) }
         let n = group.clients.count
-        parts.append(n == 1 ? "1 device" : "\(n) devices")
-        return parts.joined(separator: " · ")
+        return n == 1 ? "1 device" : "\(n) devices"
+    }
+
+    /// Tappable chip showing the active source; opens the picker sheet. Label
+    /// prefers the source's friendly `label` from `/api/groups`, else the id.
+    private var sourceChip: some View {
+        Button { showSourcePicker = true } label: {
+            HStack(spacing: 4) {
+                Image(systemName: sourceGlyphName(source))
+                Text(sourceLabel).lineLimit(1)
+                Image(systemName: "chevron.down").font(.caption2)
+            }
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.fill.tertiary, in: Capsule())
+            .foregroundStyle(.primary)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Source: \(sourceLabel). Tap to change.")
+    }
+
+    private var sourceLabel: String {
+        guard let s = source else { return "Source" }
+        if let match = (group.sources ?? []).first(where: { $0.id == s }),
+           let l = match.label, !l.isEmpty { return l }
+        return s.capitalized
     }
 
     // MARK: - Now playing (art + track meta, or idle state)
@@ -141,19 +170,9 @@ struct GroupCard: View {
     }
 
     private var sourceGlyph: some View {
-        Image(systemName: glyphName(for: source))
+        Image(systemName: sourceGlyphName(source))
             .font(.title2)
             .foregroundStyle(.secondary)
-    }
-
-    private func glyphName(for source: String?) -> String {
-        switch source {
-        case "spotify": return "music.note"
-        case "airplay": return "airplayaudio"
-        case "analog":  return "mic.fill"
-        case .some:     return "dot.radiowaves.left.and.right"
-        default:        return "headphones"
-        }
     }
 
     // MARK: - Transport
@@ -282,6 +301,83 @@ private struct TransportButton: View {
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
         .accessibilityLabel(label)
+    }
+}
+
+// MARK: - Source picker sheet (FX-19)
+
+/// Native sheet listing the group's real available sources. Selection is driven
+/// by the live `mode` echo (via `store.currentSource`), so it sticks instead of
+/// reverting after a switch. Multi-room groups only offer Spotify (server +
+/// `availableSources` enforce this) with a hint explaining why.
+struct SourcePickerSheet: View {
+    @EnvironmentObject private var store: FauxnosStore
+    @Environment(\.dismiss) private var dismiss
+    let group: SpeakerGroup
+
+    private var sources: [Source] { store.availableSources(for: group) }
+    private var isMulti: Bool { group.clients.count > 1 }
+    private var active: String? { store.currentSource(of: group) }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    if sources.isEmpty {
+                        Text("No sources available")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(sources) { s in
+                        Button {
+                            Task { await store.switchSource(s.id, in: group) }
+                            dismiss()
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: sourceGlyphName(s.id))
+                                    .frame(width: 24)
+                                    .foregroundStyle(.secondary)
+                                Text(s.label?.isEmpty == false ? s.label! : s.id.capitalized)
+                                    .foregroundStyle(.primary)
+                                Spacer()
+                                if active == s.id {
+                                    Image(systemName: "checkmark")
+                                        .foregroundStyle(.tint)
+                                        .fontWeight(.semibold)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                if isMulti {
+                    Section {
+                        Text("Ungroup to use other sources — only Spotify plays across multiple grouped devices.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .navigationTitle("Source")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+}
+
+/// Source-id → SF Symbol, shared by the picker rows and the card chip.
+func sourceGlyphName(_ id: String?) -> String {
+    switch id {
+    case "spotify": return "music.note"
+    case "airplay": return "airplayaudio"
+    case "analog":  return "mic.fill"
+    case .some:     return "dot.radiowaves.left.and.right"
+    default:        return "headphones"
     }
 }
 
