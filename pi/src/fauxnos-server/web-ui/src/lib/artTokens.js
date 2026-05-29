@@ -21,6 +21,9 @@ export function buildArtTokens({ h, c, l }, isDark, t) {
       '--art-accent':            `oklch(${accentL} ${accentC} ${h})`,
       '--art-accent-soft':       `oklch(${accentL} ${accentC} ${h} / 0.18)`,
       '--art-card-tint':         `oklch(${t.cardTintL_dark} ${tintC} ${h})`,
+      // Inner rows sub-card: same tone as the tint, darker — dark mode only.
+      // Light mode omits this so the inner surface stays --fx-surface-1.
+      '--art-inner-surface':     `oklch(${t.innerSurfaceL_dark} ${tintC} ${h})`,
       '--art-slider-fill':       `oklch(${accentL} ${accentC} ${h})`,
       '--art-slider-track-tint': `oklch(${accentL} ${accentC} ${h} / ${t.trackAlpha_dark})`,
       '--art-progress-tint':     `oklch(${accentL} ${accentC} ${h} / ${t.trackAlpha_dark})`,

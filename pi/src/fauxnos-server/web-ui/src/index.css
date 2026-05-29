@@ -61,7 +61,7 @@
 }
 
 [data-theme="light"] {
-  --fx-bg:          #F4F4F4;
+  --fx-bg:          #F9F9F9;
   --fx-surface-1:   #FFFFFF;
   --fx-surface-2:   #F5F5F5;
   --fx-surface-3:   #EAEAEA;
@@ -86,7 +86,7 @@
   --fx-warn-soft: rgba(142, 102, 24, 0.10);
   --fx-err-soft:  rgba(158, 68, 60, 0.10);
 
-  --fx-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --fx-shadow-1: 0 1px 4px rgba(0, 0, 0, 0.04);
   --fx-shadow-2: 0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03);
   --fx-shadow-3: 0 12px 48px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.04);
 
@@ -96,7 +96,7 @@
 /* Honor OS preference only when the user hasn't explicitly set a theme. */
 @media (prefers-color-scheme: light) {
   :root:not([data-theme]) {
-    --fx-bg:          #F4F4F4;
+    --fx-bg:          #F9F9F9;
     --fx-surface-1:   #FFFFFF;
     --fx-surface-2:   #F5F5F5;
     --fx-surface-3:   #EAEAEA;
@@ -116,7 +116,7 @@
     --fx-ok-soft:     rgba(62, 122, 77, 0.10);
     --fx-warn-soft:   rgba(142, 102, 24, 0.10);
     --fx-err-soft:    rgba(158, 68, 60, 0.10);
-    --fx-shadow-1:    0 1px 2px rgba(0, 0, 0, 0.04);
+    --fx-shadow-1:    0 1px 4px rgba(0, 0, 0, 0.04);
     --fx-shadow-2:    0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03);
     --fx-shadow-3:    0 12px 48px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.04);
     --fx-scrim:       rgba(0, 0, 0, 0.32);
@@ -1698,21 +1698,12 @@ body {
   background: var(--fx-surface-1);
   border: 1px solid var(--fx-line-strong);
   border-radius: 36px;
-  /* Per Figma: subtle outer drop shadow lifts the card off the page bg.
-     Light: 0 4px 24px rgba(0,0,0,0.03). Dark stays a bit deeper. */
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.03);
+  /* Resting drop shadow lifts the card off the page bg. Uses the shared
+     --fx-shadow-1 token (mode-aware) so the tuning panel can dial it. */
+  box-shadow: var(--fx-shadow-1);
   overflow: hidden;
   display: flex;
   flex-direction: column;
-}
-[data-theme="dark"] .fx-group-card-v2,
-:root:not([data-theme]) .fx-group-card-v2 {
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
-}
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme]) .fx-group-card-v2 {
-    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.03);
-  }
 }
 .fx-group-card-v2[data-has-media="true"] {
   /* Outer card carries the album-art tint; the media content sits flat
@@ -2069,7 +2060,9 @@ body {
 .fx-group-card-v2[data-has-media="true"] .fx-group-rows {
   gap: 20px;
   margin: 0;
-  background: var(--fx-surface-1);
+  /* Dark mode: a darker shade of the album-art tint (--art-inner-surface,
+     emitted only in dark mode). Light mode: falls back to white surface-1. */
+  background: var(--art-inner-surface, var(--fx-surface-1));
   /* Only the top stroke shows — left/right/bottom edges sit flush against
      the outer card's own border, so adding more strokes would draw a
      double line. */
@@ -2238,10 +2231,10 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 .fx-volume.card-v2 .fx-volume-track {
   height: 4px;
-  /* Neutral surface-3 so all device sliders share the same track tone
-     as the "All" row above — keeps the rows reading as a unified group
-     instead of the art-tinted track competing with the neutral fill. */
-  background: var(--fx-surface-3);
+  /* Translucent line-strong so the track inherits whatever surface sits
+     behind it (the inner rows sub-card) and reads consistently in both
+     modes, rather than a fixed neutral that fights the tinted bg. */
+  background: var(--fx-line-strong);
 }
 .fx-volume.card-v2 .fx-volume-fill {
   background: var(--fx-text-2);
@@ -2733,7 +2726,9 @@ button.fx-group-row-volume-icon:focus-visible {
   position: relative;
   width: 100%;
   height: 6px;
-  background: var(--art-slider-track-tint, var(--fx-surface-3));
+  /* Mirror the real card-v2 track (translucent line-strong over the inner
+     surface) so the scaffold preview reflects live behaviour. */
+  background: var(--fx-line-strong);
   border-radius: var(--fx-r-pill);
 }
 .fx-scaffold-volume-fill {

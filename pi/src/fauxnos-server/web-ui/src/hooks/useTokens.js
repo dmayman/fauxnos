@@ -43,7 +43,7 @@ export const TOKEN_DEFAULTS = {
     '--fx-shadow-3':     '0 24px 72px rgba(0, 0, 0, 0.55), 0 2px 4px rgba(0, 0, 0, 0.4)',
   },
   light: {
-    '--fx-bg':          '#F4F4F4',
+    '--fx-bg':          '#F9F9F9',
     '--fx-surface-1':   '#FFFFFF',
     '--fx-surface-2':   '#F5F5F5',
     '--fx-surface-3':   '#EAEAEA',
@@ -64,7 +64,7 @@ export const TOKEN_DEFAULTS = {
     '--fx-warn-soft':    'rgba(142, 102, 24, 0.10)',
     '--fx-err-soft':     'rgba(158, 68, 60, 0.10)',
     '--fx-scrim':        'rgba(0, 0, 0, 0.32)',
-    '--fx-shadow-1':     '0 1px 2px rgba(0, 0, 0, 0.04)',
+    '--fx-shadow-1':     '0 1px 4px rgba(0, 0, 0, 0.04)',
     '--fx-shadow-2':     '0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03)',
     '--fx-shadow-3':     '0 12px 48px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.04)',
   },

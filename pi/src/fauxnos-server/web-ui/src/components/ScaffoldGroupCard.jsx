@@ -8,6 +8,7 @@ import {
 import { useTuning } from '../hooks/useTuning'
 import { useTheme } from '../hooks/useTheme'
 import { buildArtTokens } from '../lib/artTokens'
+import { SHOW_COLOR_TUNING } from '../lib/devFlags'
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * ScaffoldGroupCard — TEMPORARY.
@@ -22,6 +23,11 @@ import { buildArtTokens } from '../lib/artTokens'
  * Deletes alongside the rest of the tuning kit once colors lock.
  * ────────────────────────────────────────────────────────────────────────── */
 export default function ScaffoldGroupCard() {
+  if (!SHOW_COLOR_TUNING) return null
+  return <ScaffoldGroupCardInner />
+}
+
+function ScaffoldGroupCardInner() {
   const t = useTuning()
   const { effective } = useTheme()
   const isDark = effective === 'dark'

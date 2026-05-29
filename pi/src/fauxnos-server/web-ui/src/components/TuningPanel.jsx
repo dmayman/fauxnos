@@ -11,6 +11,7 @@ import { useTokens, setToken, resetTokens, getTokenValue, TOKEN_GROUPS, TOKEN_DE
 import { useTheme } from '../hooks/useTheme'
 import useAlbumArtColor from '../hooks/useAlbumArtColor'
 import { ALBUM_SAMPLES } from '../lib/albumSamples'
+import { SHOW_COLOR_TUNING } from '../lib/devFlags'
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * TuningPanel — TEMPORARY.
@@ -175,6 +176,11 @@ function AlbumPicker({ activeUrl }) {
 }
 
 export default function TuningPanel() {
+  if (!SHOW_COLOR_TUNING) return null
+  return <TuningPanelInner />
+}
+
+function TuningPanelInner() {
   const t = useTuning()
   const tokens = useTokens()
   const { effective } = useTheme()
@@ -272,6 +278,7 @@ export default function TuningPanel() {
                   <Slider label="L"        value={t.cardTintL_dark}    min={0.05} max={0.40} step={0.005} onChange={v => setTuning({ cardTintL_dark: v })} hint="lightness of outer card bg" />
                   <Slider label="C min"    value={t.cardTintCmin_dark} min={0}    max={0.20} step={0.005} onChange={v => setTuning({ cardTintCmin_dark: v })} />
                   <Slider label="C max"    value={t.cardTintCmax_dark} min={0}    max={0.20} step={0.005} onChange={v => setTuning({ cardTintCmax_dark: v })} hint="cap on saturation" />
+                  <Slider label="Inner L"  value={t.innerSurfaceL_dark} min={0.05} max={0.40} step={0.005} onChange={v => setTuning({ innerSurfaceL_dark: v })} hint="device-rows sub-card (darker tint)" />
                 </Section>
 
                 <Section title="Card tint — light mode">

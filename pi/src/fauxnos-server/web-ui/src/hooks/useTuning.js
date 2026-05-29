@@ -13,14 +13,18 @@ import { useEffect, useState } from 'react'
  * ────────────────────────────────────────────────────────────────────────── */
 
 export const DEFAULT_TUNING = {
-  cardTintL_dark:   0.275,
+  cardTintL_dark:   0.33,
   cardTintCmin_dark: 0.005,
-  cardTintCmax_dark: 0.03,
-  cardTintL_light:  0.965,
-  cardTintCmin_light: 0.005,
-  cardTintCmax_light: 0.01,
-  accentLmin_dark: 0.72,
-  accentLmax_dark: 0.89,
+  cardTintCmax_dark: 0.035,
+  // Inner device-rows sub-card bg (dark mode only): a darker shade of the
+  // card tint, emulating a ~50% black overlay on the media bg. Light mode
+  // leaves the inner surface white (--fx-surface-1), so there's no light value.
+  innerSurfaceL_dark: 0.19,
+  cardTintL_light:  0.95,
+  cardTintCmin_light: 0,
+  cardTintCmax_light: 0.025,
+  accentLmin_dark: 0.77,
+  accentLmax_dark: 0.85,
   accentLmin_light: 0.69,
   accentLmax_light: 0.70,
   accentCmin: 0.075,
