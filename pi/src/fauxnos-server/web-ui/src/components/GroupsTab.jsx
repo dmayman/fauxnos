@@ -173,6 +173,41 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
     }
   }, [onRefresh, groups])
 
+  // Multi-add from the "+" checklist: move every selected device into the
+  // target group at once. We keep the existing single-join endpoint and loop
+  // it client-side rather than adding a batched endpoint — that keeps this
+  // change out of api_server.py (and clear of FX-7's server work). One
+  // optimistic update covers all selections; the API calls fire sequentially
+  // so the server applies them in order, then a single onRefresh reconciles.
+  const handleAddDevices = useCallback(async (clientIds, targetHomeClientId) => {
+    if (!clientIds?.length) return
+    setOptimisticGroups(prev => {
+      const base = prev || groups
+      const moving = clientIds.map(id => findClient(base, id)).filter(Boolean)
+      if (moving.length === 0) return base
+      const movingIds = new Set(moving.map(c => c.id))
+      return base.map(g => {
+        const without = (g.clients || []).filter(c => !movingIds.has(c.id))
+        if (g.home_client_id === targetHomeClientId) {
+          return { ...g, clients: [...without, ...moving] }
+        }
+        return { ...g, clients: without }
+      })
+    })
+    try {
+      for (const id of clientIds) {
+        await apiFetch('/api/groups/join', {
+          method: 'POST',
+          body: JSON.stringify({ client_id: id, target_client_id: targetHomeClientId }),
+        })
+      }
+      onRefresh()
+    } catch (e) {
+      console.error('Add devices failed:', e)
+      onRefresh() // reconcile to server reality on error too
+    }
+  }, [onRefresh, groups])
+
   const handleReturnHome = useCallback(async (clientId) => {
     // Record an ungroup anchor so the new home card pins right below the
     // source multi-card instead of dropping to the bottom of the tier sort.
@@ -256,6 +291,61 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
     // isHomeGroupOf is a stable in-component helper
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groups])
+
+  // Ungroup every member of a multi-device group at once. The naive approach
+  // — looping `handleReturnHome` per member — fires N concurrent
+  // /api/groups/return-home calls, and the server's return_client_to_home does
+  // a read-modify-write (read group members → SetClients to "everyone but me").
+  // Concurrent calls for the same group both read the full member list and
+  // clobber each other's eviction, so one member survives and the group snaps
+  // back to N-1 devices. We fix it here, on the client: one optimistic update
+  // covering all members, the API calls fired *sequentially* so each reads
+  // fresh snapcast state, then a single onRefresh at the end (rather than one
+  // per call thrashing the optimistic view mid-flight).
+  const handleUngroupAll = useCallback(async (clientIds) => {
+    if (!clientIds?.length) return
+    setOptimisticGroups(prev => {
+      let base = prev || groups
+      for (const clientId of clientIds) {
+        const moving = findClient(base, clientId)
+        if (!moving) continue
+        let foundHome = false
+        base = base.map(g => {
+          const without = (g.clients || []).filter(c => c.id !== clientId)
+          if (isHomeGroupOf(g, clientId)) {
+            foundHome = true
+            return { ...g, clients: [...without, moving] }
+          }
+          return { ...g, clients: without }
+        })
+        if (!foundHome) {
+          base = [...base, {
+            id: `optimistic_${clientId}_home`,
+            home_client_id: clientId,
+            stream_id: `source_${clientId}_spotify`,
+            clients: [moving],
+            sources: [],
+            available_streams: [],
+          }]
+        }
+      }
+      return base
+    })
+    try {
+      for (const clientId of clientIds) {
+        await apiFetch('/api/groups/return-home', {
+          method: 'POST',
+          body: JSON.stringify({ client_id: clientId }),
+        })
+      }
+      onRefresh()
+    } catch (e) {
+      console.error('Ungroup all failed:', e)
+      onRefresh() // reconcile to server reality on error too
+    }
+    // isHomeGroupOf is a stable in-component helper
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onRefresh, groups])
 
   const handleSwitchSource = useCallback(async (groupId, homeClientId, sourceId) => {
     // Optimistic update — show new source immediately
@@ -405,6 +495,7 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
             group={group}
             nameMap={nameMap}
             mqtt={mqtt}
+            clients={clients}
             isDragTarget={dropTargetGroupId === group.id}
             isDragging={isDragging}
             dragClientId={dragClientId}
@@ -415,8 +506,10 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
             onDragLeaveGroup={handleDragLeaveGroup}
             onDropOnGroup={() => handleDropOnGroup(group.id)}
             onReturnHome={handleReturnHome}
+            onUngroupAll={handleUngroupAll}
             onSwitchSource={handleSwitchSource}
             onOpenDevice={onOpenDevice}
+            onAddDevices={handleAddDevices}
           />
         ))}
       </div>

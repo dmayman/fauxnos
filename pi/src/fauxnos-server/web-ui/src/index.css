@@ -145,7 +145,7 @@
   /* Card-specific type ramp (group cards, now-playing) */
   --fx-text-title: 28px;
   --fx-text-row:   20px;
-  --fx-text-meta:  14px;
+  --fx-text-meta:  12px;
 
   /* Spacing — strict 4/8/12/16/24/32 */
   --fx-1: 4px;
@@ -1591,14 +1591,17 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Row action buttons (ungroup / ungroup-all / add) are circular icon-only
+   buttons. Labels moved to a portaled hover tip (.fx-icon-tip) so the row's
+   resting layout never shifts. */
 .fx-group-member-x {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 4px;
-  border-radius: var(--fx-r-pill);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
   border: 0;
   background: transparent;
   color: var(--fx-text-3);
@@ -1607,36 +1610,44 @@ body {
   opacity: 0;
   transition: opacity var(--fx-dur) var(--fx-ease), color var(--fx-dur) var(--fx-ease), background var(--fx-dur) var(--fx-ease);
 }
+/* Reveal on hover of the whole rows container — matching the drag handle
+   (.fx-group-rows:hover .fx-row-drag), not just the individual row. */
 .fx-group-member:hover .fx-group-member-x,
-.fx-group-row-v2:hover .fx-group-member-x,
-.fx-group-member-x:focus-visible { opacity: 1; }
-.fx-group-member-x:hover {
+.fx-group-rows:hover .fx-group-member-x,
+.fx-group-member-x:focus-visible,
+.fx-group-member-x.open { opacity: 1; }
+.fx-group-member-x:hover,
+/* The "+" button must stay highlighted while its checklist popover is open —
+   the popover portals to <body>, so moving the cursor into it drops the
+   row's :hover and would otherwise fade the trigger back to opacity 0. */
+.fx-group-member-add.open {
   color: var(--fx-text);
   background: var(--fx-surface-3);
 }
-/* Label sits to the right of the icon and slides in only on direct
-   button hover so the row's resting layout (when button is invisible)
-   stays unchanged. max-width + margin transition together so the label
-   and its leading space appear in one smooth motion. */
-.fx-group-member-x-label {
-  display: inline-block;
+/* Action cluster: 4px between the two buttons (in the All row). No left
+   margin — the parent .fx-group-row-name 8px gap supplies the space between
+   the device/All label and the first button. */
+.fx-group-row-name-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 0;
+}
+/* Portaled hover label above a row action button. */
+.fx-icon-tip {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  z-index: 700;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--fx-surface-3);
+  color: var(--fx-text);
   font-size: 11px;
   font-weight: 600;
   line-height: 1;
-  max-width: 0;
-  margin-left: 0;
-  overflow: hidden;
   white-space: nowrap;
-  opacity: 0;
-  transition: max-width var(--fx-dur) var(--fx-ease),
-              margin-left var(--fx-dur) var(--fx-ease),
-              opacity var(--fx-dur) var(--fx-ease);
-}
-.fx-group-member-x:hover .fx-group-member-x-label,
-.fx-group-member-x:focus-visible .fx-group-member-x-label {
-  max-width: 80px;
-  margin-left: 4px;
-  opacity: 1;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
 }
 .fx-group-member-slider { min-width: 0; }
 
@@ -1844,7 +1855,7 @@ body {
   padding: 24px;
   display: grid;
   grid-template-columns: 150px 1fr;
-  gap: 24px;
+  gap: 36px;
   align-items: center;
   /* No background or border — the media content sits flat on the
      outer card's album-art tint. */
@@ -2130,7 +2141,7 @@ body {
   min-width: 0;
 }
 .fx-group-row-v2.with-source {
-  grid-template-columns: 150px 1fr auto;
+  grid-template-columns: 163px 1fr auto;
 }
 /* Multi-card row placeholder — gray pill matching the dragged ghost's shape,
    so the "what was here" outline reads as a device card outline rather than
@@ -2143,13 +2154,10 @@ body {
   visibility: hidden;
 }
 
-/* Device rows are darker by default (single-device groups); muted only
-   when there's more than one device in the card (V1 + V4 multi variants).
-   Accent is reserved for the .is-all entry that controls the whole group
-   (see below). */
+/* Device rows use the full text color — including the member rows below
+   "All" in multi-device cards (V1 + V4), so they read at the same weight as
+   the .is-all entry that controls the whole group. */
 .fx-group-row-v2 .fx-name-device { color: var(--fx-text); }
-.fx-group-card-v2.v1 .fx-group-row-v2 .fx-name-device,
-.fx-group-card-v2.v4 .fx-group-row-v2 .fx-name-device { color: var(--fx-text-2); }
 
 .fx-group-row-name {
   display: flex;
@@ -2215,7 +2223,7 @@ body {
 .fx-group-row-volume {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 16px;
   min-width: 0;
 }
 .fx-group-row-volume-icon {
@@ -2332,11 +2340,19 @@ button.fx-group-row-volume-icon:focus-visible {
 .fx-group-card-v2.v2-single .fx-group-row-v2 .fx-name-device {
   color: var(--fx-text);
 }
+.fx-group-card-v2.v1 .fx-group-row-v2 .fx-group-row-volume-icon,
+.fx-group-card-v2.v4 .fx-group-row-v2 .fx-group-row-volume-icon,
 .fx-group-card-v2.v3 .fx-group-row-v2 .fx-group-row-volume-icon,
 .fx-group-card-v2.v2-single .fx-group-row-v2 .fx-group-row-volume-icon {
   color: var(--fx-text);
   opacity: 1;
 }
+.fx-group-card-v2.v1 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-fill,
+.fx-group-card-v2.v1 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-thumb,
+.fx-group-card-v2.v1 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-hover,
+.fx-group-card-v2.v4 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-fill,
+.fx-group-card-v2.v4 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-thumb,
+.fx-group-card-v2.v4 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-hover,
 .fx-group-card-v2.v3 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-fill,
 .fx-group-card-v2.v3 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-thumb,
 .fx-group-card-v2.v3 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-hover,
@@ -2537,6 +2553,129 @@ button.fx-group-row-volume-icon:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
   border-radius: 4px;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Add-devices checklist popover (FX-16)
+   Opens from a group's "+" button. Device name on the left, checkbox on the
+   right; an "Add to group" button slides in at the bottom once ≥1 is picked.
+   Shares the soft-halo chrome of the source popover.
+   ─────────────────────────────────────────────────────────────────────────── */
+.fx-add-devices-popover {
+  position: fixed;
+  z-index: 600;
+  width: 232px;
+  max-height: min(60vh, 360px);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--fx-surface-1);
+  border: 1px solid var(--fx-line);
+  border-radius: 16px;
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.09);
+}
+[data-theme="dark"] .fx-add-devices-popover,
+:root:not([data-theme]) .fx-add-devices-popover {
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.36);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-add-devices-popover {
+    box-shadow: 0 0 16px rgba(0, 0, 0, 0.09);
+  }
+}
+.fx-add-devices-empty {
+  font-size: var(--fx-text-sm);
+  color: var(--fx-text-2);
+  padding: 4px 8px;
+}
+.fx-add-devices-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.fx-add-devices-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--fx-text);
+  text-align: left;
+  transition: background var(--fx-dur) var(--fx-ease);
+}
+.fx-add-devices-row:hover { background: var(--fx-surface-2); }
+.fx-add-devices-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
+}
+.fx-add-devices-row-label {
+  flex: 1;
+  min-width: 0;
+  /* Match the source dropdown row label (16px / 700). */
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fx-add-devices-check {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1.5px solid var(--fx-line-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fx-on-accent);
+  transition: background var(--fx-dur) var(--fx-ease),
+              border-color var(--fx-dur) var(--fx-ease);
+}
+.fx-add-devices-check.on {
+  background: var(--fx-accent);
+  border-color: var(--fx-accent);
+}
+.fx-add-devices-confirm {
+  flex-shrink: 0;
+  width: 100%;
+  height: 36px;
+  border: 1px solid transparent;
+  border-radius: var(--fx-r-pill);
+  font: inherit;
+  font-size: var(--fx-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--fx-dur) var(--fx-ease),
+              border-color var(--fx-dur) var(--fx-ease),
+              color var(--fx-dur) var(--fx-ease);
+}
+/* Primary (≥1 selected → "Add to group"): accent fill. */
+.fx-add-devices-confirm.primary {
+  background: var(--fx-accent);
+  color: var(--fx-on-accent);
+}
+.fx-add-devices-confirm.primary:hover { background: var(--fx-accent-hover); }
+/* Secondary (nothing selected → "Group all"): bordered ghost. */
+.fx-add-devices-confirm.secondary {
+  background: transparent;
+  border-color: var(--fx-line-strong);
+  color: var(--fx-text);
+}
+.fx-add-devices-confirm.secondary:hover {
+  background: var(--fx-surface-2);
+  border-color: var(--fx-text-3);
+}
+.fx-add-devices-confirm:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
 
 /* Trigger button "open" state — subtle background reflecting current accent.
