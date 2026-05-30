@@ -1824,6 +1824,23 @@ body {
   transform: translateY(18px);
   opacity: 0;
 }
+/* Groups-list reveal: a playing card's media region crop-grows from the
+   placeholder height as the card fades in. CSS animation (not the JS
+   transition the live V2→V3 path uses) so it's immune to StrictMode's mount
+   effect double-invoke; `both` + the inline --appear-delay hold it collapsed
+   through the per-card stagger, then expand in sync with the wrapper fade
+   (FX-27). */
+.fx-media-reveal.fx-media-appear {
+  animation: fx-media-crop-in 840ms cubic-bezier(0.34, 1.5, 0.64, 1)
+    var(--appear-delay, 0ms) both;
+}
+@keyframes fx-media-crop-in {
+  from { grid-template-rows: 0fr; transform: translateY(18px); opacity: 0; }
+  to   { grid-template-rows: 1fr; transform: translateY(0);    opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-media-reveal.fx-media-appear { animation: none; }
+}
 /* Rows section sits in front so the media card reads as emerging from
    behind it. Also smooth the V2 ↔ V3 style swap so the floating-sub-card
    chrome (white bg, border-top, rounded, shadow) fades in alongside the
@@ -3036,6 +3053,49 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 @media (prefers-reduced-motion: reduce) {
   .fx-skeleton-card::after { animation: none; }
+}
+
+/* ── Groups list reveal (loading → loaded crossfade) ─────────────────────────
+   The real cards fade — and, when playing media, crop-grow (via the existing
+   .fx-media-reveal) — into the slots their placeholders held, while the
+   skeleton fades out beneath them (FX-27). The stage is the positioning
+   context: real content defines the height in normal flow; the leaving
+   skeleton is absolute on top of nothing (z 0) so it dissolves underneath. */
+.fx-reveal-stage { position: relative; }
+.fx-reveal-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fx-4);
+}
+.fx-skeleton-leaving {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 0;
+  pointer-events: none;
+  animation: fx-skeleton-out 920ms var(--fx-ease) both;
+}
+@keyframes fx-skeleton-out { to { opacity: 0; } }
+
+/* Entering content sits above the fading skeleton and fades in. Cards stagger
+   top-to-bottom via the inline --appear-delay so the reveal echoes the
+   skeleton's cascade. */
+.fx-group-row-v2-wrap.fx-appear { position: relative; z-index: 1; }
+.fx-reveal-content.fx-appear-fade { position: relative; z-index: 1; }
+.fx-group-row-v2-wrap.fx-appear {
+  animation: fx-card-appear 840ms var(--fx-ease) both;
+  animation-delay: var(--appear-delay, 0ms);
+}
+.fx-reveal-content.fx-appear-fade {
+  animation: fx-card-appear 840ms var(--fx-ease) both;
+}
+@keyframes fx-card-appear {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-skeleton-leaving { animation: none; opacity: 0; }
+  .fx-group-row-v2-wrap.fx-appear,
+  .fx-reveal-content.fx-appear-fade { animation: none; }
 }
 
 /* ── Empty state ───────────────────────────────────────────────────────────── */

@@ -617,6 +617,7 @@ export default function GroupCard({
   onDragStart, onDragEnd,
   onDragOverGroup, onDragLeaveGroup, onDropOnGroup,
   onReturnHome, onUngroupAll, onSwitchSource, onOpenDevice, onAddDevices,
+  appear = false, appearDelayMs = 0,
 }) {
   const isMulti = group.clients.length > 1
   // home_client_id can be null when the server hasn't materialized it yet
@@ -700,6 +701,17 @@ export default function GroupCard({
     const prev = prevShowMediaRef.current
     prevShowMediaRef.current = showMediaCard
     if (prev === null) {
+      // First mount. Normally we snap straight to the final state. But during
+      // the groups-list reveal (`appear`), a playing card should crop up from
+      // the placeholder height as it fades in — so run the same collapse→
+      // expand the live V2→V3 path uses, held by the per-card stagger delay so
+      // the crop syncs with the wrapper fade (FX-27).
+      // First mount snaps straight to the final render state. The groups-list
+      // reveal crop (`appear`) is driven by a pure CSS animation on the
+      // media-reveal element (see the fx-media-appear className below), NOT a
+      // JS timer — a timer here is fragile under StrictMode's mount
+      // double-invoke (run → cleanup → run), which cancels the scheduled
+      // expand and strands the media region collapsed (FX-27).
       setRenderMedia(showMediaCard)
       return
     }
@@ -821,8 +833,18 @@ export default function GroupCard({
   const cardDropClass = !scopeDropToRows && isDragTarget ? ' fx-drop' : ''
   const rowsDropClass = scopeDropToRows && isDragTarget ? ' fx-drop' : ''
 
+  // Groups-list reveal crop: when a playing card mounts during the reveal, its
+  // media region crop-grows in via a pure CSS animation (StrictMode-immune).
+  // Suppressed while the JS V2→V3 reveal owns the region (mediaCollapsed), so
+  // the two never fight over grid-template-rows.
+  const mediaAppear = appear && showMediaCard && !mediaCollapsed
+
   return (
-    <div className="fx-group-row-v2-wrap" data-group-card-id={group.home_client_id || group.id}>
+    <div
+      className={`fx-group-row-v2-wrap${appear ? ' fx-appear' : ''}`}
+      style={appear ? { '--appear-delay': `${appearDelayMs}ms` } : undefined}
+      data-group-card-id={group.home_client_id || group.id}
+    >
       <div
         ref={cardRef}
         className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}`}
@@ -837,7 +859,10 @@ export default function GroupCard({
         }}
       >
         {renderMedia && mediaPropsRef.current && (
-          <div className={`fx-media-reveal${mediaCollapsed ? ' is-entering' : ''}`}>
+          <div
+            className={`fx-media-reveal${mediaCollapsed ? ' is-entering' : ''}${mediaAppear ? ' fx-media-appear' : ''}`}
+            style={mediaAppear ? { '--appear-delay': `${appearDelayMs}ms` } : undefined}
+          >
             <div className="fx-media-reveal-inner">
               <MediaCard {...mediaPropsRef.current} />
             </div>

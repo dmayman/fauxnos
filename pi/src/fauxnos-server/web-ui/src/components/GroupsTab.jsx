@@ -38,6 +38,25 @@ export default function GroupsTab({ groups, clients, loading, mqtt, onRefresh, o
   const gridRef = useRef(null)
   const prevGroupRectsRef = useRef(new Map())
 
+  // ── Loading → loaded reveal ────────────────────────────────────────────────
+  // Crossfade from the skeleton to the real list: each real card fades — and,
+  // when it's playing media, crop-grows (via GroupCard's existing media
+  // reveal) — into the slot its placeholder occupied, while the skeleton fades
+  // out beneath. `phase` lags the `loading` prop by one tick on purpose: that
+  // way the real grid first *mounts* in 'entering', which is what lets every
+  // GroupCard run its appear animation from its initial mount (FX-27).
+  const REVEAL_MS = 1640
+  const [phase, setPhase] = useState(loading ? 'loading' : 'ready')
+  useEffect(() => {
+    if (loading) { setPhase('loading'); return }
+    setPhase(prev => (prev === 'loading' ? 'entering' : prev))
+  }, [loading])
+  useEffect(() => {
+    if (phase !== 'entering') return undefined
+    const t = setTimeout(() => setPhase('ready'), REVEAL_MS)
+    return () => clearTimeout(t)
+  }, [phase])
+
   // Name lookup
   const nameMap = {}
   for (const c of clients) {
@@ -464,8 +483,10 @@ export default function GroupsTab({ groups, clients, loading, mqtt, onRefresh, o
 
   // Loading takes priority over the empty state: until the first groups
   // response lands we can't tell "no devices" from "not fetched yet", so we
-  // show the skeleton and never the "no devices" copy (FX-27).
-  if (loading) {
+  // show the skeleton and never the "no devices" copy (FX-27). Driven by
+  // `phase` (not `loading`) so the skeleton lingers one extra tick — see the
+  // phase comment above.
+  if (phase === 'loading') {
     return (
       <div className="fx-page">
         <GroupsSkeleton />
@@ -473,24 +494,39 @@ export default function GroupsTab({ groups, clients, loading, mqtt, onRefresh, o
     )
   }
 
+  const entering = phase === 'entering'
+  // The skeleton overlay fades out behind the entering content. Absolutely
+  // positioned so it doesn't take layout space — the real content defines the
+  // height while the placeholders dissolve underneath it.
+  const leavingSkeleton = entering && (
+    <div className="fx-skeleton-leaving" aria-hidden>
+      <GroupsSkeleton />
+    </div>
+  )
+
   if (activeGroups.length === 0) {
     return (
       <div className="fx-page">
-        <div className="fx-groups-grid">
-          <ScaffoldGroupCard />
-        </div>
-        <div className="fx-card fx-empty">
-          <Speaker size={28} />
-          <div className="fx-h3">No devices yet</div>
-          <p className="fx-small fx-mute">
-            Add your first Fauxnos device to start streaming. You'll need a
-            Raspberry Pi and a DAC HAT.
-          </p>
-          {onAddDevice && (
-            <button className="fx-btn primary pill" onClick={onAddDevice}>
-              <Plus size={14} /> Add device
-            </button>
-          )}
+        <div className="fx-reveal-stage">
+          <div className={`fx-reveal-content${entering ? ' fx-appear-fade' : ''}`}>
+            <div className="fx-groups-grid">
+              <ScaffoldGroupCard />
+            </div>
+            <div className="fx-card fx-empty">
+              <Speaker size={28} />
+              <div className="fx-h3">No devices yet</div>
+              <p className="fx-small fx-mute">
+                Add your first Fauxnos device to start streaming. You'll need a
+                Raspberry Pi and a DAC HAT.
+              </p>
+              {onAddDevice && (
+                <button className="fx-btn primary pill" onClick={onAddDevice}>
+                  <Plus size={14} /> Add device
+                </button>
+              )}
+            </div>
+          </div>
+          {leavingSkeleton}
         </div>
       </div>
     )
@@ -499,31 +535,38 @@ export default function GroupsTab({ groups, clients, loading, mqtt, onRefresh, o
   const isDragging = !!dragClientId
   return (
     <div className="fx-page">
-      <div className="fx-groups-grid" ref={gridRef}>
-        <ScaffoldGroupCard />
-        {activeGroups.map((group) => (
-          <GroupCard
-            key={stableKey(group)}
-            group={group}
-            nameMap={nameMap}
-            mqtt={mqtt}
-            clients={clients}
-            isDragTarget={dropTargetGroupId === group.id}
-            isDragging={isDragging}
-            dragClientId={dragClientId}
-            placeholderClientId={placeholderClientId}
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-            onDragOverGroup={() => handleDragOverGroup(group.id)}
-            onDragLeaveGroup={handleDragLeaveGroup}
-            onDropOnGroup={() => handleDropOnGroup(group.id)}
-            onReturnHome={handleReturnHome}
-            onUngroupAll={handleUngroupAll}
-            onSwitchSource={handleSwitchSource}
-            onOpenDevice={onOpenDevice}
-            onAddDevices={handleAddDevices}
-          />
-        ))}
+      <div className="fx-reveal-stage">
+        <div className="fx-groups-grid" ref={gridRef}>
+          <ScaffoldGroupCard />
+          {activeGroups.map((group, idx) => (
+            <GroupCard
+              key={stableKey(group)}
+              group={group}
+              nameMap={nameMap}
+              mqtt={mqtt}
+              clients={clients}
+              appear={entering}
+              // Stagger top-to-bottom so the reveal echoes the skeleton
+              // cascade; capped so a long list doesn't trail indefinitely.
+              appearDelayMs={entering ? Math.min(idx, 6) * 110 : 0}
+              isDragTarget={dropTargetGroupId === group.id}
+              isDragging={isDragging}
+              dragClientId={dragClientId}
+              placeholderClientId={placeholderClientId}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onDragOverGroup={() => handleDragOverGroup(group.id)}
+              onDragLeaveGroup={handleDragLeaveGroup}
+              onDropOnGroup={() => handleDropOnGroup(group.id)}
+              onReturnHome={handleReturnHome}
+              onUngroupAll={handleUngroupAll}
+              onSwitchSource={handleSwitchSource}
+              onOpenDevice={onOpenDevice}
+              onAddDevices={handleAddDevices}
+            />
+          ))}
+        </div>
+        {leavingSkeleton}
       </div>
     </div>
   )
