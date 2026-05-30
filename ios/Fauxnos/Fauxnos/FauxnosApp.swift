@@ -11,6 +11,8 @@ import SwiftUI
 struct FauxnosApp: App {
     @StateObject private var store = FauxnosStore()
 
+    init() { AppFonts.register() }
+
     var body: some Scene {
         WindowGroup {
             GroupsListView()

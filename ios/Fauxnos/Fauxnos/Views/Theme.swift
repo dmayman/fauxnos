@@ -71,6 +71,36 @@ extension UIColor {
     }
 }
 
+// MARK: - Type (Fustat, the web's brand typeface)
+
+/// Fauxnos uses Fustat across the surface, matching the web `--fx-font`. The
+/// variable font ships named instances (`Fustat-Regular…ExtraBold`); we address
+/// them by PostScript name so weight selection is exact. The card ramp mirrors
+/// `index.css` `.fx-title-track` / `.fx-meta-track` / `.fx-name-device` /
+/// `.fx-time-track`, scaled for a phone-width card while preserving hierarchy.
+enum FxFont {
+    static func fustat(_ size: CGFloat, _ weight: Weight = .regular) -> Font {
+        .custom(weight.ps, size: size)
+    }
+    enum Weight {
+        case regular, medium, semibold, bold, extrabold
+        var ps: String {
+            switch self {
+            case .regular:   return "Fustat-Regular"
+            case .medium:    return "Fustat-Medium"
+            case .semibold:  return "Fustat-SemiBold"
+            case .bold:      return "Fustat-Bold"
+            case .extrabold: return "Fustat-ExtraBold"
+            }
+        }
+    }
+    static let titleTrack = fustat(24, .bold)        // web 28 — track title
+    static let metaTrack  = fustat(17, .semibold)    // web 20 — artist · album
+    static let nameDevice = fustat(17, .bold)        // web 20 — device-row name
+    static let timeTrack  = fustat(13, .medium)      // web 14 — progress timecode
+    static let emptyCta   = fustat(15, .medium)      // web 16 — V4 zero-state CTA
+}
+
 // MARK: - Spacing / radii / motion
 
 /// Strict spacing scale, matching the web `--fx-1…6` (4/8/12/16/24/32).
@@ -84,9 +114,10 @@ enum Space {
 }
 
 enum Radius {
-    static let sm: CGFloat   = 8
-    static let card: CGFloat = 18   // softer than web's 12 — reads better on touch
-    static let art: CGFloat  = 10
+    static let sm: CGFloat    = 8
+    static let card: CGFloat  = 30   // web .fx-group-card-v2 = 36, eased for phone width
+    static let inner: CGFloat = 28   // floating rows sub-card under the media region
+    static let art: CGFloat   = 12   // web .fx-group-media-art = 12
 }
 
 extension Animation {

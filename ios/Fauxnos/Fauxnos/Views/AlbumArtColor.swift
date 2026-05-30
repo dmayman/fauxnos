@@ -35,14 +35,16 @@ struct OKLCH: Equatable {
 struct ArtPalette: Equatable {
     var accent: Color
     var accentSoft: Color
-    var cardTint: Color
+    var cardTint: Color       // outer card background tint (web --art-card-tint)
+    var innerSurface: Color   // floating rows sub-card bg (web --art-inner-surface)
     var trackTint: Color
 
     /// Neutral palette for idle / no-art / extraction-failed cards.
     static let neutral = ArtPalette(
         accent: FX.text,
         accentSoft: FX.surface3,
-        cardTint: FX.surface2,
+        cardTint: FX.surface1,
+        innerSurface: FX.surface1,
         trackTint: FX.surface3
     )
 }
@@ -93,6 +95,7 @@ private enum Tune {
     static let accentLminLight = 0.69, accentLmaxLight = 0.70
     static let accentCmin = 0.075, accentCmax = 0.11
     static let trackAlphaDark = 0.12, trackAlphaLight = 0.19
+    static let innerSurfaceLDark = 0.19
 }
 
 private func clamp(_ lo: Double, _ v: Double, _ hi: Double) -> Double { max(lo, min(hi, v)) }
@@ -109,6 +112,7 @@ func buildArtPalette(from raw: OKLCH, dark: Bool) -> ArtPalette {
             accent: oklchToColor(accent),
             accentSoft: oklchToColor(accent, alpha: 0.18),
             cardTint: oklchToColor(OKLCH(l: Tune.cardTintLDark, c: tintC, h: raw.h)),
+            innerSurface: oklchToColor(OKLCH(l: Tune.innerSurfaceLDark, c: tintC, h: raw.h)),
             trackTint: oklchToColor(accent, alpha: Tune.trackAlphaDark)
         )
     }
@@ -120,6 +124,7 @@ func buildArtPalette(from raw: OKLCH, dark: Bool) -> ArtPalette {
         accent: oklchToColor(accent),
         accentSoft: oklchToColor(accent, alpha: 0.10),
         cardTint: oklchToColor(OKLCH(l: Tune.cardTintLLight, c: tintC, h: raw.h)),
+        innerSurface: FX.surface1,   // light mode: rows sub-card stays white
         trackTint: oklchToColor(accent, alpha: Tune.trackAlphaLight)
     )
 }
