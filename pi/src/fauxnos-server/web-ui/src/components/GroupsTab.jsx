@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect, useMemo, useLayoutEffect } fr
 import { Speaker, Plus } from 'lucide-react'
 import GroupCard from './GroupCard'
 import ScaffoldGroupCard from './ScaffoldGroupCard'
+import GroupsSkeleton from './GroupsSkeleton'
 import { apiFetch } from '../api'
 
 // Mirrors GroupCard's home-client resolution so we can look up playback in
@@ -14,7 +15,7 @@ const resolveHomeClientId = (g) =>
 
 const hasTrackMeta = (track) => !!track && (track.title || track.artist)
 
-export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevice, onAddDevice }) {
+export default function GroupsTab({ groups, clients, loading, mqtt, onRefresh, onOpenDevice, onAddDevice }) {
   const [dragClientId, setDragClientId] = useState(null)
   const [placeholderClientId, setPlaceholderClientId] = useState(null)
   const [dropTargetGroupId, setDropTargetGroupId] = useState(null)
@@ -460,6 +461,17 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
     setDragClientId(null)
     setPlaceholderClientId(null)
   }, [dragClientId, groups, handleJoinGroup])
+
+  // Loading takes priority over the empty state: until the first groups
+  // response lands we can't tell "no devices" from "not fetched yet", so we
+  // show the skeleton and never the "no devices" copy (FX-27).
+  if (loading) {
+    return (
+      <div className="fx-page">
+        <GroupsSkeleton />
+      </div>
+    )
+  }
 
   if (activeGroups.length === 0) {
     return (

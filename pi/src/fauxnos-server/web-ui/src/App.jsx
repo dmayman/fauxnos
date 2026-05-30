@@ -27,6 +27,11 @@ export default function App() {
   const [clients, setClients] = useState([])
   const [groups, setGroups] = useState([])
   const [streams, setStreams] = useState([])
+  // False until the first loadAll() settles. Distinguishes "haven't fetched
+  // yet" (show skeleton) from "fetched, genuinely zero devices" (empty
+  // state) so the empty copy never flashes during the load window (FX-27).
+  // Background 60s refreshes never flip this back, so the list stays put.
+  const [firstLoadDone, setFirstLoadDone] = useState(false)
   const [serverStatus, setServerStatus] = useState(null)
   const [serverVersion, setServerVersion] = useState(null)
   const [devicePanelClientId, setDevicePanelClientId] = useState(null)
@@ -71,6 +76,7 @@ export default function App() {
       if (statusData) setServerStatus(statusData)
       if (versionData) setServerVersion(versionData)
     } catch { /* ignore */ }
+    finally { setFirstLoadDone(true) }
   }, [])
 
   // Initial + 60s background refresh. The popover always wants fresh
@@ -240,6 +246,7 @@ export default function App() {
           groups={groups}
           clients={clients}
           streams={streams}
+          loading={!firstLoadDone}
           mqtt={mqtt}
           onRefresh={loadAll}
           onOpenDevice={openDevice}

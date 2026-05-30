@@ -3002,6 +3002,42 @@ button.fx-group-row-volume-icon:focus-visible {
   border-width: 2px;
 }
 
+/* ── Groups loading skeleton ─────────────────────────────────────────────────
+   Placeholder cards shown until the first /api/groups response lands (FX-27).
+   They borrow the device card's outer shape (full width, 36px radius, idle
+   single-card height) but drop the stroke + shadow — the same treatment as
+   the drag drop-placeholder (.is-drag-placeholder). A staggered shimmer sweep
+   cascades down the column; per-card opacity (set inline) fades the stack to
+   nothing so it reads as continuing off-page rather than ending hard. */
+.fx-skeleton-card {
+  /* 74px = the idle single-device card height (1 + 16 + 40 + 16 + 1). */
+  min-height: 74px;
+  border-radius: 36px;
+  background: var(--fx-surface-3);
+  position: relative;
+  overflow: hidden;
+}
+.fx-skeleton-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--fx-text) 7%, transparent),
+    transparent
+  );
+  /* animation-delay is set inline per card to stagger the cascade. */
+  animation: fx-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes fx-skeleton-shimmer {
+  100% { transform: translateX(100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-skeleton-card::after { animation: none; }
+}
+
 /* ── Empty state ───────────────────────────────────────────────────────────── */
 .fx-empty {
   display: flex;
