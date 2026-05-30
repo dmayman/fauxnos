@@ -1307,6 +1307,19 @@ body {
   }
 }
 
+/* Dev-only local-checkout branch label (SHOW_BRANCH_INDICATOR). Lives in
+   the version-tracker slot beside the update pills — kept deliberately
+   faint/monospace so it reads as a dev annotation, not chrome. */
+.fx-branch-indicator {
+  font-family: var(--fx-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--fx-text-2);
+  opacity: 0.6;
+  user-select: text;
+  white-space: nowrap;
+}
+
 /* ── Groups ────────────────────────────────────────────────────────────────── */
 .fx-groups-grid {
   display: flex;

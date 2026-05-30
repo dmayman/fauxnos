@@ -9,6 +9,7 @@ import UpdateStreamModal from './components/UpdateStreamModal'
 import TuningPanel from './components/TuningPanel'
 import { useMqtt } from './hooks/useMqtt'
 import { apiFetch, getServerVersion } from './api'
+import { SHOW_BRANCH_INDICATOR } from './lib/devFlags'
 
 /**
  * Top-level layout.
@@ -252,6 +253,14 @@ export default function App() {
           onUpdateServer={openUpdateServer}
           onUpdateClients={openUpdateClients}
         />
+        {/* Dev-only: which local checkout (worktree) produced this UI.
+            Branch is injected at build time (vite.config.js); gated by
+            SHOW_BRANCH_INDICATOR so production renders nothing. */}
+        {SHOW_BRANCH_INDICATOR && import.meta.env.VITE_GIT_BRANCH && (
+          <span className="fx-branch-indicator" title="Local web checkout branch (dev)">
+            ⎇ {import.meta.env.VITE_GIT_BRANCH}
+          </span>
+        )}
       </div>
 
       {sidePanelOpen && <div className="fx-overlay" onClick={() => {
