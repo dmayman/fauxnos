@@ -1719,13 +1719,18 @@ body {
   flex-direction: column;
 }
 .fx-group-card-v2[data-has-media="true"] {
-  /* Outer card carries the album-art tint; the media content sits flat
-     on it (no inner card) and the device list floats on top of it as a
-     surface-1 sub-card with its own shadow. With the art tint doing the
-     visual lifting, the outer stroke softens to --fx-line so it doesn't
-     read heavy against the brighter background. */
-  background: var(--art-card-tint, var(--fx-surface-1));
-  border-color: var(--fx-line);
+  /* Outer card carries the album-art tint, but its 1px border must read as
+     a neutral idle-card edge — not pick up the tint. CSS paints a card's
+     background under its border (background-clip: border-box), so the
+     inherited translucent --fx-line-strong stroke over the green tint would
+     bleed green. Fix: two background layers — the tint clipped to
+     padding-box (interior only) sitting over an --fx-surface-1 layer
+     clipped to border-box (fills under the border). The border then
+     composites over --fx-surface-1, exactly like a default card, in both
+     rest and hover — while the interior keeps its album tint. */
+  background:
+    linear-gradient(var(--art-card-tint, var(--fx-surface-1)), var(--art-card-tint, var(--fx-surface-1))) padding-box,
+    var(--fx-surface-1) border-box;
 }
 /* V4 empty (multi-device, no Spotify connected) — tint the outer card a
    slight gray so the inner empty media-card (still surface-1) reads as a
@@ -1764,13 +1769,6 @@ body {
   :root:not([data-theme]) .fx-group-card-v2.fx-card-hover:hover {
     border-color: rgba(0, 0, 0, 0.28);
   }
-}
-/* Media cards rest with the softer --fx-line so the album-art tint
-   carries the edge. Hover lands midway at --fx-line-strong (12/16%)
-   instead of the heavier explicit 20/28% used by non-media cards,
-   which felt too dark against the tinted background. */
-.fx-group-card-v2[data-has-media="true"].fx-card-hover:hover {
-  border-color: var(--fx-line-strong);
 }
 /* Drop indicator — matches the viewport-edge background indicator
    (2px solid --fx-text). It lives on the outer card for every variant so
