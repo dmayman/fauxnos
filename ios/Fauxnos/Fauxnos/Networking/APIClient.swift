@@ -122,6 +122,12 @@ struct APIClient {
         try await get("api/status")
     }
 
+    /// The device registry — used for friendly display names (`name`) keyed by
+    /// `client_id`. Best-effort: callers degrade to the hostname if it fails.
+    func fetchClients() async throws -> [ClientInfo] {
+        try await get("api/clients", as: ClientsResponse.self).clients
+    }
+
     /// Send a transport command to a client's player. The server proxies this
     /// to go-librespot; the resulting playback state echoes back over MQTT.
     func sendPlayback(_ clientId: String, _ action: PlaybackAction) async throws {

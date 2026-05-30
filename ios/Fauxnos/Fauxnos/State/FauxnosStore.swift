@@ -24,6 +24,9 @@ final class FauxnosStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var lastUpdated: Date?
 
+    // Friendly display names from /api/clients, keyed by client id (web nameMap).
+    @Published private(set) var clientNames: [String: String] = [:]
+
     // Connection
     @Published private(set) var mqttConnected = false
 
@@ -89,6 +92,16 @@ final class FauxnosStore: ObservableObject {
             status = s
             apiError = nil
             lastUpdated = Date()
+            // Display names are best-effort — a failure here must not blank the
+            // group list, so it's fetched outside the required groups/status set.
+            if let cs = try? await api.fetchClients() {
+                clientNames = Dictionary(
+                    uniqueKeysWithValues: cs.compactMap { c in
+                        guard let n = c.name, !n.isEmpty else { return nil }
+                        return (c.clientId, n)
+                    }
+                )
+            }
         } catch {
             apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
         }
@@ -186,6 +199,16 @@ final class FauxnosStore: ObservableObject {
                         .replacingOccurrences(of: "_", with: "")
         }
         return group.clients.first?.id
+    }
+
+    /// Friendly display name for a client ("Living Room"), falling back to the
+    /// device hostname ("fauxnos000") until /api/clients lands. Mirrors the web
+    /// `nameMap[id] || host.name`.
+    func displayName(for client: SnapClient) -> String {
+        clientNames[client.id] ?? client.host.name
+    }
+    func displayName(forId id: String, fallback: String) -> String {
+        clientNames[id] ?? fallback
     }
 
     /// Live volume for a client: MQTT overlay wins, else the REST snapshot value.

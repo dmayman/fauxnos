@@ -85,6 +85,21 @@ struct Source: Decodable, Identifiable {
     let type: String?
 }
 
+// MARK: - REST: GET /api/clients
+
+/// One entry from `GET /api/clients` — the server's registry of known devices,
+/// carrying the friendly display `name` ("Living Room") keyed by `client_id`.
+/// The endpoint returns many more fields (deploy, dac_overlay, external volume…)
+/// that we don't model yet; Decodable ignores them.
+struct ClientsResponse: Decodable {
+    let clients: [ClientInfo]
+}
+
+struct ClientInfo: Decodable {
+    let clientId: String
+    let name: String?
+}
+
 // MARK: - REST: GET /api/status
 
 struct ServerStatus: Decodable {

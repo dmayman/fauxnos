@@ -60,8 +60,10 @@ struct GroupCard: View {
 
     private var groupName: String {
         if let name = group.name, !name.isEmpty { return name }
-        if let home = homeId, let c = group.clients.first(where: { $0.id == home }) { return c.host.name }
-        return group.clients.first?.host.name ?? group.id
+        if let home = homeId, let c = group.clients.first(where: { $0.id == home }) {
+            return store.displayName(for: c)
+        }
+        return group.clients.first.map { store.displayName(for: $0) } ?? group.id
     }
 
     // MARK: Body
@@ -287,18 +289,22 @@ struct DeviceRow: View {
     private var current: Int { store.volume(for: client) }
     private var canRegroup: Bool { isMulti && !isHome }
 
+    private var deviceName: String { store.displayName(for: client) }
+
     var body: some View {
-        HStack(spacing: Space.md) {
+        // Two lines: device name on top, controls (volume + source) below.
+        VStack(alignment: .leading, spacing: Space.sm) {
             name
-            Spacer(minLength: Space.sm)
-            volume
-            if let sourceTrigger { sourceTrigger }
+            HStack(spacing: Space.md) {
+                volume
+                if let sourceTrigger { sourceTrigger }
+            }
         }
     }
 
     @ViewBuilder
     private var name: some View {
-        let label = Text(client.host.name)
+        let label = Text(deviceName)
             .font(FxFont.nameDevice).foregroundStyle(nameColor).lineLimit(1)
 
         if canRegroup {
@@ -307,10 +313,10 @@ struct DeviceRow: View {
                 label
             }
             .draggable(client.id) {
-                Label(client.host.name, systemImage: "hifispeaker.fill")
+                Label(deviceName, systemImage: "hifispeaker.fill")
                     .font(.subheadline).padding(Space.sm).background(.regularMaterial, in: Capsule())
             }
-            .accessibilityLabel("Drag \(client.host.name) to another group")
+            .accessibilityLabel("Drag \(deviceName) to another group")
         } else {
             label
         }
@@ -322,8 +328,9 @@ struct DeviceRow: View {
             HStack(spacing: Space.sm) {
                 TablerIcon(glyph: .broadcastTower, size: 16).foregroundStyle(FX.text2)
                 Text("Volume controlled by iPhone").font(.caption).foregroundStyle(FX.text3).lineLimit(1)
+                Spacer(minLength: 0)
             }
-            .frame(maxWidth: 200, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             HStack(spacing: Space.md) {
                 Button {
@@ -334,14 +341,14 @@ struct DeviceRow: View {
                     VolumeIcon(level: displayValue, size: 20, tint: FX.text2).frame(width: 22)
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel(displayValue == 0 ? "Unmute \(client.host.name)" : "Mute \(client.host.name)")
+                .accessibilityLabel(displayValue == 0 ? "Unmute \(deviceName)" : "Mute \(deviceName)")
 
                 FxSlider(value: binding, fill: accent, track: track) { isEditing in
                     editing = isEditing
                     if isEditing { dragValue = Double(current) }
                 }
-                .frame(maxWidth: 220)
-                .accessibilityLabel("\(client.host.name) volume")
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel("\(deviceName) volume")
                 .accessibilityValue("\(displayValue) percent")
             }
         }
@@ -379,7 +386,7 @@ struct AllRow: View {
     private var displayAvg: Int { editing ? Int(dragAvg.rounded()) : avg }
 
     var body: some View {
-        HStack(spacing: Space.md) {
+        VStack(alignment: .leading, spacing: Space.sm) {
             HStack(spacing: 6) {
                 Text("All").font(FxFont.nameDevice).foregroundStyle(accent)
                 Button {
@@ -391,22 +398,23 @@ struct AllRow: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Ungroup all")
             }
-            Spacer(minLength: Space.sm)
-            Button { Haptics.tap(); toggleMuteAll() } label: {
-                VolumeIcon(level: displayAvg, size: 20, tint: FX.text2).frame(width: 22)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(displayAvg == 0 ? "Unmute all" : "Mute all")
-            FxSlider(value: binding, fill: accent, track: accent.opacity(0.18)) { isEditing in
-                editing = isEditing
-                if isEditing {
-                    baseAvg = avg; dragAvg = Double(avg)
-                    baseVols = Dictionary(uniqueKeysWithValues: clients.map { ($0.id, store.volume(for: $0)) })
+            HStack(spacing: Space.md) {
+                Button { Haptics.tap(); toggleMuteAll() } label: {
+                    VolumeIcon(level: displayAvg, size: 20, tint: FX.text2).frame(width: 22)
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel(displayAvg == 0 ? "Unmute all" : "Mute all")
+                FxSlider(value: binding, fill: accent, track: accent.opacity(0.18)) { isEditing in
+                    editing = isEditing
+                    if isEditing {
+                        baseAvg = avg; dragAvg = Double(avg)
+                        baseVols = Dictionary(uniqueKeysWithValues: clients.map { ($0.id, store.volume(for: $0)) })
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .accessibilityLabel("All devices volume")
+                sourceTrigger
             }
-            .frame(maxWidth: 220)
-            .accessibilityLabel("All devices volume")
-            sourceTrigger
         }
     }
 
