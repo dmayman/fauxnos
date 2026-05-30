@@ -2156,12 +2156,25 @@ body {
 .fx-group-row-name {
   display: flex;
   align-items: center;
+  gap: 8px;
   position: relative;
   min-width: 0;
   cursor: inherit;
   user-select: none;
+  /* The whole name column is one contiguous draggable box — handle, the gap
+     after it, and the label — with no dead zones. align-self:stretch overrides
+     the row grid's align-items:center so the box spans the full row height;
+     auto width + the grid's default justify-self:stretch makes the box fill
+     the track. (The gutter-pull margin lives on .draggable below — only rows
+     that actually render a handle should shift, so non-draggable rows keep
+     their label aligned with the draggable ones.) */
+  align-self: stretch;
 }
-.fx-group-row-name.draggable { cursor: grab; }
+/* Pull the in-flow handle (6px) + its 8px gap = 14px back into the card's
+   padding gutter so the label stays put. Scoped to .draggable because only
+   those rows render a handle; non-draggable rows have no handle to fill the
+   gutter, so shifting them would misalign their labels. */
+.fx-group-row-name.draggable { cursor: grab; margin-left: -14px; }
 .fx-group-row-name.draggable:active { cursor: grabbing; }
 .fx-group-row-name-label {
   white-space: nowrap;
@@ -2178,14 +2191,12 @@ body {
 }
 
 /* Per-row drag handle — only renders for non-home devices in multi-room;
-   visible on row hover. Two parallel bars sitting 20px left of the name
-   (still inside the card's 24px outer padding so the affordance never
-   clips). Matches the Figma kitchen-row drag indicator. */
+   visible on row hover. Two parallel bars that sit just left of the name,
+   in normal flow inside the draggable .fx-group-row-name box (the box's
+   negative left margin parks them in the card's padding gutter so the label
+   isn't pushed right). Matches the Figma kitchen-row drag indicator. */
 .fx-row-drag {
-  position: absolute;
-  left: -14px;
-  top: 50%;
-  transform: translateY(-50%);
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
