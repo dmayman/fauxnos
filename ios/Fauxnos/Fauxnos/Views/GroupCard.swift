@@ -331,8 +331,7 @@ struct DeviceRow: View {
                     if current > 0 { lastNonZero = current }
                     store.publishVolume(current == 0 ? max(lastNonZero, 1) : 0, clientId: client.id)
                 } label: {
-                    TablerIcon(glyph: volumeTablerGlyph(displayValue), size: 18)
-                        .foregroundStyle(FX.text2).frame(width: 22)
+                    VolumeIcon(level: displayValue, size: 20, tint: FX.text2).frame(width: 22)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(displayValue == 0 ? "Unmute \(client.host.name)" : "Mute \(client.host.name)")
@@ -394,7 +393,7 @@ struct AllRow: View {
             }
             Spacer(minLength: Space.sm)
             Button { Haptics.tap(); toggleMuteAll() } label: {
-                TablerIcon(glyph: volumeTablerGlyph(displayAvg), size: 18).foregroundStyle(FX.text2).frame(width: 22)
+                VolumeIcon(level: displayAvg, size: 20, tint: FX.text2).frame(width: 22)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(displayAvg == 0 ? "Unmute all" : "Mute all")
