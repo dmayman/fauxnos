@@ -2,24 +2,30 @@
 //  GroupCard.swift
 //  Fauxnos
 //
-//  The reusable per-group card — FX-17's deliverable and the surface that
-//  volume (FX-18) and source switching (FX-19) will hang off. It turns the M1
-//  read-only row into a living now-playing surface: album art + track meta,
-//  transport (play/pause/next/prev), a read-only progress bar, and the M1
-//  per-device volume display (control deferred to FX-18).
+//  The reusable per-group card. M2 (FX-17/18/19/20/32) wired it up functionally;
+//  FX-33 is the design-parity pass that elevates it to the web app's design
+//  intent while feeling native: the album-art-derived tint system, a deliberate
+//  type hierarchy, a hero now-playing region, a thin native scrub bar, a
+//  circular accent transport, restyled volume rows, and haptics on the
+//  interactions that matter (grouping, source switch, transport, mute).
 //
-//  Mirrors the web `GroupCard.jsx` contract:
-//    - Transport controls only for the Spotify source with real metadata
-//      (go-librespot is the only thing the transport endpoint drives).
-//    - Play/pause is optimistic; the MQTT `playback` echo is the source of
-//      truth and reconciles the local pending flag.
-//    - Position interpolates client-side between MQTT updates so the bar moves.
+//  All the M2 behavior is preserved verbatim — optimistic volume with the
+//  echo-suppression window, the play/pause MQTT reconciliation, offset-
+//  preserving group volume, drag-to-group / return-home, and the FX-32 seek.
+//  This file only changes how those behaviors look and feel.
+//
+//  Design intent mirrors the web `GroupCard.jsx`:
+//    - Transport only for the Spotify source with real metadata.
+//    - Play/pause optimistic; MQTT `playback` echo is the source of truth.
+//    - Position interpolates client-side between MQTT updates.
 //
 
 import SwiftUI
 
 struct GroupCard: View {
     @EnvironmentObject private var store: FauxnosStore
+    @ObservedObject private var artStore = AlbumArtColorStore.shared
+    @Environment(\.colorScheme) private var colorScheme
     let group: SpeakerGroup
 
     @State private var showSourcePicker = false
@@ -38,6 +44,13 @@ struct GroupCard: View {
     /// `hasControls = sourceId === 'spotify' && hasMeta`.
     private var hasControls: Bool { source == "spotify" && hasMeta }
 
+    /// Album-art-derived palette for this card. Neutral when idle / no art /
+    /// extraction pending. Recomputed for the active appearance.
+    private var palette: ArtPalette {
+        guard hasMeta, let raw = artStore.color(for: track?.artUrl) else { return .neutral }
+        return buildArtPalette(from: raw, dark: colorScheme == .dark)
+    }
+
     /// Display title: friendly group name if the server has one, else the home
     /// device's hostname (friendly per-device names are FX-22 / M3).
     private var title: String {
@@ -49,29 +62,63 @@ struct GroupCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Space.md) {
             header
-            nowPlaying
-            if hasControls { transport }
-            volumeRows
+            if hasMeta {
+                nowPlaying
+                if hasControls {
+                    progressBar
+                    transport
+                }
+            } else {
+                idleRow
+            }
+            volumeSection
         }
-        .padding(14)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 14))
+        .padding(Space.lg)
+        .background(cardBackground)
         .overlay {
             // Highlight when a dragged device is hovering this group as a join
-            // target.
-            RoundedRectangle(cornerRadius: 14)
-                .strokeBorder(Color.accentColor, lineWidth: dropTargeted ? 2.5 : 0)
+            // target — a soft accent ring that pulses in.
+            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+                .strokeBorder(dropTargeted ? Color.accentColor : FX.line,
+                              lineWidth: dropTargeted ? 2.5 : 1)
         }
+        .shadow(color: .black.opacity(colorScheme == .dark ? 0.35 : 0.06),
+                radius: dropTargeted ? 18 : 10, y: dropTargeted ? 8 : 4)
+        .scaleEffect(dropTargeted ? 1.01 : 1)
         .dropDestination(for: String.self) { items, _ in
             guard let dropped = items.first else { return false }
             let target = store.homeClientId(of: group) ?? group.id
+            Haptics.success()
             Task { await store.joinGroup(clientId: dropped, targetHomeClientId: target) }
             return true
-        } isTargeted: { dropTargeted = $0 }
-        .animation(.easeInOut(duration: 0.15), value: dropTargeted)
+        } isTargeted: { targeted in
+            if targeted != dropTargeted, targeted { Haptics.tap() }
+            dropTargeted = targeted
+        }
+        .animation(.fxEase, value: dropTargeted)
+        .animation(.fxEase, value: palette)
+        .task(id: track?.artUrl) { artStore.ensure(track?.artUrl) }
         .sheet(isPresented: $showSourcePicker) {
             SourcePickerSheet(group: group)
+        }
+    }
+
+    // MARK: - Card background (art-tinted hero for media, neutral for idle)
+
+    @ViewBuilder
+    private var cardBackground: some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
+        ZStack {
+            shape.fill(hasMeta ? FX.surface1 : FX.surface2)
+            if hasMeta {
+                LinearGradient(
+                    colors: [palette.cardTint.opacity(0.9), palette.cardTint.opacity(0)],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .clipShape(shape)
+            }
         }
     }
 
@@ -80,39 +127,44 @@ struct GroupCard: View {
     @ViewBuilder
     func dragHandle(clientId: String, name: String) -> some View {
         Image(systemName: "line.3.horizontal")
-            .font(.footnote)
-            .foregroundStyle(.tertiary)
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(FX.text3)
             .draggable(clientId) {
                 Label(name, systemImage: "hifispeaker.fill")
-                    .font(.subheadline)
-                    .padding(10)
+                    .font(.subheadline.weight(.medium))
+                    .padding(.horizontal, Space.md)
+                    .padding(.vertical, Space.sm)
                     .background(.regularMaterial, in: Capsule())
             }
             .accessibilityLabel("Drag \(name) to another group to join it")
     }
 
-    // MARK: - Header (title + source picker + active indicator)
+    // MARK: - Header (identity + source picker + active indicator)
 
     private var header: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: Space.sm) {
             // Single-device groups drag as a whole via this handle; multi-room
             // members each carry their own handle in the device rows below.
             if group.clients.count == 1, let home = homeId {
                 dragHandle(clientId: home, name: title)
             }
             Image(systemName: group.clients.count > 1 ? "hifispeaker.2.fill" : "hifispeaker.fill")
-                .font(.title3)
-                .foregroundStyle(store.isPlaying(group) ? Color.accentColor : .secondary)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.headline)
+                .font(.subheadline)
+                .foregroundStyle(store.isPlaying(group) ? palette.accent : FX.text2)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(FX.text)
+                    .lineLimit(1)
                 Text(subtitle)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(FX.text2)
             }
-            Spacer()
+            Spacer(minLength: Space.sm)
             if store.isPlaying(group) {
                 Image(systemName: "waveform")
-                    .foregroundStyle(Color.accentColor)
+                    .font(.subheadline)
+                    .foregroundStyle(palette.accent)
                     .symbolEffect(.variableColor.iterative, options: .repeating)
             }
             sourceChip
@@ -127,17 +179,21 @@ struct GroupCard: View {
     /// Tappable chip showing the active source; opens the picker sheet. Label
     /// prefers the source's friendly `label` from `/api/groups`, else the id.
     private var sourceChip: some View {
-        Button { showSourcePicker = true } label: {
-            HStack(spacing: 4) {
+        Button {
+            Haptics.tap()
+            showSourcePicker = true
+        } label: {
+            HStack(spacing: Space.xs) {
                 Image(systemName: sourceGlyphName(source))
                 Text(sourceLabel).lineLimit(1)
-                Image(systemName: "chevron.down").font(.caption2)
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold))
             }
-            .font(.caption.weight(.medium))
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(.fill.tertiary, in: Capsule())
-            .foregroundStyle(.primary)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, Space.md)
+            .padding(.vertical, 7)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(FX.line, lineWidth: 1))
+            .foregroundStyle(FX.text)
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Source: \(sourceLabel). Tap to change.")
@@ -150,29 +206,41 @@ struct GroupCard: View {
         return s.capitalized
     }
 
-    // MARK: - Now playing (art + track meta, or idle state)
+    // MARK: - Now playing (hero: art + track meta)
 
-    @ViewBuilder
     private var nowPlaying: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Space.md) {
             albumArt
-            if hasMeta {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(track?.title ?? "—")
+            VStack(alignment: .leading, spacing: 4) {
+                Text(track?.title ?? "—")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(FX.text)
+                    .lineLimit(2)
+                if let sub = trackSubtitle {
+                    Text(sub)
                         .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(palette.accent)
                         .lineLimit(1)
-                    if let sub = trackSubtitle {
-                        Text(sub)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
                 }
-            } else {
-                Text("Nothing playing")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
             }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// Idle state — compact source glyph tile + "Nothing playing".
+    private var idleRow: some View {
+        HStack(spacing: Space.md) {
+            RoundedRectangle(cornerRadius: Radius.art, style: .continuous)
+                .fill(FX.surface3)
+                .frame(width: 44, height: 44)
+                .overlay {
+                    Image(systemName: sourceGlyphName(source))
+                        .font(.title3)
+                        .foregroundStyle(FX.text2)
+                }
+            Text("Nothing playing")
+                .font(.subheadline)
+                .foregroundStyle(FX.text2)
             Spacer(minLength: 0)
         }
     }
@@ -182,13 +250,13 @@ struct GroupCard: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// 56pt art tile. Loads the track's `artUrl` async; falls back to a
-    /// source-appropriate glyph while loading, on failure, or when idle.
+    /// 64pt art tile with a soft drop shadow. Loads the track's `artUrl` async;
+    /// falls back to a source glyph while loading, on failure, or when idle.
     private var albumArt: some View {
         let url = hasMeta ? track?.artUrl.flatMap(URL.init(string:)) : nil
-        return RoundedRectangle(cornerRadius: 8)
-            .fill(.quaternary)
-            .frame(width: 56, height: 56)
+        return RoundedRectangle(cornerRadius: Radius.art, style: .continuous)
+            .fill(FX.surface3)
+            .frame(width: 64, height: 64)
             .overlay {
                 if let url {
                     AsyncImage(url: url) { phase in
@@ -203,34 +271,36 @@ struct GroupCard: View {
                     sourceGlyph
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.art, style: .continuous))
+            .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.15), radius: 8, y: 3)
     }
 
     private var sourceGlyph: some View {
         Image(systemName: sourceGlyphName(source))
-            .font(.title2)
-            .foregroundStyle(.secondary)
+            .font(.title)
+            .foregroundStyle(FX.text2)
     }
 
     // MARK: - Transport
 
     private var transport: some View {
-        VStack(spacing: 10) {
-            progressBar
-            HStack(spacing: 36) {
-                TransportButton(systemName: "backward.fill", size: 20, label: "Previous") {
-                    Task { await store.sendPlayback(.prev, for: group) }
-                }
-                PlayPauseButton(group: group)
-                TransportButton(systemName: "forward.fill", size: 20, label: "Next") {
-                    Task { await store.sendPlayback(.next, for: group) }
-                }
+        HStack(spacing: Space.xxl) {
+            TransportButton(systemName: "backward.fill", size: 18, label: "Previous") {
+                Haptics.tap()
+                Task { await store.sendPlayback(.prev, for: group) }
             }
-            .frame(maxWidth: .infinity)
+            PlayPauseButton(group: group, accent: palette.accent)
+            TransportButton(systemName: "forward.fill", size: 18, label: "Next") {
+                Haptics.tap()
+                Task { await store.sendPlayback(.next, for: group) }
+            }
         }
+        .foregroundStyle(FX.text)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 2)
     }
 
-    // MARK: - Progress (read-only; seek is out of FX-17 scope)
+    // MARK: - Progress (custom thin scrub bar; preserves FX-32 seek semantics)
 
     @ViewBuilder
     private var progressBar: some View {
@@ -241,32 +311,31 @@ struct GroupCard: View {
                 // user's dragged value so the thumb doesn't fight interpolation.
                 let live = interpolatedPosition(at: context.date, duration: duration)
                 let pos = scrubbing ? scrubValue : live
-                VStack(spacing: 2) {
-                    Slider(
-                        value: Binding(
-                            get: { scrubbing ? scrubValue : live },
-                            set: { scrubValue = $0 }
-                        ),
-                        in: 0...duration
-                    ) { editing in
-                        if editing {
-                            scrubbing = true
-                            scrubValue = live
-                        } else {
-                            // Commit: seek to the released position. The store
-                            // re-bases playback optimistically, then the MQTT
-                            // echo confirms and interpolation resumes.
-                            let target = Int(scrubValue)
-                            Task { await store.seek(target, for: group) }
-                            scrubbing = false
-                        }
+                VStack(spacing: 5) {
+                    ScrubBar(
+                        value: pos,
+                        duration: duration,
+                        accent: palette.accent,
+                        track: palette.trackTint
+                    ) {
+                        scrubbing = true
+                        scrubValue = live
+                    } onScrub: { v in
+                        scrubValue = v
+                    } onCommit: { v in
+                        // Commit: seek to the released position. The store
+                        // re-bases playback optimistically, then the MQTT echo
+                        // confirms and interpolation resumes.
+                        Haptics.tap()
+                        Task { await store.seek(Int(v), for: group) }
+                        scrubbing = false
                     }
-                    .tint(.accentColor)
                     HStack {
-                        Text(fmtTime(pos)).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                        Text(fmtTime(pos)).foregroundStyle(FX.text2)
                         Spacer()
-                        Text(fmtTime(duration)).font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                        Text(fmtTime(duration)).foregroundStyle(FX.text2)
                     }
+                    .font(.caption2.monospacedDigit())
                 }
             }
         }
@@ -292,19 +361,76 @@ struct GroupCard: View {
     // MARK: - Volume (FX-18: group fan-out + per-device sliders)
 
     @ViewBuilder
-    private var volumeRows: some View {
+    private var volumeSection: some View {
         let isMulti = group.clients.count > 1
-        if isMulti {
-            GroupVolumeSlider(clients: group.clients)
+        VStack(spacing: Space.sm) {
+            Divider().overlay(FX.line)
+            if isMulti {
+                GroupVolumeSlider(clients: group.clients, accent: palette.accent)
+            }
+            ForEach(group.clients) { client in
+                DeviceVolumeRow(
+                    client: client,
+                    showName: isMulti,
+                    isHome: client.id == homeId,
+                    isMulti: isMulti,
+                    accent: palette.accent
+                )
+            }
         }
-        ForEach(group.clients) { client in
-            DeviceVolumeRow(
-                client: client,
-                showName: isMulti,
-                isHome: client.id == homeId,
-                isMulti: isMulti
+    }
+}
+
+// MARK: - Scrub bar (thin, native-feeling seek control)
+
+/// A thin progress/scrub bar — capsule track, accent fill, a small thumb that
+/// grows while dragging. Reports drag start / move / commit so the parent can
+/// freeze position interpolation during a scrub and seek on release.
+private struct ScrubBar: View {
+    let value: Double
+    let duration: Double
+    let accent: Color
+    let track: Color
+    var onStart: () -> Void
+    var onScrub: (Double) -> Void
+    var onCommit: (Double) -> Void
+
+    @State private var dragging = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            let pct = duration > 0 ? min(max(value / duration, 0), 1) : 0
+            ZStack(alignment: .leading) {
+                Capsule().fill(track).frame(height: 4)
+                Capsule().fill(accent).frame(width: w * pct, height: 4)
+                Circle()
+                    .fill(accent)
+                    .frame(width: dragging ? 16 : 11, height: dragging ? 16 : 11)
+                    .shadow(color: .black.opacity(0.3), radius: 2, y: 1)
+                    .offset(x: w * pct - (dragging ? 8 : 5.5))
+            }
+            .frame(height: 16)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { g in
+                        if !dragging { dragging = true; onStart() }
+                        let p = min(max(g.location.x / w, 0), 1)
+                        onScrub(p * duration)
+                    }
+                    .onEnded { g in
+                        let p = min(max(g.location.x / w, 0), 1)
+                        dragging = false
+                        onCommit(p * duration)
+                    }
             )
+            .animation(.fxQuick, value: dragging)
         }
+        .frame(height: 16)
+        .accessibilityElement()
+        .accessibilityLabel("Seek")
+        .accessibilityValue("\(Int(value / 1000)) of \(Int(duration / 1000)) seconds")
     }
 }
 
@@ -312,10 +438,12 @@ struct GroupCard: View {
 
 /// Play/pause with optimistic state: flips immediately on tap, then defers to
 /// the MQTT `playback` echo. The pending flag clears whenever a fresh playback
-/// payload arrives (`updatedAt` changes), mirroring the web MediaCard.
+/// payload arrives (`updatedAt` changes), mirroring the web MediaCard. Rendered
+/// as a filled accent disc — the card's primary action.
 private struct PlayPauseButton: View {
     @EnvironmentObject private var store: FauxnosStore
     let group: SpeakerGroup
+    let accent: Color
     @State private var pending: Bool?
 
     private var actualPlaying: Bool { store.playback(for: group)?.isPlaying == true }
@@ -323,16 +451,20 @@ private struct PlayPauseButton: View {
 
     var body: some View {
         Button {
+            Haptics.tap()
             pending = !displayed
             Task { await store.sendPlayback(.playpause, for: group) }
         } label: {
-            Image(systemName: displayed ? "pause.fill" : "play.fill")
-                .font(.title)
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+            ZStack {
+                Circle().fill(accent).frame(width: 52, height: 52)
+                Image(systemName: displayed ? "pause.fill" : "play.fill")
+                    .font(.title3)
+                    .foregroundStyle(contrastOn(accent))
+                    .offset(x: displayed ? 0 : 1)   // optical centering of play glyph
+            }
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(Color.accentColor)
         .accessibilityLabel(displayed ? "Pause" : "Play")
         .onChange(of: store.playback(for: group)?.updatedAt) { _, _ in
             // The echo landed — let MQTT be the source of truth again.
@@ -350,14 +482,22 @@ private struct TransportButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: systemName)
-                .font(.system(size: size))
+                .font(.system(size: size, weight: .semibold))
                 .frame(width: 44, height: 44)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.primary)
         .accessibilityLabel(label)
     }
+}
+
+/// Choose black/white for legibility on top of an arbitrary accent fill.
+private func contrastOn(_ color: Color) -> Color {
+    let ui = UIColor(color)
+    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+    ui.getRed(&r, green: &g, blue: &b, alpha: &a)
+    let luma = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    return luma > 0.6 ? .black : .white
 }
 
 // MARK: - Source picker sheet (FX-19)
@@ -381,19 +521,22 @@ struct SourcePickerSheet: View {
                 Section {
                     if sources.isEmpty {
                         Text("No sources available")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(FX.text2)
                     }
                     ForEach(sources) { s in
                         Button {
+                            Haptics.select()
                             Task { await store.switchSource(s.id, in: group) }
                             dismiss()
                         } label: {
-                            HStack(spacing: 12) {
+                            HStack(spacing: Space.md) {
                                 Image(systemName: sourceGlyphName(s.id))
-                                    .frame(width: 24)
-                                    .foregroundStyle(.secondary)
+                                    .font(.body)
+                                    .frame(width: 26)
+                                    .foregroundStyle(active == s.id ? Color.accentColor : FX.text2)
                                 Text(s.label?.isEmpty == false ? s.label! : s.id.capitalized)
-                                    .foregroundStyle(.primary)
+                                    .foregroundStyle(FX.text)
+                                    .fontWeight(active == s.id ? .semibold : .regular)
                                 Spacer()
                                 if active == s.id {
                                     Image(systemName: "checkmark")
@@ -408,9 +551,13 @@ struct SourcePickerSheet: View {
                 }
                 if isMulti {
                     Section {
-                        Text("Ungroup to use other sources — only Spotify plays across multiple grouped devices.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                        Label {
+                            Text("Ungroup to use other sources — only Spotify plays across multiple grouped devices.")
+                        } icon: {
+                            Image(systemName: "info.circle")
+                        }
+                        .font(.footnote)
+                        .foregroundStyle(FX.text2)
                     }
                 }
             }
@@ -423,6 +570,7 @@ struct SourcePickerSheet: View {
             }
         }
         .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
     }
 }
 
@@ -458,6 +606,7 @@ struct DeviceVolumeRow: View {
     let showName: Bool
     var isHome: Bool = false
     var isMulti: Bool = false
+    var accent: Color = FX.text
 
     @State private var editing = false
     @State private var dragValue: Double = 0
@@ -471,13 +620,13 @@ struct DeviceVolumeRow: View {
     private var canRegroup: Bool { isMulti && !isHome }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Space.sm) {
             if canRegroup {
                 Image(systemName: "line.3.horizontal")
-                    .font(.footnote).foregroundStyle(.tertiary).frame(width: 14)
+                    .font(.footnote).foregroundStyle(FX.text3).frame(width: 14)
                     .draggable(client.id) {
                         Label(client.host.name, systemImage: "hifispeaker.fill")
-                            .font(.subheadline).padding(10)
+                            .font(.subheadline).padding(Space.sm)
                             .background(.regularMaterial, in: Capsule())
                     }
                     .accessibilityLabel("Drag \(client.host.name) to another group")
@@ -488,20 +637,22 @@ struct DeviceVolumeRow: View {
 
             if store.isExternalVolume(client.id) {
                 Image(systemName: "airplayaudio")
-                    .font(.caption).foregroundStyle(.secondary).frame(width: 18)
+                    .font(.caption).foregroundStyle(FX.text2).frame(width: 20)
                 if showName { nameLabel }
                 Text("Volume controlled by iPhone")
-                    .font(.caption).foregroundStyle(.tertiary)
+                    .font(.caption).foregroundStyle(FX.text3)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .lineLimit(1)
             } else {
                 Button {
+                    Haptics.tap()
                     if current > 0 { lastNonZero = current }
                     let next = current == 0 ? max(lastNonZero, 1) : 0
                     store.publishVolume(next, clientId: client.id)
                 } label: {
                     Image(systemName: volumeGlyph(displayValue))
-                        .font(.caption).foregroundStyle(.secondary).frame(width: 18)
+                        .font(.caption).foregroundStyle(FX.text2).frame(width: 20)
+                        .contentTransition(.symbolEffect(.replace))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(displayValue == 0 ? "Unmute \(client.host.name)" : "Mute \(client.host.name)")
@@ -511,19 +662,20 @@ struct DeviceVolumeRow: View {
                     editing = isEditing
                     if isEditing { dragValue = Double(current) }
                 }
-                .tint(.accentColor)
+                .tint(accent)
                 .accessibilityLabel("\(client.host.name) volume")
                 Text("\(displayValue)")
-                    .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
-                    .frame(width: 28, alignment: .trailing)
+                    .font(.caption.monospacedDigit()).foregroundStyle(FX.text2)
+                    .frame(width: 30, alignment: .trailing)
             }
 
             if canRegroup {
                 Button {
+                    Haptics.tap()
                     Task { await store.returnHome(clientId: client.id) }
                 } label: {
                     Image(systemName: "rectangle.portrait.and.arrow.right")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(FX.text2)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Ungroup \(client.host.name)")
@@ -533,7 +685,7 @@ struct DeviceVolumeRow: View {
 
     private var nameLabel: some View {
         Text(client.host.name)
-            .font(.caption).foregroundStyle(.secondary)
+            .font(.caption.weight(.medium)).foregroundStyle(FX.text2)
             .frame(width: 96, alignment: .leading).lineLimit(1)
     }
 
@@ -561,6 +713,7 @@ struct DeviceVolumeRow: View {
 struct GroupVolumeSlider: View {
     @EnvironmentObject private var store: FauxnosStore
     let clients: [SnapClient]
+    var accent: Color = FX.text
 
     @State private var editing = false
     @State private var dragAvg: Double = 0
@@ -577,18 +730,19 @@ struct GroupVolumeSlider: View {
     private var displayAvg: Int { editing ? Int(dragAvg.rounded()) : avg }
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: Space.sm) {
             Button {
+                Haptics.tap()
                 toggleMuteAll()
             } label: {
                 Image(systemName: volumeGlyph(displayAvg))
-                    .font(.caption).foregroundStyle(.secondary).frame(width: 18)
+                    .font(.caption).foregroundStyle(FX.text2).frame(width: 20)
             }
             .buttonStyle(.plain)
             .accessibilityLabel(displayAvg == 0 ? "Unmute all" : "Mute all")
 
             Text("All")
-                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                .font(.caption.weight(.semibold)).foregroundStyle(FX.text)
                 .frame(width: 96, alignment: .leading)
 
             Slider(value: binding, in: 0...100) { isEditing in
@@ -599,12 +753,12 @@ struct GroupVolumeSlider: View {
                     baseVols = Dictionary(uniqueKeysWithValues: clients.map { ($0.id, store.volume(for: $0)) })
                 }
             }
-            .tint(.accentColor)
+            .tint(accent)
             .accessibilityLabel("All devices volume")
 
             Text("\(displayAvg)")
-                .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
-                .frame(width: 28, alignment: .trailing)
+                .font(.caption.monospacedDigit()).foregroundStyle(FX.text2)
+                .frame(width: 30, alignment: .trailing)
         }
     }
 
