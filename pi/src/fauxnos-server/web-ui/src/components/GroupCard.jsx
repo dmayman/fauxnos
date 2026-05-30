@@ -696,20 +696,22 @@ export default function GroupCard({
     />
   ) : null
 
-  // Drop zone: single cards keep the whole outer card as the target (the
-  // card body is the device portion). Multi cards constrain the drop zone
-  // to the inner `.fx-group-rows` sub-card so the album-art region isn't
-  // treated as a valid drop target. fx-drop outline follows the same
-  // placement so the indicator hugs the actual drop area.
+  // Drop zone: whenever a media player sits above the device row(s) — every
+  // multi card (V1/V4) and single cards showing a media player (V3) — constrain
+  // the drop zone to the inner `.fx-group-rows` sub-card so the album-art region
+  // isn't treated as a drop target and the fx-drop outline hugs only the row(s).
+  // Single cards with no media (V2) have nothing below the row, so the whole
+  // outer card stays the target. fx-drop placement follows the handlers.
+  const scopeDropToRows = isMulti || hasMedia
   const dropHandlers = {
     onDragOver: handleDragOver,
     onDragLeave: onDragLeaveGroup,
     onDrop: (e) => { e.preventDefault(); onDropOnGroup() },
   }
-  const cardDropHandlers = isMulti ? {} : dropHandlers
-  const rowsDropHandlers = isMulti ? dropHandlers : {}
-  const cardDropClass = !isMulti && isDragTarget ? ' fx-drop' : ''
-  const rowsDropClass = isMulti && isDragTarget ? ' fx-drop' : ''
+  const cardDropHandlers = scopeDropToRows ? {} : dropHandlers
+  const rowsDropHandlers = scopeDropToRows ? dropHandlers : {}
+  const cardDropClass = !scopeDropToRows && isDragTarget ? ' fx-drop' : ''
+  const rowsDropClass = scopeDropToRows && isDragTarget ? ' fx-drop' : ''
 
   return (
     <div className="fx-group-row-v2-wrap" data-group-card-id={group.home_client_id || group.id}>
