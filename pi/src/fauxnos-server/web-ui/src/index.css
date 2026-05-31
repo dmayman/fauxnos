@@ -2669,36 +2669,38 @@ button.fx-group-row-volume-icon:focus-visible {
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
 
-/* "Configure" row at the bottom of the source popover — 12px bold label
-   on the left, 16px chevron on the right, muted by default, full text
-   color on hover. Sits in the popover's normal flex flow so the outer
-   16px gap separates it from the AirPlay row above. */
+/* "Configure" button at the bottom of the source popover — full-width
+   outlined pill matching AddDevicesPopover's confirm button (`.fx-add-devices
+   -confirm.tertiary`): bold centered label, outlined ghost that firms up on
+   hover. Sits in the popover's normal flex flow so the outer 16px gap
+   separates it from the row above. */
 .fx-source-popover-configure {
-  display: flex;
+  flex-shrink: 0;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0;
-  background: none;
-  border: 0;
-  cursor: pointer;
+  justify-content: center;
+  gap: 6px;
   width: 100%;
-  text-align: left;
-  color: var(--fx-text-2);
-  transition: color var(--fx-dur) var(--fx-ease);
-}
-.fx-source-popover-configure-label {
-  font-size: 12px;
+  height: 36px;
+  border: 1px solid var(--fx-line-strong);
+  border-radius: var(--fx-r-pill);
+  background: transparent;
+  color: var(--fx-text);
+  font: inherit;
+  font-size: var(--fx-text-sm);
   font-weight: 700;
-  line-height: 1;
+  cursor: pointer;
+  transition: background var(--fx-dur) var(--fx-ease),
+              border-color var(--fx-dur) var(--fx-ease),
+              color var(--fx-dur) var(--fx-ease);
 }
 .fx-source-popover-configure:hover {
-  color: var(--fx-text);
+  background: var(--fx-surface-2);
+  border-color: var(--fx-text-3);
 }
 .fx-source-popover-configure:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
-  border-radius: 4px;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
