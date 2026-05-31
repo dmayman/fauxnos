@@ -116,10 +116,48 @@ const DRAG_OPT_OUT =
    heuristic runs — is what guarantees a press on the slider can never be
    hijacked into a device drag (the #1 complaint). On whitespace we arm it;
    on any control we disarm it for this gesture. Each pointerdown recomputes,
-   so state never gets stuck. */
+   so state never gets stuck.
+
+   Mweb (≤600px) twist (FX-42, first cut — interaction TBD): there are no drag
+   handles on small screens, so a stray swipe over a card's whitespace would
+   otherwise start a drag instead of scrolling. We gate the arm behind a short
+   press-and-hold: draggable stays false until the pointer has been held ~280ms
+   without moving past a small threshold; any earlier move (a scroll) or release
+   cancels it. Desktop keeps the instant synchronous arm. */
+const DRAG_HOLD_MS = 280
+const DRAG_HOLD_SLOP = 8
+
 function armDragOnPointerDown(hostEl, enabled, e) {
   if (!hostEl) return
-  hostEl.draggable = enabled && !e.target.closest(DRAG_OPT_OUT)
+  const wantDrag = enabled && !e.target.closest(DRAG_OPT_OUT)
+  const isMweb = window.matchMedia('(max-width: 600px)').matches
+  if (!isMweb) {
+    hostEl.draggable = wantDrag
+    return
+  }
+  // Mweb: disarm immediately, then arm after the hold elapses.
+  hostEl.draggable = false
+  if (!wantDrag) return
+  const startX = e.clientX
+  const startY = e.clientY
+  const cleanup = () => {
+    clearTimeout(timer)
+    window.removeEventListener('pointermove', onMove, true)
+    window.removeEventListener('pointerup', cleanup, true)
+    window.removeEventListener('pointercancel', cleanup, true)
+  }
+  const onMove = (ev) => {
+    if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_HOLD_SLOP) return
+    hostEl.draggable = false
+    cleanup()
+  }
+  const timer = setTimeout(() => {
+    hostEl.draggable = true
+    cleanup()
+  }, DRAG_HOLD_MS)
+  window.addEventListener('pointermove', onMove, true)
+  window.addEventListener('pointerup', cleanup, true)
+  window.addEventListener('pointercancel', cleanup, true)
 }
 
 /* Shared dragstart for both drag hosts (the whole card for single-device
@@ -334,6 +372,47 @@ function RowName({ label, addDevices, ungroup }) {
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+ * EditGroupButton — full-width pill pinned to the bottom of the rows sub-card.
+ * It's the touch-first entry point to the group-membership editor: on mweb
+ * (≤600px) the hover-revealed name chevrons aren't discoverable, so this button
+ * opens the same AddDevicesPopover explicitly. Hidden on desktop via CSS (the
+ * hover affordances cover that case); always visible on multi-room cards at
+ * mweb. Mirrors RowName's clickable branch — own open state, anchors the
+ * popover to itself.
+ * ────────────────────────────────────────────────────────────────────────── */
+function EditGroupButton({ addDevices }) {
+  const [open, setOpen] = useState(false)
+  const btnRef = useRef(null)
+  if (!addDevices) return null
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        className={`fx-edit-group-btn${open ? ' open' : ''}`}
+        onClick={() => setOpen(o => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <span>Edit group</span>
+        <IconChevronDownFilled className="fx-edit-group-chevron" size={20} aria-hidden />
+      </button>
+      {open && (
+        <AddDevicesPopover
+          devices={addDevices.devices}
+          homeClientId={addDevices.homeClientId}
+          memberIds={addDevices.memberIds}
+          isGroup={addDevices.isGroup}
+          anchorRef={btnRef}
+          onClose={() => setOpen(false)}
+          onConfirm={addDevices.onConfirm}
+        />
+      )}
+    </>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
  * MediaCard — inner sub-card with album art + track meta + progress + controls.
  * Renders for V1/V3 (anywhere a track is present). Falls back to a source
  * glyph in the art slot when no metadata is available.
@@ -395,14 +474,17 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
           ? <img src={track.art_url} alt="" loading="lazy" draggable={false} />
           : <SourceIcon sourceId={sourceId} size={56} />}
       </div>
-      <div className="fx-group-media-body">
-        <div className="fx-group-media-text">
-          <span className="fx-title-track" title={titleText}>{titleText}</span>
-          {subText && <span className="fx-meta-track" title={subText}>{subText}</span>}
-        </div>
-        {hasControls && (
-          <div className="fx-group-progress">
-            <div className="fx-group-progress-bar">
+      {/* art, text, and progress are flat grid children of the media card so
+          both breakpoints can place them via grid-template-areas: desktop keeps
+          art on the left spanning text+progress; mweb (≤600px) drops progress to
+          a full-width row beneath the art+title pair (see index.css). */}
+      <div className="fx-group-media-text">
+        <span className="fx-title-track" title={titleText}>{titleText}</span>
+        {subText && <span className="fx-meta-track" title={subText}>{subText}</span>}
+      </div>
+      {hasControls && (
+        <div className="fx-group-progress">
+          <div className="fx-group-progress-bar">
               <span className="fx-time-track">{fmtTime(clampedPos)}</span>
               <div
                 className="fx-group-progress-track"
@@ -441,7 +523,6 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
             </div>
           </div>
         )}
-      </div>
     </div>
   )
 }
@@ -942,6 +1023,10 @@ export default function GroupCard({
               isDragPlaceholder={isMulti && c.id === placeholderClientId}
             />
           ))}
+          {/* Edit-group pill — mweb-only (CSS-gated), always present on
+              multi-room cards. The touch-first replacement for the hover
+              chevron that opens the membership editor. */}
+          {isMulti && <EditGroupButton addDevices={addDevices} />}
         </div>
       </div>
     </div>

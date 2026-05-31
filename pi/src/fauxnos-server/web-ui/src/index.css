@@ -1912,13 +1912,26 @@ body {
   position: relative;
   padding: 24px;
   display: grid;
+  /* Flat 3-child grid (art · text · progress) placed by named areas, so the
+     same DOM serves both breakpoints. Desktop: art on the left spanning the
+     text+progress stack. Mweb (≤600px, see the media query): progress drops to
+     a full-width row beneath the art+title pair. */
   grid-template-columns: 150px 1fr;
-  gap: 36px;
+  grid-template-areas:
+    "art text"
+    "art progress";
+  column-gap: 36px;
+  row-gap: 16px;
+  align-content: center;
   align-items: center;
   /* No background or border — the media content sits flat on the
      outer card's album-art tint. */
   background: transparent;
 }
+.fx-group-media-art { grid-area: art; }
+.fx-group-media-text { grid-area: text; }
+.fx-group-media-body { grid-area: text; }
+.fx-group-progress { grid-area: progress; }
 
 .fx-group-media-art {
   width: 150px;
@@ -1957,12 +1970,13 @@ body {
   display: block;
 }
 
+/* Empty (V4) variant body — a single CTA in the text area. Vertically
+   centered by the card's align-items: center, so no manual top nudge. */
 .fx-group-media-body {
   display: flex;
   flex-direction: column;
   gap: 16px;
   min-width: 0;
-  padding-top: 28px;
 }
 .fx-group-media-text {
   display: flex;
@@ -2526,6 +2540,117 @@ button.fx-group-row-volume-icon:focus-visible {
 .fx-group-media-card .fx-group-progress-actions .fx-icon-btn:hover {
   color: var(--art-accent);
   background: var(--art-accent-soft, var(--fx-accent-soft));
+}
+
+/* Edit-group pill (rendered only on multi-room cards). Desktop edits group
+   membership via the hover-revealed name chevron, so the explicit button is
+   hidden here and only surfaces at the mweb breakpoint below. */
+.fx-edit-group-btn { display: none; }
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   Mweb (≤600px) — small-screen layout for the group card (FX-42)
+   ═════════════════════════════════════════════════════════════════════════════
+   The same DOM as desktop, reflowed: the media region stacks (album art + title
+   on top, edge-to-edge progress + centered transport below), every device row
+   goes two-line (name over a full-width slider), drag handles are dropped in
+   favor of a press-and-hold drag, and an explicit "Edit group" pill replaces the
+   hover-only membership chevron. Most type/spacing stays at desktop scale — only
+   the media titles shrink (per Figma).
+   ═════════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 600px) {
+  /* ── Media region: art + title on top, progress full-width below ───────── */
+  .fx-group-media-card {
+    grid-template-columns: 100px 1fr;
+    grid-template-areas:
+      "art      text"
+      "progress progress";
+    column-gap: 16px;
+    row-gap: 16px;
+    align-content: start;
+    padding: 24px 24px 16px;
+  }
+  .fx-group-media-art,
+  .fx-group-media-art.is-empty {
+    width: 100px;
+    height: 100px;
+  }
+  /* No anchored source-trigger on mobile (it lives inline in the All row), so
+     the title can use the full column width. */
+  .fx-group-media-text { padding-right: 0; }
+  .fx-group-media-text .fx-title-track { font-size: 24px; }
+  .fx-group-media-text .fx-meta-track  { font-size: 16px; }
+
+  /* Progress bar runs edge-to-edge (times flank it); transport centers below. */
+  .fx-group-progress {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .fx-group-progress-actions { align-self: center; }
+
+  /* ── Device rows: two lines — name (+ trailing action) over the slider ─── */
+  .fx-group-row-v2,
+  .fx-group-row-v2.with-source,
+  .fx-group-row-v2.with-source.no-trailing {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "name action"
+      "vol  vol";
+    column-gap: 8px;
+    row-gap: 10px;
+  }
+  .fx-group-row-v2 > .fx-group-row-name   { grid-area: name; }
+  .fx-group-row-v2 > .fx-group-row-volume { grid-area: vol; }
+  /* The inline source trigger (All row + single-device cards) sits top-right. */
+  .fx-group-row-v2 > .fx-source-trigger {
+    grid-area: action;
+    justify-self: end;
+  }
+  /* Member rows have no trailing element — their ungroup button lives inside
+     the name cluster. Stretch the name across the row and push the button to
+     the right edge so it lines up with the source triggers above it. */
+  .fx-group-row-v2.no-trailing > .fx-group-row-name {
+    width: 100%;
+    justify-self: stretch;
+  }
+  .fx-group-row-v2.no-trailing > .fx-group-row-name .fx-name-action-btn {
+    margin-left: auto;
+  }
+  /* Row action buttons (chevron / ungroup) are always visible on touch — keep
+     them at full opacity rather than the desktop hover-reveal. */
+  .fx-name-action-btn { opacity: 1; }
+
+  /* No drag gutter on mobile — the handle is gone (press-and-hold drags), so
+     reclaim the left inset the desktop layout reserved for the grip. */
+  .fx-drag-grip { display: none; }
+  .fx-group-card-v2[data-has-media="true"] .fx-group-rows,
+  .fx-group-card-v2.v2-single .fx-group-rows,
+  .fx-group-card-v2.v3 .fx-group-rows {
+    padding: 24px;
+  }
+
+  /* ── Edit-group pill — full-width, pinned to the bottom of the rows card ─ */
+  .fx-edit-group-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 13px;
+    margin: 0;
+    border: 0;
+    border-radius: 99px;
+    background: var(--fx-surface-3);
+    color: var(--fx-text);
+    font: inherit;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background var(--fx-dur) var(--fx-ease);
+  }
+  .fx-edit-group-btn:active,
+  .fx-edit-group-btn.open { background: var(--fx-line-strong); }
+  .fx-edit-group-chevron { color: var(--fx-text-3); flex-shrink: 0; }
 }
 
 /* ── Source popover ───────────────────────────────────────────────────────
