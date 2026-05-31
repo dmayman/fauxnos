@@ -728,6 +728,7 @@ export default function GroupCard({
   onDragStart, onDragEnd,
   onDragOverGroup, onDragLeaveGroup, onDropOnGroup,
   onReturnHome, onUngroupAll, onSwitchSource, onOpenDevice, onAddDevices,
+  isExpanded = false, onToggleExpand,
   appear = false, appearDelayMs = 0,
 }) {
   const isMulti = group.clients.length > 1
@@ -743,12 +744,10 @@ export default function GroupCard({
     || group.clients[0]?.id
   const cardRef = useRef(null)
 
-  // Single-device cards have no always-on "Edit group" pill (a lone device
-  // isn't yet a group). On mweb, tapping the card body reveals the same
-  // membership-editor pill at the bottom; tapping again hides it. Desktop keeps
-  // the hover-chevron path, so the revealed pill is CSS-hidden there regardless
-  // of this state. (FX-42 — single-card mweb entry point.)
-  const [expanded, setExpanded] = useState(false)
+  // The mweb "Edit group" pill is revealed by tapping the card body; only one
+  // card is expanded at a time (state lives in GroupsTab, passed as isExpanded /
+  // onToggleExpand) so tapping one card collapses any other. Desktop keeps the
+  // hover-chevron path, so the pill is CSS-hidden there regardless. (FX-42)
 
   // Mweb press feedback: the whole card springs down a touch on press. Driven by
   // pointerdown (not CSS :active, which mobile browsers suppress the moment a
@@ -908,16 +907,16 @@ export default function GroupCard({
     onDragEnd?.(e)
   }
 
-  // Tap-to-reveal the Edit-group pill on single-device cards (mweb). Ignores
-  // taps that land on a control (slider, source trigger, any button/input, the
-  // pill itself) or the media transport — those own their own gesture. A drag
-  // suppresses the trailing click in the browser, so a hold-drag never toggles.
+  // Tap-to-reveal the Edit-group pill (mweb). Applies to every card — single
+  // and multi-room — so the one-at-a-time selection in GroupsTab governs them
+  // uniformly. Ignores taps that land on a control (slider, source trigger, any
+  // button/input, the pill itself) or the media transport — those own their own
+  // gesture. A drag suppresses the trailing click, so a hold-drag never toggles.
   const handleCardClick = (e) => {
-    if (isMulti) return
     if (e.target.closest(
       'button, input, a, [role="slider"], .fx-group-row-volume, .fx-group-progress'
     )) return
-    setExpanded(v => !v)
+    onToggleExpand?.()
   }
 
   const handleDragOver = (e) => {
@@ -1017,7 +1016,7 @@ export default function GroupCard({
     >
       <div
         ref={cardRef}
-        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${cardDraggable ? ' fx-drag-host' : ''}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}${expanded ? ' is-expanded' : ''}${pressed ? ' is-pressed' : ''}`}
+        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${cardDraggable ? ' fx-drag-host' : ''}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}${isExpanded ? ' is-expanded' : ''}${pressed ? ' is-pressed' : ''}`}
         data-has-media={hasMedia ? 'true' : 'false'}
         style={artStyle}
         draggable={cardDraggable}
@@ -1027,7 +1026,7 @@ export default function GroupCard({
         }}
         onDragStart={cardDraggable ? handleCardDragStart : undefined}
         onDragEnd={cardDraggable ? handleCardDragEnd : undefined}
-        onClick={!isMulti ? handleCardClick : undefined}
+        onClick={handleCardClick}
         {...cardDropHandlers}
         onDoubleClick={(e) => {
           // Quick path to settings: double-click name area opens device panel
@@ -1075,11 +1074,11 @@ export default function GroupCard({
               isDragPlaceholder={isMulti && c.id === placeholderClientId}
             />
           ))}
-          {/* Edit-group pill — mweb-only (CSS-gated). Always present on
-              multi-room cards; on single-device cards it's revealed by tapping
-              the card body (expanded). The touch-first replacement for the
-              hover chevron that opens the membership editor. */}
-          {(isMulti || expanded) && <EditGroupButton addDevices={addDevices} />}
+          {/* Edit-group pill — mweb-only (CSS-gated). Revealed by tapping the
+              card (single or multi); only one card is expanded at a time (see
+              GroupsTab). The touch-first replacement for the hover chevron that
+              opens the membership editor. */}
+          {isExpanded && <EditGroupButton addDevices={addDevices} />}
         </div>
       </div>
     </div>

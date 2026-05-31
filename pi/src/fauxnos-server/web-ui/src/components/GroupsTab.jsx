@@ -19,6 +19,11 @@ export default function GroupsTab({ groups, clients, loading, mqtt, onRefresh, o
   const [dragClientId, setDragClientId] = useState(null)
   const [placeholderClientId, setPlaceholderClientId] = useState(null)
   const [dropTargetGroupId, setDropTargetGroupId] = useState(null)
+  // Which card currently shows its mweb "Edit group" pill. Lifted here (rather
+  // than per-card) so only ONE is ever open at a time — tapping a card reveals
+  // its pill and collapses any other. Keyed by stableKey (home_client_id || id),
+  // matching the React key. (FX-42)
+  const [expandedCardId, setExpandedCardId] = useState(null)
   // Refs track the live drag because dragend fires after dropOnGroup's
   // setDragClientId(null), so reading state from a closure can race.
   const dragRef = useRef({ clientId: null, droppedOnGroup: false })
@@ -613,6 +618,11 @@ export default function GroupsTab({ groups, clients, loading, mqtt, onRefresh, o
               onSwitchSource={handleSwitchSource}
               onOpenDevice={onOpenDevice}
               onAddDevices={handleAddDevices}
+              isExpanded={expandedCardId === stableKey(group)}
+              onToggleExpand={() => {
+                const key = stableKey(group)
+                setExpandedCardId(prev => (prev === key ? null : key))
+              }}
             />
           ))}
         </div>
