@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom'
 import {
   IconXFilled,
   IconUnlink,
-  IconPlus,
   IconChevronDownFilled,
   IconBrandSpotifyFilled,
   IconBuildingBroadcastTowerFilled,
@@ -16,18 +15,6 @@ import {
   IconPlayerTrackNextFilled,
 } from '@tabler/icons-react'
 
-/* Drag-handle glyph: two thin parallel bars, matching the Figma kitchen-row
-   indicator. Tabler's IconGripVertical is 6 dots and reads as a different
-   affordance, so we inline this tiny SVG instead. */
-function DragBarsIcon({ size = 10 }) {
-  const w = Math.max(4, Math.round(size * 0.6))
-  return (
-    <svg width={w} height={size} viewBox="0 0 6 10" fill="currentColor" aria-hidden>
-      <rect x="0" y="0" width="2" height="10" rx="1" />
-      <rect x="4" y="0" width="2" height="10" rx="1" />
-    </svg>
-  )
-}
 import VolumeSlider, { VolumeIcon } from './VolumeSlider'
 import SourcePopover from './SourcePopover'
 import AddDevicesPopover from './AddDevicesPopover'
@@ -86,7 +73,7 @@ function buildDeviceDragGhost(row, cardRect) {
   const clone = row.cloneNode(true)
   clone.classList.remove('with-source', 'is-drag-placeholder')
   clone.querySelectorAll(
-    '.fx-row-drag, .fx-group-row-name-actions, .fx-source-trigger, .fx-group-row-name-subtitle'
+    '.fx-source-trigger, .fx-group-row-break, .fx-name-chevron, .fx-group-row-name-subtitle'
   ).forEach((n) => n.remove())
 
   rows.appendChild(clone)
@@ -223,43 +210,54 @@ function IconTipButton({ label, className, onClick, children, ...rest }) {
   )
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * AddDevicesButton — the "+" affordance that lets a group pull in several
- * other devices at once. Renders a hover-revealed button styled exactly like
- * the unlink/ungroup button (`fx-group-member-x`), with a "+" glyph instead of
- * the unlink glyph, and opens an AddDevicesPopover checklist. Lives next to the
- * device name on single-device cards, and next to "All" on multi-room cards —
- * never next to the individual member rows below "All".
- * ────────────────────────────────────────────────────────────────────────── */
-function AddDevicesButton({ devices, onAdd }) {
-  const [open, setOpen] = useState(false)
-  const [hover, setHover] = useState(false)
-  const triggerRef = useRef(null)
+/* BreakButton — 36×36 ungroup affordance to the right of a multi-room member
+ * row's volume slider. 20px unlink glyph, muted; hover-revealed per row (CSS
+ * fades it in on `.fx-group-row-v2:hover`). */
+function BreakButton({ label, onClick }) {
   return (
-    <>
-      <button
-        ref={triggerRef}
-        type="button"
-        className={`fx-group-member-x fx-group-member-add${open ? ' open' : ''}`}
-        onClick={() => setOpen(o => !o)}
-        onMouseEnter={() => setHover(true)}
-        onMouseLeave={() => setHover(false)}
-        aria-label="Add devices to group"
-        aria-haspopup="menu"
-        aria-expanded={open}
-      >
-        <IconPlus size={14} stroke={2.5} />
-      </button>
-      <HoverTip anchorRef={triggerRef} label="Add devices" visible={hover && !open} />
-      {open && (
+    <IconTipButton
+      label={label}
+      className="fx-group-row-break"
+      onClick={onClick}
+      aria-label={label}
+    >
+      <IconUnlink size={20} />
+    </IconTipButton>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * RowName — the device/group title in a row. When `addDevices` is supplied
+ * (the "All" row and single-device cards) it renders a disclosure chevron next
+ * to the label and the whole title becomes a click target that opens the
+ * add-to-group checklist. The chevron matches the source-trigger chevron in
+ * size + muted treatment. Not a drag source — dragging lives on the row's
+ * whitespace (see DeviceRow), so the title click never fights the drag.
+ * ────────────────────────────────────────────────────────────────────────── */
+function RowName({ label, addDevices }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  const clickable = !!addDevices
+  return (
+    <div
+      ref={ref}
+      className={`fx-group-row-name${clickable ? ' has-add' : ''}`}
+      onClick={clickable ? () => setOpen(o => !o) : undefined}
+      draggable={false}
+    >
+      <span className="fx-name-device fx-group-row-name-label">{label}</span>
+      {clickable && (
+        <IconChevronDownFilled className="fx-name-chevron" size={24} aria-hidden />
+      )}
+      {clickable && open && (
         <AddDevicesPopover
-          devices={devices}
-          anchorRef={triggerRef}
+          devices={addDevices.devices}
+          anchorRef={ref}
           onClose={() => setOpen(false)}
-          onConfirm={onAdd}
+          onConfirm={addDevices.onAdd}
         />
       )}
-    </>
+    </div>
   )
 }
 
@@ -384,7 +382,7 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
  * snapshot on the first publish of a drag and discards it after a short
  * idle window, so successive drags compose naturally.
  * ────────────────────────────────────────────────────────────────────────── */
-function AllRow({ clients, mqtt, homeClientId, onUngroupAll, inlineSourceTrigger, addDevicesElement }) {
+function AllRow({ clients, mqtt, addDevices, sourceTrigger }) {
   const readVol = useCallback(
     (c) => mqtt.volumes[c.id] ?? c.config?.volume?.percent ?? 0,
     [mqtt.volumes],
@@ -426,23 +424,8 @@ function AllRow({ clients, mqtt, homeClientId, onUngroupAll, inlineSourceTrigger
   }
 
   return (
-    <div className={`fx-group-row-v2 is-all${inlineSourceTrigger ? ' with-source' : ''}`}>
-      <div className="fx-group-row-name">
-        <span className="fx-name-device fx-group-row-name-label">All</span>
-        <span className="fx-group-row-name-actions">
-          <IconTipButton
-            label="Ungroup all"
-            className="fx-group-member-x"
-            onClick={() => onUngroupAll(
-              clients.filter(c => c.id !== homeClientId).map(c => c.id)
-            )}
-            aria-label="Ungroup all"
-          >
-            <IconUnlink size={14} stroke={2.5} />
-          </IconTipButton>
-          {addDevicesElement}
-        </span>
-      </div>
+    <div className="fx-group-row-v2 is-all with-source">
+      <RowName label="All" addDevices={addDevices} />
       <div className="fx-group-row-volume">
         <button
           type="button"
@@ -462,7 +445,7 @@ function AllRow({ clients, mqtt, homeClientId, onUngroupAll, inlineSourceTrigger
           ariaLabel="All devices volume"
         />
       </div>
-      {inlineSourceTrigger}
+      {sourceTrigger}
     </div>
   )
 }
@@ -478,7 +461,7 @@ function AllRow({ clients, mqtt, homeClientId, onUngroupAll, inlineSourceTrigger
 function DeviceRow({
   client, isHome, isMulti, isOnly, isAirplayHome, hasMedia,
   nameMap, mqtt, onReturnHome, onDragStart, onDragEnd,
-  inlineSourceTrigger, isDragPlaceholder, addDevicesElement,
+  inlineSourceTrigger, isDragPlaceholder, addDevices,
 }) {
   const name = nameMap[client.id] || client.host?.name || client.id
   const vol = mqtt.volumes[client.id] ?? client.config?.volume?.percent ?? 0
@@ -493,15 +476,19 @@ function DeviceRow({
     mqtt.publishVolume?.(client.id, next)
   }
 
-  // The name container is the row's draggable handle. For multi-room
-  // non-home rows that means "move me to another group"; for single-device
-  // cards (only ever 1 row) it means "move the whole device to another
-  // group." We don't make the home row of a multi-room group draggable
-  // because dragging the home would disband the group, which isn't a
-  // useful affordance — users return-home via the X.
+  // Dragging lives on the ROW's whitespace, not on a handle or the name.
+  // Multi-room non-home rows drag to "move me to another group"; single-device
+  // cards drag to "move the whole device." The multi-room home row isn't
+  // draggable (dragging home would disband the group — users ungroup-all from
+  // the source menu). Interactive children (name+chevron, volume icon/slider,
+  // source trigger, ungroup button) opt out via the closest() guard below, so a
+  // click on any control never starts a drag — that's the whole point of the
+  // whitespace-only affordance the user asked for.
   const isRowDraggable = !isMulti || !isHome
-  const handleNameDragStart = (e) => {
-    if (e.target.closest('button, input, [role="slider"]')) {
+  const handleRowDragStart = (e) => {
+    if (e.target.closest(
+      '.fx-group-row-name, .fx-group-row-volume, .fx-source-trigger, .fx-group-row-break, button, input, [role="slider"]'
+    )) {
       e.preventDefault()
       return
     }
@@ -526,7 +513,7 @@ function DeviceRow({
     }
     onDragStart(client.id)
   }
-  const handleNameDragEnd = (e) => {
+  const handleRowDragEnd = (e) => {
     cleanupDeviceDragGhost()
     onDragEnd?.(e)
   }
@@ -534,38 +521,12 @@ function DeviceRow({
   return (
     <div
       ref={rowRef}
-      className={`fx-group-row-v2${inlineSourceTrigger ? ' with-source' : ''}${isDragPlaceholder ? ' is-drag-placeholder' : ''}`}
+      className={`fx-group-row-v2${(isMulti || inlineSourceTrigger) ? ' with-source' : ''}${isRowDraggable ? ' draggable' : ''}${isDragPlaceholder ? ' is-drag-placeholder' : ''}`}
+      draggable={isRowDraggable}
+      onDragStart={isRowDraggable ? handleRowDragStart : undefined}
+      onDragEnd={isRowDraggable ? handleRowDragEnd : undefined}
     >
-      <div
-        className={`fx-group-row-name${isRowDraggable ? ' draggable' : ''}`}
-        draggable={isRowDraggable}
-        onDragStart={isRowDraggable ? handleNameDragStart : undefined}
-        onDragEnd={isRowDraggable ? handleNameDragEnd : undefined}
-      >
-        {isRowDraggable && (
-          <span className="fx-row-drag" aria-hidden>
-            <DragBarsIcon size={10} />
-          </span>
-        )}
-        <span className="fx-name-device fx-group-row-name-label">
-          {name}
-        </span>
-        {((isMulti && !isHome) || addDevicesElement) && (
-          <span className="fx-group-row-name-actions">
-            {isMulti && !isHome && (
-              <IconTipButton
-                label="Ungroup"
-                className="fx-group-member-x"
-                onClick={() => onReturnHome(client.id)}
-                aria-label="Ungroup"
-              >
-                <IconUnlink size={14} stroke={2.5} />
-              </IconTipButton>
-            )}
-            {addDevicesElement}
-          </span>
-        )}
-      </div>
+      <RowName label={name} addDevices={addDevices} />
       <div className="fx-group-row-volume">
         {isAirplay ? (
           <span className="fx-group-row-volume-icon">
@@ -592,7 +553,15 @@ function DeviceRow({
           external={isAirplay}
         />
       </div>
-      {inlineSourceTrigger}
+      {/* Trailing column (right of the slider): multi-room member rows get an
+          ungroup button; the multi-room home row gets an invisible spacer so
+          its slider aligns with the member rows; single-device cards keep the
+          source-trigger here. */}
+      {isMulti
+        ? (isHome
+            ? <span className="fx-group-row-break-spacer" aria-hidden />
+            : <BreakButton label="Ungroup" onClick={() => onReturnHome(client.id)} />)
+        : inlineSourceTrigger}
       {/* AirPlay caption sits below the row, under the name. We position it
           absolutely so the row's grid track heights don't grow when the
           caption is present. */}
@@ -775,19 +744,17 @@ export default function GroupCard({
   // Devices eligible to be added to this group = the whole fleet minus the
   // devices already in it. `clients` is the fleet (keyed by client_id);
   // group members are `group.clients` (keyed by id). Sorted by display name
-  // so the checklist reads predictably. The "+" button hides entirely when
-  // there's nothing left to add.
+  // so the checklist reads predictably. The name chevron hides entirely when
+  // there's nothing left to add. The same data object drives the add-to-group
+  // checklist from the "All" row (multi) and the lone row (single cards).
   const memberIds = new Set(group.clients.map(c => c.id))
   const availableDevices = (clients || [])
     .filter(c => !memberIds.has(c.client_id))
     .map(c => ({ id: c.client_id, name: nameMap[c.client_id] || c.name || c.client_id }))
     .sort((a, b) => a.name.localeCompare(b.name))
-  const addDevicesElement = (onAddDevices && availableDevices.length > 0) ? (
-    <AddDevicesButton
-      devices={availableDevices}
-      onAdd={(ids) => onAddDevices(ids, homeClientId)}
-    />
-  ) : null
+  const addDevices = (onAddDevices && availableDevices.length > 0)
+    ? { devices: availableDevices, onAdd: (ids) => onAddDevices(ids, homeClientId) }
+    : null
 
   const inlineTrigger = showInlineTrigger ? (
     <SourceTrigger
@@ -874,10 +841,8 @@ export default function GroupCard({
             <AllRow
               clients={sorted}
               mqtt={mqtt}
-              homeClientId={homeClientId}
-              onUngroupAll={onUngroupAll}
-              inlineSourceTrigger={inlineTrigger}
-              addDevicesElement={addDevicesElement}
+              addDevices={addDevices}
+              sourceTrigger={inlineTrigger}
             />
           )}
           {sorted.map(c => (
@@ -895,7 +860,7 @@ export default function GroupCard({
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
               inlineSourceTrigger={!isMulti && c.id === homeClientId ? inlineTrigger : null}
-              addDevicesElement={!isMulti && c.id === homeClientId ? addDevicesElement : null}
+              addDevices={!isMulti && c.id === homeClientId ? addDevices : null}
               isDragPlaceholder={isMulti && c.id === placeholderClientId}
             />
           ))}

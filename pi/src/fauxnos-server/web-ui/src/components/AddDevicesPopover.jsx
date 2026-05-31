@@ -67,6 +67,7 @@ export default function AddDevicesPopover({ devices, anchorRef, onClose, onConfi
       role="menu"
       style={pos ? { top: pos.top, left: pos.left } : undefined}
     >
+      <div className="fx-add-devices-header">Add to group</div>
       {devices.length === 0 ? (
         <div className="fx-add-devices-empty">No other devices to add.</div>
       ) : (

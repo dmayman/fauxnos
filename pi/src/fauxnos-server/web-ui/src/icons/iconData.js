@@ -14,6 +14,12 @@ const filledModules = import.meta.glob(
   '/node_modules/@tabler/icons/icons/filled/*.svg',
   { eager: true, query: '?raw', import: 'default' }
 )
+// First-party icons live alongside this module under ./custom/. They use the
+// same `currentColor` outline convention as Tabler so they theme identically.
+const customModules = import.meta.glob(
+  './custom/*.svg',
+  { eager: true, query: '?raw', import: 'default' }
+)
 
 const ICON_MAP = new Map()
 const ICON_LIST = []
@@ -39,6 +45,7 @@ function addIcons(modules, style) {
 
 addIcons(outlineModules, 'outline')
 addIcons(filledModules, 'filled')
+addIcons(customModules, 'custom')
 
 // Sort by base name; within a base, filled before outline (so picking
 // the filled variant when both exist is visually adjacent).

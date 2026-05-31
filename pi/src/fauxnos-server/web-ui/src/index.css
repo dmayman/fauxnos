@@ -2119,6 +2119,67 @@ body {
   z-index: 2;
 }
 
+/* Break / ungroup button — 36×36, right of the slider on multi-room member
+   rows. 20px unlink glyph, muted; hover-revealed per row (only shows while
+   that row is hovered) and brightening on hover, matching the source-trigger
+   pill's hover treatment. Centered in the fixed 68px trailing track so it sits
+   under the source trigger / above the other rows' controls. */
+.fx-group-row-break {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 99px;
+  color: var(--fx-text-3);
+  cursor: pointer;
+  flex-shrink: 0;
+  justify-self: center;
+  opacity: 0;
+  transition: opacity var(--fx-dur) var(--fx-ease), background var(--fx-dur) var(--fx-ease), color var(--fx-dur) var(--fx-ease);
+}
+/* Reveal only while hovering this row (per the "only show on hover" spec). */
+.fx-group-row-v2:hover .fx-group-row-break,
+.fx-group-row-break:focus-visible { opacity: 1; }
+.fx-group-row-break:hover {
+  color: var(--fx-text);
+  background: rgba(74, 74, 74, 0.09);
+}
+[data-theme="dark"] .fx-group-row-break:hover,
+:root:not([data-theme]) .fx-group-row-break:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-group-row-break:hover {
+    background: rgba(74, 74, 74, 0.09);
+  }
+}
+.fx-group-row-break:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
+}
+/* Invisible placeholder in the trailing track so the multi-room home row's
+   slider lines up with the member rows that carry a break button. */
+.fx-group-row-break-spacer {
+  display: inline-block;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  justify-self: center;
+}
+
+/* Disclosure chevron next to a clickable title (the "All" row + single-device
+   cards) — advertises that clicking the name opens the add-to-group checklist.
+   Plain glyph, not a button; same size + muted treatment as the source-trigger
+   chevron. */
+.fx-name-chevron {
+  flex-shrink: 0;
+  color: var(--fx-text-3);
+}
+
 /* Device rows section — V1/V3/V4 (below media card or as the entire body) */
 .fx-group-rows {
   display: flex;
@@ -2191,8 +2252,11 @@ body {
   position: relative;
   min-width: 0;
 }
+/* Fixed 68px trailing track (= the source-trigger's natural width) so every
+   row's slider lines up whether its trailing control is the source trigger,
+   the 36px ungroup button, or the invisible spacer. */
 .fx-group-row-v2.with-source {
-  grid-template-columns: 163px 1fr auto;
+  grid-template-columns: 163px 1fr 68px;
 }
 /* Multi-card row placeholder — gray pill matching the dragged ghost's shape,
    so the "what was here" outline reads as a device card outline rather than
@@ -2210,29 +2274,30 @@ body {
    the .is-all entry that controls the whole group. */
 .fx-group-row-v2 .fx-name-device { color: var(--fx-text); }
 
+/* The name/title sizes to its content (label + optional chevron) and pins to
+   the start of its track, so the rest of the track is row whitespace the user
+   can grab to drag (see the drag-cursor rules below). */
 .fx-group-row-name {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   position: relative;
   min-width: 0;
-  cursor: inherit;
+  justify-self: start;
+  align-self: center;
+  width: max-content;
+  max-width: 100%;
   user-select: none;
-  /* The whole name column is one contiguous draggable box — handle, the gap
-     after it, and the label — with no dead zones. align-self:stretch overrides
-     the row grid's align-items:center so the box spans the full row height;
-     auto width + the grid's default justify-self:stretch makes the box fill
-     the track. (The gutter-pull margin lives on .draggable below — only rows
-     that actually render a handle should shift, so non-draggable rows keep
-     their label aligned with the draggable ones.) */
-  align-self: stretch;
 }
-/* Pull the in-flow handle (6px) + its 8px gap = 14px back into the card's
-   padding gutter so the label stays put. Scoped to .draggable because only
-   those rows render a handle; non-draggable rows have no handle to fill the
-   gutter, so shifting them would misalign their labels. */
-.fx-group-row-name.draggable { cursor: grab; margin-left: -14px; }
-.fx-group-row-name.draggable:active { cursor: grabbing; }
+/* Titles that open the add-to-group checklist (the "All" row + single-device
+   cards) are clickable and get a subtle lighten-on-hover affordance covering
+   both the label and the chevron. brightness() reads as "lighter" in both
+   themes (brightens light text on dark, lightens dark text on light). */
+.fx-group-row-name.has-add {
+  cursor: pointer;
+  transition: filter var(--fx-dur) var(--fx-ease);
+}
+.fx-group-row-name.has-add:hover { filter: brightness(1.3); }
 .fx-group-row-name-label {
   white-space: nowrap;
   overflow: hidden;
@@ -2247,29 +2312,17 @@ body {
   white-space: nowrap;
 }
 
-/* Per-row drag handle — only renders for non-home devices in multi-room;
-   visible on row hover. Two parallel bars that sit just left of the name,
-   in normal flow inside the draggable .fx-group-row-name box (the box's
-   negative left margin parks them in the card's padding gutter so the label
-   isn't pushed right). Matches the Figma kitchen-row drag indicator. */
-.fx-row-drag {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 6px;
-  height: 10px;
-  color: var(--fx-text-2);
-  cursor: grab;
-  opacity: 0;
-  transition: opacity var(--fx-dur) var(--fx-ease);
-}
-.fx-group-rows:hover .fx-row-drag,
-.fx-row-drag:focus-visible {
-  opacity: 0.7;
-}
-.fx-row-drag:hover { opacity: 1; }
-.fx-row-drag:active { cursor: grabbing; }
+/* Whitespace-only drag. The ROW is the drag source; its interactive children
+   (name+chevron, the volume icon/slider, source trigger, ungroup button) opt
+   out in JS so a click on a control never starts a drag. The grab cursor shows
+   only over the row's own whitespace — children reset it to their own cursor
+   (buttons/sliders carry pointer; name/volume reset to default below). */
+.fx-group-row-v2.draggable { cursor: grab; }
+.fx-group-row-v2.draggable:active { cursor: grabbing; }
+.fx-group-row-v2.draggable .fx-group-row-name,
+.fx-group-row-v2.draggable .fx-group-row-volume,
+.fx-group-row-v2.draggable .fx-group-row-break-spacer { cursor: default; }
+.fx-group-row-v2.draggable .fx-group-row-name.has-add { cursor: pointer; }
 
 .fx-group-row-volume {
   display: flex;
@@ -2634,6 +2687,14 @@ button.fx-group-row-volume-icon:focus-visible {
   :root:not([data-theme]) .fx-add-devices-popover {
     box-shadow: 0 0 16px rgba(0, 0, 0, 0.09);
   }
+}
+/* Popover title, same treatment as the "Devices" header in the devices
+   popover (12px / 600 / muted). */
+.fx-add-devices-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fx-text-3);
+  padding: 4px 8px 0;
 }
 .fx-add-devices-empty {
   font-size: var(--fx-text-sm);
