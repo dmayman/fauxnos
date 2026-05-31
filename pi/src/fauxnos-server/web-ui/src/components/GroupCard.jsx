@@ -474,17 +474,19 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
           ? <img src={track.art_url} alt="" loading="lazy" draggable={false} />
           : <SourceIcon sourceId={sourceId} size={56} />}
       </div>
-      {/* art, text, and progress are flat grid children of the media card so
-          both breakpoints can place them via grid-template-areas: desktop keeps
-          art on the left spanning text+progress; mweb (≤600px) drops progress to
-          a full-width row beneath the art+title pair (see index.css). */}
-      <div className="fx-group-media-text">
-        <span className="fx-title-track" title={titleText}>{titleText}</span>
-        {subText && <span className="fx-meta-track" title={subText}>{subText}</span>}
-      </div>
-      {hasControls && (
-        <div className="fx-group-progress">
-          <div className="fx-group-progress-bar">
+      {/* Desktop keeps the body wrapper (art | body[text, progress]) exactly as
+          before. On mweb (≤600px) index.css sets the body to display:contents so
+          text + progress lift into the media card's grid and reflow via named
+          areas — art+title on top, progress full-width below — without changing
+          the desktop layout. */}
+      <div className="fx-group-media-body">
+        <div className="fx-group-media-text">
+          <span className="fx-title-track" title={titleText}>{titleText}</span>
+          {subText && <span className="fx-meta-track" title={subText}>{subText}</span>}
+        </div>
+        {hasControls && (
+          <div className="fx-group-progress">
+            <div className="fx-group-progress-bar">
               <span className="fx-time-track">{fmtTime(clampedPos)}</span>
               <div
                 className="fx-group-progress-track"
@@ -523,6 +525,7 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
             </div>
           </div>
         )}
+      </div>
     </div>
   )
 }
@@ -740,6 +743,13 @@ export default function GroupCard({
     || group.clients[0]?.id
   const cardRef = useRef(null)
 
+  // Single-device cards have no always-on "Edit group" pill (a lone device
+  // isn't yet a group). On mweb, tapping the card body reveals the same
+  // membership-editor pill at the bottom; tapping again hides it. Desktop keeps
+  // the hover-chevron path, so the revealed pill is CSS-hidden there regardless
+  // of this state. (FX-42 — single-card mweb entry point.)
+  const [expanded, setExpanded] = useState(false)
+
   const sorted = [...group.clients].sort((a, b) => {
     if (a.id === homeClientId) return -1
     if (b.id === homeClientId) return 1
@@ -872,6 +882,18 @@ export default function GroupCard({
     onDragEnd?.(e)
   }
 
+  // Tap-to-reveal the Edit-group pill on single-device cards (mweb). Ignores
+  // taps that land on a control (slider, source trigger, any button/input, the
+  // pill itself) or the media transport — those own their own gesture. A drag
+  // suppresses the trailing click in the browser, so a hold-drag never toggles.
+  const handleCardClick = (e) => {
+    if (isMulti) return
+    if (e.target.closest(
+      'button, input, a, [role="slider"], .fx-group-row-volume, .fx-group-progress'
+    )) return
+    setExpanded(v => !v)
+  }
+
   const handleDragOver = (e) => {
     // Source card is never a drop target — without preventDefault the drop
     // event won't fire and the browser shows the no-drop cursor.
@@ -969,13 +991,14 @@ export default function GroupCard({
     >
       <div
         ref={cardRef}
-        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${cardDraggable ? ' fx-drag-host' : ''}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}`}
+        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${cardDraggable ? ' fx-drag-host' : ''}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}${expanded ? ' is-expanded' : ''}`}
         data-has-media={hasMedia ? 'true' : 'false'}
         style={artStyle}
         draggable={cardDraggable}
         onPointerDown={cardDraggable ? handleCardPointerDown : undefined}
         onDragStart={cardDraggable ? handleCardDragStart : undefined}
         onDragEnd={cardDraggable ? handleCardDragEnd : undefined}
+        onClick={!isMulti ? handleCardClick : undefined}
         {...cardDropHandlers}
         onDoubleClick={(e) => {
           // Quick path to settings: double-click name area opens device panel
@@ -1023,10 +1046,11 @@ export default function GroupCard({
               isDragPlaceholder={isMulti && c.id === placeholderClientId}
             />
           ))}
-          {/* Edit-group pill — mweb-only (CSS-gated), always present on
-              multi-room cards. The touch-first replacement for the hover
-              chevron that opens the membership editor. */}
-          {isMulti && <EditGroupButton addDevices={addDevices} />}
+          {/* Edit-group pill — mweb-only (CSS-gated). Always present on
+              multi-room cards; on single-device cards it's revealed by tapping
+              the card body (expanded). The touch-first replacement for the
+              hover chevron that opens the membership editor. */}
+          {(isMulti || expanded) && <EditGroupButton addDevices={addDevices} />}
         </div>
       </div>
     </div>

@@ -1912,26 +1912,13 @@ body {
   position: relative;
   padding: 24px;
   display: grid;
-  /* Flat 3-child grid (art · text · progress) placed by named areas, so the
-     same DOM serves both breakpoints. Desktop: art on the left spanning the
-     text+progress stack. Mweb (≤600px, see the media query): progress drops to
-     a full-width row beneath the art+title pair. */
   grid-template-columns: 150px 1fr;
-  grid-template-areas:
-    "art text"
-    "art progress";
-  column-gap: 36px;
-  row-gap: 16px;
-  align-content: center;
+  gap: 36px;
   align-items: center;
   /* No background or border — the media content sits flat on the
      outer card's album-art tint. */
   background: transparent;
 }
-.fx-group-media-art { grid-area: art; }
-.fx-group-media-text { grid-area: text; }
-.fx-group-media-body { grid-area: text; }
-.fx-group-progress { grid-area: progress; }
 
 .fx-group-media-art {
   width: 150px;
@@ -1970,13 +1957,12 @@ body {
   display: block;
 }
 
-/* Empty (V4) variant body — a single CTA in the text area. Vertically
-   centered by the card's align-items: center, so no manual top nudge. */
 .fx-group-media-body {
   display: flex;
   flex-direction: column;
   gap: 16px;
   min-width: 0;
+  padding-top: 28px;
 }
 .fx-group-media-text {
   display: flex;
@@ -2558,7 +2544,11 @@ button.fx-group-row-volume-icon:focus-visible {
    the media titles shrink (per Figma).
    ═════════════════════════════════════════════════════════════════════════════ */
 @media (max-width: 600px) {
-  /* ── Media region: art + title on top, progress full-width below ───────── */
+  /* ── Media region: art + title on top, progress full-width below ─────────
+     Desktop keeps the body wrapper (art | body[text, progress]); here the body
+     becomes display:contents so its children (text, progress) lift into the
+     media card's grid and place via named areas. This leaves the desktop layout
+     untouched — only the mweb breakpoint reflows. */
   .fx-group-media-card {
     grid-template-columns: 100px 1fr;
     grid-template-areas:
@@ -2573,6 +2563,16 @@ button.fx-group-row-volume-icon:focus-visible {
   .fx-group-media-art.is-empty {
     width: 100px;
     height: 100px;
+  }
+  .fx-group-media-art { grid-area: art; }
+  /* Playing variant: lift text + progress into the card grid. */
+  .fx-group-media-card:not(.is-empty) .fx-group-media-body { display: contents; }
+  .fx-group-media-text { grid-area: text; }
+  .fx-group-progress   { grid-area: progress; }
+  /* Empty (V4) variant keeps its body box, parked in the title slot. */
+  .fx-group-media-card.is-empty .fx-group-media-body {
+    grid-area: text;
+    padding-top: 0;
   }
   /* No anchored source-trigger on mobile (it lives inline in the All row), so
      the title can use the full column width. */
@@ -2651,6 +2651,18 @@ button.fx-group-row-volume-icon:focus-visible {
   .fx-edit-group-btn:active,
   .fx-edit-group-btn.open { background: var(--fx-line-strong); }
   .fx-edit-group-chevron { color: var(--fx-text-3); flex-shrink: 0; }
+  /* Single-device cards reveal the pill on tap — fade it in so it doesn't
+     pop. Multi-room cards render it from the start, so they're unaffected. */
+  .fx-group-card-v2.is-expanded .fx-edit-group-btn {
+    animation: fx-edit-group-reveal 220ms var(--fx-ease);
+  }
+}
+@keyframes fx-edit-group-reveal {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-group-card-v2.is-expanded .fx-edit-group-btn { animation: none; }
 }
 
 /* ── Source popover ───────────────────────────────────────────────────────
