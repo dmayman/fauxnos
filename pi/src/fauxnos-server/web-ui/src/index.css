@@ -2130,78 +2130,61 @@ body {
   z-index: 2;
 }
 
-/* Break / ungroup button — 36×36, right of the slider on multi-room member
-   rows. 20px unlink glyph, muted; hover-revealed per row (only shows while
-   that row is hovered) and brightening on hover, matching the source-trigger
-   pill's hover treatment. Centered in the fixed 68px trailing track so it sits
-   under the source trigger / above the other rows' controls. */
-.fx-group-row-break {
+/* Name-action button next to a row's title — the single 36×36 affordance that
+   lives just after the device/group label. Two uses, one treatment: the "All"
+   row + single-device cards render the add-to-group disclosure chevron here;
+   multi-room member rows render the ungroup button here (it used to sit to the
+   right of the slider). Circular, muted, matching the old ungroup icon. Hidden
+   at rest and revealed on hover anywhere on the card (or while its popover is
+   open) so the resting card stays clean and so hovering anywhere over a
+   multi-device card surfaces every member's ungroup at once; keeps its layout
+   box at all times (opacity, not display) so revealing it never reflows. */
+.fx-name-action-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 36px;
   height: 36px;
   padding: 0;
+  margin: 0;
   border: 0;
   background: transparent;
   border-radius: 99px;
   color: var(--fx-text-3);
   cursor: pointer;
   flex-shrink: 0;
-  justify-self: center;
   opacity: 0;
   transition: opacity var(--fx-dur) var(--fx-ease), background var(--fx-dur) var(--fx-ease), color var(--fx-dur) var(--fx-ease);
 }
-/* Reveal only while hovering this row (per the "only show on hover" spec). */
-.fx-group-row-v2:hover .fx-group-row-break,
-.fx-group-row-break:focus-visible { opacity: 1; }
-.fx-group-row-break:hover {
+.fx-group-card-v2:hover .fx-name-action-btn,
+.fx-name-action-btn.open,
+.fx-name-action-btn:focus-visible {
+  opacity: 1;
+}
+.fx-name-action-btn:hover {
   color: var(--fx-text);
   background: rgba(74, 74, 74, 0.09);
 }
-[data-theme="dark"] .fx-group-row-break:hover,
-:root:not([data-theme]) .fx-group-row-break:hover {
+[data-theme="dark"] .fx-name-action-btn:hover,
+:root:not([data-theme]) .fx-name-action-btn:hover {
   background: rgba(255, 255, 255, 0.08);
 }
 @media (prefers-color-scheme: light) {
-  :root:not([data-theme]) .fx-group-row-break:hover {
+  :root:not([data-theme]) .fx-name-action-btn:hover {
     background: rgba(74, 74, 74, 0.09);
   }
 }
-.fx-group-row-break:focus-visible {
+.fx-name-action-btn:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
-/* Invisible placeholder in the trailing track so the multi-room home row's
-   slider lines up with the member rows that carry a break button. */
-.fx-group-row-break-spacer {
-  display: inline-block;
-  width: 36px;
-  height: 36px;
-  flex-shrink: 0;
-  justify-self: center;
-}
-
-/* Disclosure chevron next to a clickable title (the "All" row + single-device
-   cards) — advertises that clicking the name opens the add-to-group checklist.
-   Plain glyph, not a button; same size + muted treatment as the source-trigger
-   chevron. Hidden at rest and revealed on hover of anywhere on the card (or
-   while its popover is open) so the resting card stays clean. It keeps its
-   layout box at all times (opacity, not display) so revealing it never
-   reflows the name. */
 .fx-name-chevron {
   flex-shrink: 0;
-  color: var(--fx-text-3);
-  opacity: 0;
-  transition: opacity var(--fx-dur) var(--fx-ease);
-}
-.fx-group-card-v2:hover .fx-name-chevron,
-.fx-group-row-name.open .fx-name-chevron {
-  opacity: 1;
+  color: inherit;
 }
 /* Touch devices have no hover — keep the affordance visible there. */
 @media (hover: none) {
-  .fx-name-chevron { opacity: 1; }
+  .fx-name-action-btn { opacity: 1; }
 }
 
 /* Device rows section — V1/V3/V4 (below media card or as the entire body) */
@@ -2304,7 +2287,7 @@ body {
 .fx-group-row-name {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   position: relative;
   min-width: 0;
   justify-self: start;
@@ -2313,15 +2296,6 @@ body {
   max-width: 100%;
   user-select: none;
 }
-/* Titles that open the add-to-group checklist (the "All" row + single-device
-   cards) are clickable and get a subtle lighten-on-hover affordance covering
-   both the label and the chevron. brightness() reads as "lighter" in both
-   themes (brightens light text on dark, lightens dark text on light). */
-.fx-group-row-name.has-add {
-  cursor: pointer;
-  transition: filter var(--fx-dur) var(--fx-ease);
-}
-.fx-group-row-name.has-add:hover { filter: brightness(1.3); }
 .fx-group-row-name-label {
   white-space: nowrap;
   overflow: hidden;
@@ -2336,30 +2310,24 @@ body {
   white-space: nowrap;
 }
 
-/* Whitespace-only drag. The ROW is the drag source; its interactive children
-   (name+chevron, the volume icon/slider, source trigger, ungroup button) opt
-   out in JS so a click on a control never starts a drag. The grab cursor shows
-   only over the row's own whitespace — children reset it to their own cursor
-   (buttons/sliders carry pointer; name/volume reset to default below). */
+/* Drag cursor. The ROW is the drag source; the device title is part of the
+   drag area so it carries the grab cursor too. Interactive children opt out in
+   JS (and reset their cursor here): the volume control + ungroup spacer read as
+   default; buttons (incl. the chevron button) carry pointer. */
 .fx-group-row-v2.draggable { cursor: grab; }
 .fx-group-row-v2.draggable:active { cursor: grabbing; }
-.fx-group-row-v2.draggable .fx-group-row-name,
-.fx-group-row-v2.draggable .fx-group-row-volume,
-.fx-group-row-v2.draggable .fx-group-row-break-spacer { cursor: default; }
-.fx-group-row-v2.draggable .fx-group-row-name.has-add { cursor: pointer; }
+.fx-group-row-v2.draggable .fx-group-row-volume { cursor: default; }
 
 /* Single-device cards drag from the whole card edge-to-edge, so the grab
-   cursor lives on the card surface. Interactive children reset to their own
-   cursor: buttons/add-name read as pointer, the volume slider + seek track
-   read as default (their pointer gesture changes the value, not a drag). */
+   cursor lives on the card surface (and the title). Interactive children reset:
+   buttons read as pointer, the volume slider + seek track read as default
+   (their pointer gesture changes the value, not a drag). */
 .fx-group-card-v2.fx-drag-host { cursor: grab; }
 .fx-group-card-v2.fx-drag-host:active { cursor: grabbing; }
 .fx-group-card-v2.fx-drag-host .fx-group-row-volume,
-.fx-group-card-v2.fx-drag-host .fx-group-progress,
-.fx-group-card-v2.fx-drag-host .fx-group-row-name { cursor: default; }
+.fx-group-card-v2.fx-drag-host .fx-group-progress { cursor: default; }
 .fx-group-card-v2.fx-drag-host button,
-.fx-group-card-v2.fx-drag-host input,
-.fx-group-card-v2.fx-drag-host .fx-group-row-name.has-add { cursor: pointer; }
+.fx-group-card-v2.fx-drag-host input { cursor: pointer; }
 
 /* Drag-grip affordance — the original two-vertical-bars handle in the row's
    left gutter (the 24–32px the rows container reserves on the left). It sits

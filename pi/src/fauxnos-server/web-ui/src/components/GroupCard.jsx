@@ -85,7 +85,7 @@ function buildDeviceDragGhost(row, cardRect) {
   const clone = row.cloneNode(true)
   clone.classList.remove('with-source', 'is-drag-placeholder')
   clone.querySelectorAll(
-    '.fx-source-trigger, .fx-group-row-break, .fx-name-chevron, .fx-group-row-name-subtitle'
+    '.fx-source-trigger, .fx-name-action-btn, .fx-group-row-name-subtitle'
   ).forEach((n) => n.remove())
 
   rows.appendChild(clone)
@@ -99,14 +99,16 @@ function cleanupDeviceDragGhost() {
   document.querySelectorAll('.fx-device-drag-ghost').forEach(node => node.remove())
 }
 
-/* Anything inside a drag host that owns its own pointer gesture — the name
-   (click-to-add / double-click-to-open), the volume control, the source
-   trigger, the ungroup button, and any raw button/input/anchor/slider. A
-   pointerdown landing on one of these must NOT arm the native device drag,
-   so the slider (and every other control) gets a clean, uninterrupted
-   gesture. The same selector gates dragstart as a belt-and-suspenders guard. */
+/* Anything inside a drag host that owns its own pointer gesture — the volume
+   control, the source trigger, the ungroup button, the add-devices chevron
+   button, and any raw button/input/anchor/slider. A pointerdown landing on one
+   of these must NOT arm the native device drag, so the slider (and every other
+   control) gets a clean, uninterrupted gesture. The same selector gates
+   dragstart as a belt-and-suspenders guard.
+   The device title is deliberately NOT here — it's part of the drag area; its
+   only interactive child (the chevron button) opts out via the `button` rule. */
 const DRAG_OPT_OUT =
-  '.fx-group-row-name, .fx-group-row-volume, .fx-source-trigger, .fx-group-row-break, ' +
+  '.fx-group-row-volume, .fx-source-trigger, ' +
   '.fx-group-progress, button, input, a, [role="slider"]'
 
 /* Arm/disarm the native drag on the pointerdown that precedes it. Setting
@@ -276,49 +278,50 @@ function IconTipButton({ label, className, onClick, children, ...rest }) {
   )
 }
 
-/* BreakButton — 36×36 ungroup affordance to the right of a multi-room member
- * row's volume slider. 20px unlink glyph, muted; hover-revealed per row (CSS
- * fades it in on `.fx-group-row-v2:hover`). */
-function BreakButton({ label, onClick }) {
-  return (
-    <IconTipButton
-      label={label}
-      className="fx-group-row-break"
-      onClick={onClick}
-      aria-label={label}
-    >
-      <IconUnlink size={20} />
-    </IconTipButton>
-  )
-}
-
 /* ─────────────────────────────────────────────────────────────────────────────
- * RowName — the device/group title in a row. When `addDevices` is supplied
- * (the "All" row and single-device cards) it renders a disclosure chevron next
- * to the label and the whole title becomes a click target that opens the
- * add-to-group checklist. The chevron matches the source-trigger chevron in
- * size + muted treatment. Not a drag source — dragging lives on the row's
- * whitespace (see DeviceRow), so the title click never fights the drag.
+ * RowName — the device/group title in a row. The label itself is part of the
+ * drag area (it carries the grab cursor and starts a device drag, same as the
+ * rest of the row/card). A single action button sits next to the label, sharing
+ * one 36×36 treatment (`.fx-name-action-btn`, matching what was the ungroup
+ * icon): the "All" row + single-device cards get the add-to-group disclosure
+ * chevron (`addDevices`); multi-room member rows get the ungroup button
+ * (`ungroup`). Both opt out of the drag via the `button` rule in DRAG_OPT_OUT,
+ * so dragging the title never fights the action click. They reveal together on
+ * card hover (see the CSS), so hovering anywhere over the card shows them all.
  * ────────────────────────────────────────────────────────────────────────── */
-function RowName({ label, addDevices }) {
+function RowName({ label, addDevices, ungroup }) {
   const [open, setOpen] = useState(false)
-  const ref = useRef(null)
+  const btnRef = useRef(null)
   const clickable = !!addDevices
   return (
-    <div
-      ref={ref}
-      className={`fx-group-row-name${clickable ? ' has-add' : ''}${open ? ' open' : ''}`}
-      onClick={clickable ? () => setOpen(o => !o) : undefined}
-      draggable={false}
-    >
+    <div className={`fx-group-row-name${clickable ? ' has-add' : ''}${open ? ' open' : ''}`}>
       <span className="fx-name-device fx-group-row-name-label">{label}</span>
-      {clickable && (
-        <IconChevronDownFilled className="fx-name-chevron" size={24} aria-hidden />
-      )}
+      {clickable ? (
+        <button
+          ref={btnRef}
+          type="button"
+          className={`fx-name-action-btn${open ? ' open' : ''}`}
+          onClick={() => setOpen(o => !o)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label="Add devices to group"
+        >
+          <IconChevronDownFilled className="fx-name-chevron" size={24} aria-hidden />
+        </button>
+      ) : ungroup ? (
+        <button
+          type="button"
+          className="fx-name-action-btn"
+          onClick={ungroup}
+          aria-label="Ungroup"
+        >
+          <IconUnlink size={20} />
+        </button>
+      ) : null}
       {clickable && open && (
         <AddDevicesPopover
           devices={addDevices.devices}
-          anchorRef={ref}
+          anchorRef={btnRef}
           onClose={() => setOpen(false)}
           onConfirm={addDevices.onAdd}
         />
@@ -577,7 +580,11 @@ function DeviceRow({
           <DragBarsIcon size={10} />
         </span>
       )}
-      <RowName label={name} addDevices={addDevices} />
+      <RowName
+        label={name}
+        addDevices={addDevices}
+        ungroup={isMulti && !isHome ? () => onReturnHome(client.id) : undefined}
+      />
       <div className="fx-group-row-volume">
         {isAirplay ? (
           <span className="fx-group-row-volume-icon">
@@ -604,15 +611,11 @@ function DeviceRow({
           external={isAirplay}
         />
       </div>
-      {/* Trailing column (right of the slider): multi-room member rows get an
-          ungroup button; the multi-room home row gets an invisible spacer so
-          its slider aligns with the member rows; single-device cards keep the
-          source-trigger here. */}
-      {isMulti
-        ? (isHome
-            ? <span className="fx-group-row-break-spacer" aria-hidden />
-            : <BreakButton label="Ungroup" onClick={() => onReturnHome(client.id)} />)
-        : inlineSourceTrigger}
+      {/* Trailing column (right of the slider): single-device cards keep the
+          source-trigger here. Multi-room rows leave it empty — the grid still
+          reserves the 68px track so every slider stays aligned — because the
+          ungroup affordance now lives next to the name (see RowName.ungroup). */}
+      {!isMulti ? inlineSourceTrigger : null}
       {/* AirPlay caption sits below the row, under the name. We position it
           absolutely so the row's grid track heights don't grow when the
           caption is present. */}
