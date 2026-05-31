@@ -193,40 +193,90 @@ export default function GroupsTab({ groups, clients, loading, mqtt, onRefresh, o
     }
   }, [onRefresh, groups])
 
-  // Multi-add from the "+" checklist: move every selected device into the
-  // target group at once. We keep the existing single-join endpoint and loop
-  // it client-side rather than adding a batched endpoint — that keeps this
-  // change out of api_server.py (and clear of FX-7's server work). One
-  // optimistic update covers all selections; the API calls fire sequentially
-  // so the server applies them in order, then a single onRefresh reconciles.
-  const handleAddDevices = useCallback(async (clientIds, targetHomeClientId) => {
-    if (!clientIds?.length) return
+  // Reconcile a group's membership from the checklist's full desired selection.
+  // The popover hands us the complete set of devices that should end up in the
+  // home's group (home included); we diff it against live membership and fire
+  // joins for the additions + return-homes for the removals. We keep the
+  // existing single-device endpoints and loop them client-side rather than
+  // adding a batched endpoint — that keeps this out of api_server.py (and clear
+  // of FX-7's server work). One optimistic update covers the whole diff; the
+  // API calls fire sequentially so the server applies them in order (joins
+  // first, then removals), then a single onRefresh reconciles.
+  const handleAddDevices = useCallback(async (desiredIds, homeClientId) => {
+    const base0 = optimisticGroups || groups
+    const homeGroup = base0.find(
+      g => isHomeGroupOf(g, homeClientId) || g.home_client_id === homeClientId
+    )
+    const currentIds = new Set((homeGroup?.clients || []).map(c => c.id))
+    const desired = new Set(desiredIds)
+    desired.add(homeClientId) // home never leaves its own group
+    const toAdd = [...desired].filter(id => id !== homeClientId && !currentIds.has(id))
+    const toRemove = [...currentIds].filter(id => id !== homeClientId && !desired.has(id))
+    if (toAdd.length === 0 && toRemove.length === 0) return
+
     setOptimisticGroups(prev => {
-      const base = prev || groups
-      const moving = clientIds.map(id => findClient(base, id)).filter(Boolean)
-      if (moving.length === 0) return base
-      const movingIds = new Set(moving.map(c => c.id))
-      return base.map(g => {
-        const without = (g.clients || []).filter(c => !movingIds.has(c.id))
-        if (g.home_client_id === targetHomeClientId) {
-          return { ...g, clients: [...without, ...moving] }
+      let base = prev || groups
+      // Additions: pull each device out of wherever it is and into the home group.
+      if (toAdd.length) {
+        const moving = toAdd.map(id => findClient(base, id)).filter(Boolean)
+        const movingIds = new Set(moving.map(c => c.id))
+        base = base.map(g => {
+          const without = (g.clients || []).filter(c => !movingIds.has(c.id))
+          if (isHomeGroupOf(g, homeClientId) || g.home_client_id === homeClientId) {
+            return { ...g, clients: [...without, ...moving] }
+          }
+          return { ...g, clients: without }
+        })
+      }
+      // Removals: send each unchecked member back to its own home group,
+      // synthesizing that group if the server didn't return an empty one.
+      for (const clientId of toRemove) {
+        const moving = findClient(base, clientId)
+        if (!moving) continue
+        let foundHome = false
+        base = base.map(g => {
+          const without = (g.clients || []).filter(c => c.id !== clientId)
+          if (isHomeGroupOf(g, clientId)) {
+            foundHome = true
+            return { ...g, clients: [...without, moving] }
+          }
+          return { ...g, clients: without }
+        })
+        if (!foundHome) {
+          base = [...base, {
+            id: `optimistic_${clientId}_home`,
+            home_client_id: clientId,
+            stream_id: `source_${clientId}_spotify`,
+            clients: [moving],
+            sources: [],
+            available_streams: [],
+          }]
         }
-        return { ...g, clients: without }
-      })
+      }
+      return base
     })
+
     try {
-      for (const id of clientIds) {
+      for (const id of toAdd) {
         await apiFetch('/api/groups/join', {
           method: 'POST',
-          body: JSON.stringify({ client_id: id, target_client_id: targetHomeClientId }),
+          body: JSON.stringify({ client_id: id, target_client_id: homeClientId }),
+        })
+      }
+      for (const id of toRemove) {
+        await apiFetch('/api/groups/return-home', {
+          method: 'POST',
+          body: JSON.stringify({ client_id: id }),
         })
       }
       onRefresh()
     } catch (e) {
-      console.error('Add devices failed:', e)
+      console.error('Update group failed:', e)
       onRefresh() // reconcile to server reality on error too
     }
-  }, [onRefresh, groups])
+    // isHomeGroupOf is a stable in-component helper
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onRefresh, groups, optimisticGroups])
 
   const handleReturnHome = useCallback(async (clientId) => {
     // Record an ungroup anchor so the new home card pins right below the

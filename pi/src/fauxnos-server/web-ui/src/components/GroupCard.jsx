@@ -321,9 +321,12 @@ function RowName({ label, addDevices, ungroup }) {
       {clickable && open && (
         <AddDevicesPopover
           devices={addDevices.devices}
+          homeClientId={addDevices.homeClientId}
+          memberIds={addDevices.memberIds}
+          isGroup={addDevices.isGroup}
           anchorRef={btnRef}
           onClose={() => setOpen(false)}
-          onConfirm={addDevices.onAdd}
+          onConfirm={addDevices.onConfirm}
         />
       )}
     </div>
@@ -569,7 +572,7 @@ function DeviceRow({
   return (
     <div
       ref={rowRef}
-      className={`fx-group-row-v2${(isMulti || inlineSourceTrigger) ? ' with-source' : ''}${isRowDraggable ? ' draggable' : ''}${isDragPlaceholder ? ' is-drag-placeholder' : ''}`}
+      className={`fx-group-row-v2${isMulti ? ' with-source no-trailing' : inlineSourceTrigger ? ' with-source' : ''}${isRowDraggable ? ' draggable' : ''}${isDragPlaceholder ? ' is-drag-placeholder' : ''}`}
       draggable={isRowDraggable}
       onPointerDown={isRowDraggable ? handleRowPointerDown : undefined}
       onDragStart={isRowDraggable ? handleRowDragStart : undefined}
@@ -612,9 +615,10 @@ function DeviceRow({
         />
       </div>
       {/* Trailing column (right of the slider): single-device cards keep the
-          source-trigger here. Multi-room rows leave it empty — the grid still
-          reserves the 68px track so every slider stays aligned — because the
-          ungroup affordance now lives next to the name (see RowName.ungroup). */}
+          source-trigger here. Multi-room rows have no trailing control — the
+          ungroup affordance now lives next to the name (see RowName.ungroup) —
+          so they drop the 68px track (`no-trailing`) and the slider runs to the
+          card's right edge. */}
       {!isMulti ? inlineSourceTrigger : null}
       {/* AirPlay caption sits below the row, under the name. We position it
           absolutely so the row's grid track heights don't grow when the
@@ -805,19 +809,25 @@ export default function GroupCard({
 
   const handleConfigure = () => onOpenDevice(homeClientId)
 
-  // Devices eligible to be added to this group = the whole fleet minus the
-  // devices already in it. `clients` is the fleet (keyed by client_id);
-  // group members are `group.clients` (keyed by id). Sorted by display name
-  // so the checklist reads predictably. The name chevron hides entirely when
-  // there's nothing left to add. The same data object drives the add-to-group
-  // checklist from the "All" row (multi) and the lone row (single cards).
-  const memberIds = new Set(group.clients.map(c => c.id))
-  const availableDevices = (clients || [])
-    .filter(c => !memberIds.has(c.client_id))
+  // The group checklist shows the WHOLE fleet, always — the home device pinned
+  // checked+disabled, current members pre-checked (uncheckable to remove). The
+  // popover diffs its final selection against the live membership, so a single
+  // `onAddDevices(desiredIds, homeClientId)` call covers both add and remove.
+  // `clients` is the fleet (keyed by client_id); members are `group.clients`
+  // (keyed by id). The chevron hides only when the fleet is a single device
+  // (nothing to group). Drives both the "All" row (multi) and the lone row.
+  const memberIds = group.clients.map(c => c.id)
+  const allDevices = (clients || [])
     .map(c => ({ id: c.client_id, name: nameMap[c.client_id] || c.name || c.client_id }))
     .sort((a, b) => a.name.localeCompare(b.name))
-  const addDevices = (onAddDevices && availableDevices.length > 0)
-    ? { devices: availableDevices, onAdd: (ids) => onAddDevices(ids, homeClientId) }
+  const addDevices = (onAddDevices && allDevices.length > 1)
+    ? {
+        devices: allDevices,
+        homeClientId,
+        memberIds,
+        isGroup: isMulti,
+        onConfirm: (ids) => onAddDevices(ids, homeClientId),
+      }
     : null
 
   const inlineTrigger = showInlineTrigger ? (

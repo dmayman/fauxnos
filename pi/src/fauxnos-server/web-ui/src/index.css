@@ -2143,8 +2143,8 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   margin: 0;
   border: 0;
@@ -2259,11 +2259,18 @@ body {
   position: relative;
   min-width: 0;
 }
-/* Fixed 68px trailing track (= the source-trigger's natural width) so every
-   row's slider lines up whether its trailing control is the source trigger,
-   the 36px ungroup button, or the invisible spacer. */
+/* Fixed 68px trailing track (= the source-trigger's natural width) so the row
+   with a trailing control (the "All" row's source trigger, or a single-device
+   card's inline trigger) lines up with the rest. */
 .fx-group-row-v2.with-source {
   grid-template-columns: 163px 1fr 68px;
+}
+/* Multi-room member rows have no trailing control anymore (ungroup moved next
+   to the name), so they drop the 68px track and let the slider run to the
+   card's right edge — keeping the 163px name column so the slider START still
+   lines up with the "All" row above. */
+.fx-group-row-v2.with-source.no-trailing {
+  grid-template-columns: 163px 1fr;
 }
 /* Multi-card row placeholder — gray pill matching the dragged ghost's shape,
    so the "what was here" outline reads as a device card outline rather than
@@ -2726,10 +2733,35 @@ button.fx-group-row-volume-icon:focus-visible {
 /* Popover title, same treatment as the "Devices" header in the devices
    popover (12px / 600 / muted). */
 .fx-add-devices-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 0;
+}
+.fx-add-devices-title {
   font-size: 12px;
   font-weight: 600;
   color: var(--fx-text-3);
-  padding: 4px 8px 0;
+}
+/* "Select all" reads as a text link: same size as the title but the primary
+   text color so it carries more weight; darkens toward the accent on hover. */
+.fx-add-devices-select-all {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fx-text);
+  cursor: pointer;
+  transition: color var(--fx-dur) var(--fx-ease);
+}
+.fx-add-devices-select-all:hover { color: var(--fx-accent); }
+.fx-add-devices-select-all:focus-visible {
+  outline: none;
+  border-radius: 4px;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
 .fx-add-devices-empty {
   font-size: var(--fx-text-sm);
@@ -2763,6 +2795,16 @@ button.fx-group-row-volume-icon:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
+/* Home/master row: checked + locked. No hover, default cursor — it can't
+   leave its own group. The label stays full-strength; only the checkbox dims
+   (60% opacity) to read as disabled. */
+.fx-add-devices-row.locked {
+  cursor: default;
+}
+.fx-add-devices-row.locked:hover { background: none; }
+.fx-add-devices-row.locked .fx-add-devices-check {
+  opacity: 0.6;
+}
 .fx-add-devices-row-label {
   flex: 1;
   min-width: 0;
@@ -2792,6 +2834,10 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 .fx-add-devices-confirm {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   width: 100%;
   height: 36px;
   border: 1px solid transparent;
@@ -2802,21 +2848,35 @@ button.fx-group-row-volume-icon:focus-visible {
   cursor: pointer;
   transition: background var(--fx-dur) var(--fx-ease),
               border-color var(--fx-dur) var(--fx-ease),
-              color var(--fx-dur) var(--fx-ease);
+              color var(--fx-dur) var(--fx-ease),
+              opacity var(--fx-dur) var(--fx-ease);
 }
-/* Primary (≥1 selected → "Add to group"): accent fill. */
+/* Commit button ("Create group" / "Update group"): accent fill, disabled
+   until the selection actually changes the membership. The accent-hover token
+   is a near-invisible delta on this solid fill, so the hover leans on a slight
+   opacity drop (perceptible in both themes since the fill picks up the popover
+   surface beneath it). */
 .fx-add-devices-confirm.primary {
   background: var(--fx-accent);
   color: var(--fx-on-accent);
 }
-.fx-add-devices-confirm.primary:hover { background: var(--fx-accent-hover); }
-/* Secondary (nothing selected → "Group all"): bordered ghost. */
-.fx-add-devices-confirm.secondary {
+.fx-add-devices-confirm.primary:not(:disabled):hover {
+  background: var(--fx-accent-hover);
+  opacity: 0.88;
+}
+.fx-add-devices-confirm:disabled {
+  background: var(--fx-surface-3);
+  color: var(--fx-text-3);
+  cursor: default;
+}
+/* Tertiary ("Break group" on an untouched existing group): outlined ghost
+   with the full text color; the surface firms up on hover. */
+.fx-add-devices-confirm.tertiary {
   background: transparent;
   border-color: var(--fx-line-strong);
   color: var(--fx-text);
 }
-.fx-add-devices-confirm.secondary:hover {
+.fx-add-devices-confirm.tertiary:hover {
   background: var(--fx-surface-2);
   border-color: var(--fx-text-3);
 }
