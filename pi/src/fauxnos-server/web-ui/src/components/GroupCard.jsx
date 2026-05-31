@@ -750,6 +750,32 @@ export default function GroupCard({
   // of this state. (FX-42 — single-card mweb entry point.)
   const [expanded, setExpanded] = useState(false)
 
+  // Mweb press feedback: the whole card springs down a touch on press. Driven by
+  // pointerdown (not CSS :active, which mobile browsers suppress the moment a
+  // scroll starts) so the feedback fires on touch-down and — crucially — stays
+  // pressed *while scrolling*. We deliberately do NOT release on pointercancel
+  // (the browser fires that the instant it claims the gesture for scrolling,
+  // which would pop the card back immediately); instead we hold until the finger
+  // actually lifts (touchend/pointerup). Presses on a control are ignored so
+  // adjusting volume / tapping a button doesn't scale the card. (FX-42)
+  const [pressed, setPressed] = useState(false)
+  const handleCardPress = (e) => {
+    if (!window.matchMedia('(max-width: 600px)').matches) return
+    if (e.target.closest(
+      'button, input, a, [role="slider"], .fx-group-row-volume, .fx-group-progress, .fx-source-trigger, .fx-edit-group-btn'
+    )) return
+    setPressed(true)
+    const release = () => {
+      setPressed(false)
+      window.removeEventListener('pointerup', release, true)
+      window.removeEventListener('touchend', release, true)
+      window.removeEventListener('touchcancel', release, true)
+    }
+    window.addEventListener('pointerup', release, true)
+    window.addEventListener('touchend', release, true)
+    window.addEventListener('touchcancel', release, true)
+  }
+
   const sorted = [...group.clients].sort((a, b) => {
     if (a.id === homeClientId) return -1
     if (b.id === homeClientId) return 1
@@ -991,11 +1017,14 @@ export default function GroupCard({
     >
       <div
         ref={cardRef}
-        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${cardDraggable ? ' fx-drag-host' : ''}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}${expanded ? ' is-expanded' : ''}`}
+        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${cardDraggable ? ' fx-drag-host' : ''}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}${expanded ? ' is-expanded' : ''}${pressed ? ' is-pressed' : ''}`}
         data-has-media={hasMedia ? 'true' : 'false'}
         style={artStyle}
         draggable={cardDraggable}
-        onPointerDown={cardDraggable ? handleCardPointerDown : undefined}
+        onPointerDown={(e) => {
+          handleCardPress(e)
+          if (cardDraggable) handleCardPointerDown(e)
+        }}
         onDragStart={cardDraggable ? handleCardDragStart : undefined}
         onDragEnd={cardDraggable ? handleCardDragEnd : undefined}
         onClick={!isMulti ? handleCardClick : undefined}

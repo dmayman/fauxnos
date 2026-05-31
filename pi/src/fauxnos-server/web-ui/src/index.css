@@ -2544,6 +2544,21 @@ button.fx-group-row-volume-icon:focus-visible {
    the media titles shrink (per Figma).
    ═════════════════════════════════════════════════════════════════════════════ */
 @media (max-width: 600px) {
+  /* ── Press feedback: the whole card springs down on touch ──────────────
+     Driven by an `is-pressed` class (JS pointerdown) rather than :active so it
+     fires on touch-down even when the gesture becomes a scroll. The spring
+     ease (slight overshoot) gives the scale a bouncy settle on release. We fold
+     transform into the card's existing transition so the hover-chrome
+     transitions survive. */
+  .fx-group-card-v2.fx-card-hover {
+    transition:
+      transform 260ms cubic-bezier(0.34, 1.55, 0.64, 1),
+      background 460ms cubic-bezier(0.34, 1.5, 0.64, 1),
+      border-color var(--fx-dur) var(--fx-ease),
+      box-shadow var(--fx-dur) var(--fx-ease);
+  }
+  .fx-group-card-v2.is-pressed { transform: scale(0.97); }
+
   /* ── Media region: art + title on top, progress full-width below ─────────
      Desktop keeps the body wrapper (art | body[text, progress]); here the body
      becomes display:contents so its children (text, progress) lift into the
@@ -2663,6 +2678,7 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 @media (prefers-reduced-motion: reduce) {
   .fx-group-card-v2.is-expanded .fx-edit-group-btn { animation: none; }
+  .fx-group-card-v2.is-pressed { transform: none; }
 }
 
 /* ── Source popover ───────────────────────────────────────────────────────
