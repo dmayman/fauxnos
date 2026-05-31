@@ -15,6 +15,18 @@ import {
   IconPlayerTrackNextFilled,
 } from '@tabler/icons-react'
 
+/* Drag-grip glyph — two short vertical bars. This is the original handle the
+   group cards shipped with (restored per preference over the dotted grip). */
+function DragBarsIcon({ size = 10 }) {
+  const w = Math.max(4, Math.round(size * 0.6))
+  return (
+    <svg width={w} height={size} viewBox="0 0 6 10" fill="currentColor" aria-hidden>
+      <rect x="0" y="0" width="2" height="10" rx="1" />
+      <rect x="4" y="0" width="2" height="10" rx="1" />
+    </svg>
+  )
+}
+
 import VolumeSlider, { VolumeIcon } from './VolumeSlider'
 import SourcePopover from './SourcePopover'
 import AddDevicesPopover from './AddDevicesPopover'
@@ -85,6 +97,60 @@ function buildDeviceDragGhost(row, cardRect) {
 
 function cleanupDeviceDragGhost() {
   document.querySelectorAll('.fx-device-drag-ghost').forEach(node => node.remove())
+}
+
+/* Anything inside a drag host that owns its own pointer gesture — the name
+   (click-to-add / double-click-to-open), the volume control, the source
+   trigger, the ungroup button, and any raw button/input/anchor/slider. A
+   pointerdown landing on one of these must NOT arm the native device drag,
+   so the slider (and every other control) gets a clean, uninterrupted
+   gesture. The same selector gates dragstart as a belt-and-suspenders guard. */
+const DRAG_OPT_OUT =
+  '.fx-group-row-name, .fx-group-row-volume, .fx-source-trigger, .fx-group-row-break, ' +
+  '.fx-group-progress, button, input, a, [role="slider"]'
+
+/* Arm/disarm the native drag on the pointerdown that precedes it. Setting
+   `draggable` synchronously here — before the browser's mousemove drag
+   heuristic runs — is what guarantees a press on the slider can never be
+   hijacked into a device drag (the #1 complaint). On whitespace we arm it;
+   on any control we disarm it for this gesture. Each pointerdown recomputes,
+   so state never gets stuck. */
+function armDragOnPointerDown(hostEl, enabled, e) {
+  if (!hostEl) return
+  hostEl.draggable = enabled && !e.target.closest(DRAG_OPT_OUT)
+}
+
+/* Shared dragstart for both drag hosts (the whole card for single-device
+   groups, an individual member row for multi-room). Builds the V2-pill ghost
+   from the row element and mirrors the grab point onto it, clamped so a grab
+   started up in the media region still lands the ghost under the cursor. */
+function startDeviceDrag(e, { clientId, hostEl, rowEl, onDragStart }) {
+  if (e.target.closest(DRAG_OPT_OUT)) {
+    e.preventDefault()
+    return
+  }
+  e.dataTransfer.setData('text/plain', clientId)
+  e.dataTransfer.effectAllowed = 'move'
+  const card = hostEl?.closest('.fx-group-card-v2') || hostEl
+  const row = rowEl || card?.querySelector('.fx-group-row-v2')
+  if (row && card) {
+    const rowRect = row.getBoundingClientRect()
+    const cardRect = card.getBoundingClientRect()
+    const ghost = buildDeviceDragGhost(row, cardRect)
+    if (ghost) {
+      // .v2-single .fx-group-rows pads 16/24/16/32 — the cloned row sits at
+      // that offset from the ghost's top-left. Mirror the user's grab point
+      // within the row into the same point on the ghost; clamp so a grab from
+      // the media region (above the row) still pins the ghost to the cursor.
+      const SHELL_PAD_LEFT = 32
+      const SHELL_PAD_TOP = 16
+      const GHOST_H = 74
+      const offsetX = Math.min(Math.max((e.clientX - rowRect.left) + SHELL_PAD_LEFT, 0), cardRect.width)
+      const offsetY = Math.min(Math.max((e.clientY - rowRect.top) + SHELL_PAD_TOP, 0), GHOST_H)
+      e.dataTransfer.setDragImage(ghost, offsetX, offsetY)
+    }
+  }
+  onDragStart(clientId)
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -241,7 +307,7 @@ function RowName({ label, addDevices }) {
   return (
     <div
       ref={ref}
-      className={`fx-group-row-name${clickable ? ' has-add' : ''}`}
+      className={`fx-group-row-name${clickable ? ' has-add' : ''}${open ? ' open' : ''}`}
       onClick={clickable ? () => setOpen(o => !o) : undefined}
       draggable={false}
     >
@@ -320,7 +386,7 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
     <div className="fx-group-media-card">
       <div className="fx-group-media-art">
         {hasMeta && track.art_url
-          ? <img src={track.art_url} alt="" loading="lazy" />
+          ? <img src={track.art_url} alt="" loading="lazy" draggable={false} />
           : <SourceIcon sourceId={sourceId} size={56} />}
       </div>
       <div className="fx-group-media-body">
@@ -476,43 +542,22 @@ function DeviceRow({
     mqtt.publishVolume?.(client.id, next)
   }
 
-  // Dragging lives on the ROW's whitespace, not on a handle or the name.
-  // Multi-room non-home rows drag to "move me to another group"; single-device
-  // cards drag to "move the whole device." The multi-room home row isn't
-  // draggable (dragging home would disband the group — users ungroup-all from
-  // the source menu). Interactive children (name+chevron, volume icon/slider,
-  // source trigger, ungroup button) opt out via the closest() guard below, so a
-  // click on any control never starts a drag — that's the whole point of the
-  // whitespace-only affordance the user asked for.
-  const isRowDraggable = !isMulti || !isHome
-  const handleRowDragStart = (e) => {
-    if (e.target.closest(
-      '.fx-group-row-name, .fx-group-row-volume, .fx-source-trigger, .fx-group-row-break, button, input, [role="slider"]'
-    )) {
-      e.preventDefault()
-      return
-    }
-    e.dataTransfer.setData('text/plain', client.id)
-    e.dataTransfer.effectAllowed = 'move'
-    const row = rowRef.current
-    const card = row?.closest('.fx-group-card-v2')
-    if (row && card) {
-      const rowRect = row.getBoundingClientRect()
-      const cardRect = card.getBoundingClientRect()
-      const ghost = buildDeviceDragGhost(row, cardRect)
-      if (ghost) {
-        // .v2-single .fx-group-rows pads 16/24/16/32 — the cloned row sits at
-        // that offset from the ghost's top-left. Mirror the user's grab point
-        // within the row into the same point on the ghost.
-        const SHELL_PAD_LEFT = 32
-        const SHELL_PAD_TOP = 16
-        const offsetX = (e.clientX - rowRect.left) + SHELL_PAD_LEFT
-        const offsetY = (e.clientY - rowRect.top) + SHELL_PAD_TOP
-        e.dataTransfer.setDragImage(ghost, offsetX, offsetY)
-      }
-    }
-    onDragStart(client.id)
-  }
+  // Per-row dragging only applies to multi-room *member* rows ("move me to
+  // another group"). The multi-room home row isn't draggable (dragging home
+  // would disband the group — users ungroup-all from the source menu), and
+  // single-device cards now drag from the whole card (see GroupCard), not the
+  // inner row, so the grab area runs edge-to-edge. Interactive children opt
+  // out via DRAG_OPT_OUT in both the pointerdown arm and the dragstart guard.
+  const isRowDraggable = isMulti && !isHome
+  // The grip handle is a hover-revealed affordance advertising "you can drag
+  // this." It shows on every draggable device row (multi-room members) and on
+  // single-device rows (where the whole card is the drag host). It's a DOM
+  // child of the drag host, so grabbing it starts the drag naturally; it's
+  // deliberately NOT in DRAG_OPT_OUT.
+  const showDragHandle = !isMulti || !isHome
+  const handleRowPointerDown = (e) => armDragOnPointerDown(rowRef.current, isRowDraggable, e)
+  const handleRowDragStart = (e) =>
+    startDeviceDrag(e, { clientId: client.id, rowEl: rowRef.current, onDragStart })
   const handleRowDragEnd = (e) => {
     cleanupDeviceDragGhost()
     onDragEnd?.(e)
@@ -523,9 +568,15 @@ function DeviceRow({
       ref={rowRef}
       className={`fx-group-row-v2${(isMulti || inlineSourceTrigger) ? ' with-source' : ''}${isRowDraggable ? ' draggable' : ''}${isDragPlaceholder ? ' is-drag-placeholder' : ''}`}
       draggable={isRowDraggable}
+      onPointerDown={isRowDraggable ? handleRowPointerDown : undefined}
       onDragStart={isRowDraggable ? handleRowDragStart : undefined}
       onDragEnd={isRowDraggable ? handleRowDragEnd : undefined}
     >
+      {showDragHandle && (
+        <span className="fx-drag-grip" aria-hidden>
+          <DragBarsIcon size={10} />
+        </span>
+      )}
       <RowName label={name} addDevices={addDevices} />
       <div className="fx-group-row-volume">
         {isAirplay ? (
@@ -718,10 +769,20 @@ export default function GroupCard({
   const showAnchoredTrigger = false
   const showInlineTrigger = true
 
-  // Card itself is never draggable — drag affordance lives on the device
-  // name. The slider's pointer-down events would otherwise fight the
-  // card's drag start, leaving the slider unusable on touch and mouse
-  // alike.
+  // Single-device cards drag from the whole card (edge-to-edge), not the
+  // inner row — so the grab area covers the card's padding and (in V3) the
+  // media region too. Multi-room cards aren't card-draggable; their member
+  // rows carry their own per-row drag. The pointerdown arm disables the
+  // native drag the instant a control is pressed, so the slider stays clean.
+  const singleDragClientId = !isMulti ? sorted[0]?.id : null
+  const cardDraggable = !!singleDragClientId
+  const handleCardPointerDown = (e) => armDragOnPointerDown(cardRef.current, cardDraggable, e)
+  const handleCardDragStart = (e) =>
+    startDeviceDrag(e, { clientId: singleDragClientId, hostEl: cardRef.current, onDragStart })
+  const handleCardDragEnd = (e) => {
+    cleanupDeviceDragGhost()
+    onDragEnd?.(e)
+  }
 
   const handleDragOver = (e) => {
     // Source card is never a drop target — without preventDefault the drop
@@ -814,9 +875,13 @@ export default function GroupCard({
     >
       <div
         ref={cardRef}
-        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}`}
+        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${cardDraggable ? ' fx-drag-host' : ''}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}`}
         data-has-media={hasMedia ? 'true' : 'false'}
         style={artStyle}
+        draggable={cardDraggable}
+        onPointerDown={cardDraggable ? handleCardPointerDown : undefined}
+        onDragStart={cardDraggable ? handleCardDragStart : undefined}
+        onDragEnd={cardDraggable ? handleCardDragEnd : undefined}
         {...cardDropHandlers}
         onDoubleClick={(e) => {
           // Quick path to settings: double-click name area opens device panel

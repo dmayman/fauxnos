@@ -787,6 +787,10 @@ a { color: var(--accent); }
   align-items: center;
   gap: var(--fx-3);
   width: 100%;
+  /* Dragging the slider must never start a text selection — without this the
+     browser highlights the % label / nearby text as a "selected" state mid-drag. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 .fx-volume-icon {
   flex-shrink: 0;
@@ -874,7 +878,10 @@ a { color: var(--accent); }
 .fx-volume-input:focus-visible ~ .fx-volume-thumb {
   /* visual focus carried by the track ring */
 }
-.fx-volume-track:focus-within {
+/* Focus ring only for keyboard focus — a range input keeps focus after a
+   mouse/touch drag, so :focus-within would leave the ring stuck on as a
+   "selected" state. :focus-visible suppresses it for pointer interaction. */
+.fx-volume-track:has(.fx-volume-input:focus-visible) {
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
 .fx-volume-label {
@@ -1982,6 +1989,10 @@ body {
   align-items: center;
   gap: 16px;
   min-width: 0;
+  /* Same as the volume slider — dragging the seek bar must not start a text
+     selection on the timestamps. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 .fx-group-progress-bar {
   display: flex;
@@ -2044,7 +2055,7 @@ body {
               margin-left var(--fx-dur) var(--fx-ease);
 }
 .fx-group-progress-track:hover .fx-group-progress-thumb,
-.fx-group-progress-track:focus-within .fx-group-progress-thumb {
+.fx-group-progress-track:has(.fx-group-progress-input:focus-visible) .fx-group-progress-thumb {
   opacity: 1;
   width: 14px;
   height: 14px;
@@ -2174,10 +2185,23 @@ body {
 /* Disclosure chevron next to a clickable title (the "All" row + single-device
    cards) — advertises that clicking the name opens the add-to-group checklist.
    Plain glyph, not a button; same size + muted treatment as the source-trigger
-   chevron. */
+   chevron. Hidden at rest and revealed on hover of anywhere on the card (or
+   while its popover is open) so the resting card stays clean. It keeps its
+   layout box at all times (opacity, not display) so revealing it never
+   reflows the name. */
 .fx-name-chevron {
   flex-shrink: 0;
   color: var(--fx-text-3);
+  opacity: 0;
+  transition: opacity var(--fx-dur) var(--fx-ease);
+}
+.fx-group-card-v2:hover .fx-name-chevron,
+.fx-group-row-name.open .fx-name-chevron {
+  opacity: 1;
+}
+/* Touch devices have no hover — keep the affordance visible there. */
+@media (hover: none) {
+  .fx-name-chevron { opacity: 1; }
 }
 
 /* Device rows section — V1/V3/V4 (below media card or as the entire body) */
@@ -2324,6 +2348,49 @@ body {
 .fx-group-row-v2.draggable .fx-group-row-break-spacer { cursor: default; }
 .fx-group-row-v2.draggable .fx-group-row-name.has-add { cursor: pointer; }
 
+/* Single-device cards drag from the whole card edge-to-edge, so the grab
+   cursor lives on the card surface. Interactive children reset to their own
+   cursor: buttons/add-name read as pointer, the volume slider + seek track
+   read as default (their pointer gesture changes the value, not a drag). */
+.fx-group-card-v2.fx-drag-host { cursor: grab; }
+.fx-group-card-v2.fx-drag-host:active { cursor: grabbing; }
+.fx-group-card-v2.fx-drag-host .fx-group-row-volume,
+.fx-group-card-v2.fx-drag-host .fx-group-progress,
+.fx-group-card-v2.fx-drag-host .fx-group-row-name { cursor: default; }
+.fx-group-card-v2.fx-drag-host button,
+.fx-group-card-v2.fx-drag-host input,
+.fx-group-card-v2.fx-drag-host .fx-group-row-name.has-add { cursor: pointer; }
+
+/* Drag-grip affordance — the original two-vertical-bars handle in the row's
+   left gutter (the 24–32px the rows container reserves on the left). It sits
+   absolutely to the left of the row content; because it's a DOM child of the
+   draggable host, grabbing it starts the drag. Hidden at rest, fades in on
+   card hover so the resting card reads clean, and brightens to full on a
+   direct hover of the grip itself. */
+.fx-drag-grip {
+  position: absolute;
+  left: -14px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 6px;
+  height: 10px;
+  color: var(--fx-text-2);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity var(--fx-dur) var(--fx-ease);
+}
+.fx-drag-grip:active { cursor: grabbing; }
+.fx-group-card-v2:hover .fx-drag-grip,
+.fx-drag-grip:focus-visible { opacity: 0.7; }
+.fx-drag-grip:hover { opacity: 1; }
+/* Touch devices have no hover — keep the grip visible there. */
+@media (hover: none) {
+  .fx-drag-grip { opacity: 0.7; }
+}
+
 .fx-group-row-volume {
   display: flex;
   align-items: center;
@@ -2391,7 +2458,7 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 .fx-volume.card-v2:hover .fx-volume-thumb,
 .fx-volume.card-v2:active .fx-volume-thumb,
-.fx-volume.card-v2:focus-within .fx-volume-thumb {
+.fx-volume.card-v2:has(.fx-volume-input:focus-visible) .fx-volume-thumb {
   opacity: 1;
   width: 14px; height: 14px; margin-left: -7px;
 }
