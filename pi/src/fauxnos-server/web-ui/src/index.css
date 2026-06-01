@@ -2802,48 +2802,14 @@ button.fx-group-row-volume-icon:focus-visible {
   font-weight: 700;
 }
 
-/* Multi-room footer: a small hint explaining why other sources are
-   hidden, plus an explicit Ungroup-all CTA. Visual weight sits below
-   the source list — caption + ghost-button, no heavy chrome. Hint
-   and button group together (8px gap) so they read as one unit, with
-   the outer popover gap of 16px separating them from the Spotify row. */
-.fx-source-popover-ungroup-group {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 8px;
-}
+/* Multi-room caption: a small title at the top of the popover warning that
+   picking a source will dissolve the group (FX-50). Same type size as the
+   former "Ungroup to use other sources" hint; the outer popover gap of 16px
+   separates it from the first source row. */
 .fx-source-popover-hint {
   font-size: var(--fx-text-xs);
   line-height: var(--fx-lh-xs);
   color: var(--fx-text-2);
-}
-.fx-source-popover-ungroup {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 32px;
-  padding: 0 var(--fx-3);
-  border: 1px solid var(--fx-line-strong);
-  border-radius: var(--fx-r-pill);
-  background: transparent;
-  color: var(--fx-text);
-  font: inherit;
-  font-size: var(--fx-text-sm);
-  font-weight: 600;
-  cursor: pointer;
-  transition: background var(--fx-dur) var(--fx-ease),
-              border-color var(--fx-dur) var(--fx-ease),
-              color var(--fx-dur) var(--fx-ease);
-}
-.fx-source-popover-ungroup:hover {
-  background: var(--fx-surface-2);
-  border-color: var(--fx-text-3);
-}
-.fx-source-popover-ungroup:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
 
 /* "Configure" button at the bottom of the source popover — full-width

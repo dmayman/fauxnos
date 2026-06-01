@@ -225,17 +225,32 @@ function useInterpolatedPosition(playback) {
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * SourceTrigger — single button (current source icon + chevron) that opens
- * a SourcePopover listing every available source with the active one
- * checked and non-spotify locked in multi-room. Anchored top-right of the
- * outer card for V1/V3, inline in the row for V2/V4.
+ * a SourcePopover listing every available source with the active one checked.
+ * On a multi-room card the same full list is shown, but selecting a source
+ * ungroups all members first, then switches (see handleSelect). Anchored
+ * top-right of the outer card for V1/V3, inline in the row for V2/V4.
  * ────────────────────────────────────────────────────────────────────────── */
 function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientId, onSwitchSource, onUngroupAll, onConfigure, anchored = false }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef(null)
 
-  const handleSelect = (sourceId) => {
-    onSwitchSource(groupId, homeClientId, sourceId)
+  const handleSelect = async (sourceId) => {
+    // On a multi-device card, picking any source dissolves the group first
+    // (members return to their own home groups), then the chosen source is
+    // switched on the home device. The popover caption warns about this.
+    //
+    // The ungroup MUST complete before the switch fires: the server-side
+    // /api/groups/source has a ratchet that 409-rejects any non-spotify
+    // source while the group still has >1 connected client (only Spotify is
+    // multiroom-capable). Since the entire point of this flow is picking a
+    // non-spotify source, firing them concurrently means the switch lands
+    // while snapcast still shows the group intact → rejected, and the source
+    // never changes even though the group dissolves. Awaiting the ungroup
+    // lets snapcast settle (home alone on the original group id) so the
+    // ratchet passes and Group.SetStream targets the right group (FX-50).
     setOpen(false)
+    if (isMulti) await onUngroupAll()
+    onSwitchSource(groupId, homeClientId, sourceId)
   }
 
   return (
@@ -261,7 +276,6 @@ function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientI
           anchorRef={triggerRef}
           onClose={() => setOpen(false)}
           onSelect={handleSelect}
-          onUngroupAll={onUngroupAll}
           onConfigure={onConfigure}
         />
       )}
@@ -634,7 +648,8 @@ function DeviceRow({
 
   // Per-row dragging only applies to multi-room *member* rows ("move me to
   // another group"). The multi-room home row isn't draggable (dragging home
-  // would disband the group — users ungroup-all from the source menu), and
+  // would disband the group — users ungroup-all by picking a source in the
+  // source menu, which dissolves the group as a side effect), and
   // single-device cards now drag from the whole card (see GroupCard), not the
   // inner row, so the grab area runs edge-to-edge. Interactive children opt
   // out via DRAG_OPT_OUT in both the pointerdown arm and the dragstart guard.
@@ -783,7 +798,17 @@ export default function GroupCard({
   const homeClient = sorted.find(c => c.id === homeClientId) || sorted[0]
   const track = mqtt.tracks[homeClientId]
   const playback = mqtt.playback[homeClientId]
-  const hasMedia = !!track && (track.title || track.artist)
+
+  // The now-playing media surface (album art, track meta, transport, progress)
+  // is Spotify-only: go-librespot is the sole source that publishes track
+  // metadata and drives the transport endpoint. Other sources (AirPlay, Vinyl,
+  // Analog, custom) have no transport, and a stale Spotify track lingers in
+  // mqtt.tracks after switching away — so gate the media surface on Spotify
+  // mode and let other sources fall back to the plain device-row layout.
+  const currentSourceId = mqtt.modes[homeClientId]
+    || (group.stream_id ? group.stream_id.replace(/^source_fauxnos\d+_/, '') : null)
+  const isSpotify = currentSourceId === 'spotify'
+  const hasMedia = isSpotify && !!track && (track.title || track.artist)
   const isAirplayHome = mqtt.modes[homeClient?.id] === 'airplay'
 
   // Extract album-art dominant color and project it onto the card's --art-*
@@ -792,9 +817,6 @@ export default function GroupCard({
   const { effective } = useTheme()
   const tuning = useTuning()
   const artStyle = artColor ? buildArtTokens(artColor, effective === 'dark', tuning) : undefined
-
-  const currentSourceId = mqtt.modes[homeClientId]
-    || (group.stream_id ? group.stream_id.replace(/^source_fauxnos\d+_/, '') : null)
 
   // V1 = multi + media | V2 = single + no media | V3 = single + media | V4 = multi + no media
   const variant = isMulti
@@ -931,9 +953,10 @@ export default function GroupCard({
   // Batched ungroup — hand the full member list to GroupsTab so it can
   // serialize the return-home calls. Looping onReturnHome here would fire
   // concurrent requests that race on the server (see handleUngroupAll there).
-  const handleUngroupAll = () => {
+  // Returns the promise so callers (SourceTrigger.handleSelect) can await the
+  // dissolve before switching source.
+  const handleUngroupAll = () =>
     onUngroupAll(sorted.filter(c => c.id !== homeClientId).map(c => c.id))
-  }
 
   const handleConfigure = () => onOpenDevice(homeClientId)
 

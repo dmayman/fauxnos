@@ -7,7 +7,6 @@ import {
   IconMicrophoneFilled,
   IconExternalLinkFilled,
   IconHeadphonesFilled,
-  IconUnlink,
 } from '@tabler/icons-react'
 import CustomIcon from './CustomIcon'
 
@@ -29,21 +28,17 @@ function SourceIcon({ source, size = 24 }) {
  * Popover that opens when the SourceTrigger button is clicked.
  *
  * - Anchors below-right of the trigger using its `getBoundingClientRect`.
- * - Rows: icon + label, with a check on the active source. Locked rows
- *   (non-spotify on multi-room groups) render dimmed with a tooltip.
+ * - Rows: icon + label, with a check on the active source.
+ * - On a multi-room (grouped) card the same full source list is shown, but a
+ *   caption warns that picking any source dissolves the group: the caller
+ *   ungroups all members first, then switches the chosen source (FX-50).
  * - Closes on click-outside (excluding the anchor) or after a successful
  *   selection.
  */
 export default function SourcePopover({
-  sources, currentSourceId, isMulti, anchorRef, onClose, onSelect, onUngroupAll, onConfigure,
+  sources, currentSourceId, isMulti, anchorRef, onClose, onSelect, onConfigure,
 }) {
-  /* Multi-room groups can only run Spotify — instead of showing the other
-     sources as locked rows, hide them entirely and surface an explicit
-     "Ungroup to use a different source" hint + Ungroup-all button so the
-     user has a clear path out of the constraint. */
-  const visibleSources = isMulti
-    ? sources.filter(s => s.id === 'spotify')
-    : sources
+  const visibleSources = sources || []
   const ref = useRef(null)
   const [pos, setPos] = useState(null)
 
@@ -81,6 +76,9 @@ export default function SourcePopover({
       role="menu"
       style={pos ? { top: pos.top, right: pos.right } : undefined}
     >
+      {isMulti && (
+        <div className="fx-source-popover-hint">Changing source will ungroup all</div>
+      )}
       {(!visibleSources || visibleSources.length === 0) && (
         <div className="fx-source-popover-empty">No sources available.</div>
       )}
@@ -108,21 +106,6 @@ export default function SourcePopover({
           </button>
         )
       })}
-      {isMulti && onUngroupAll && (
-        <div className="fx-source-popover-ungroup-group">
-          <div className="fx-source-popover-hint">
-            Ungroup to use other sources
-          </div>
-          <button
-            type="button"
-            className="fx-source-popover-ungroup"
-            onClick={() => { onUngroupAll(); onClose() }}
-          >
-            <IconUnlink size={18} stroke={2.5} aria-hidden />
-            <span>Ungroup all</span>
-          </button>
-        </div>
-      )}
       {onConfigure && (
         <button
           type="button"
