@@ -165,12 +165,12 @@ struct GroupCard: View {
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// 120pt cover (web .fx-group-media-art = 150).
+    /// 100pt cover — the web mweb `.fx-group-media-art` (desktop 150, ≤600px 100).
     private var albumArt: some View {
         let url = hasMedia ? track?.artUrl.flatMap(URL.init(string:)) : nil
         return RoundedRectangle(cornerRadius: Radius.art, style: .continuous)
             .fill(FX.surface2)
-            .frame(width: 120, height: 120)
+            .frame(width: 100, height: 100)
             .overlay {
                 if let url {
                     AsyncImage(url: url) { phase in
@@ -190,6 +190,10 @@ struct GroupCard: View {
 
     // MARK: Progress + inline transport (web .fx-group-progress)
 
+    // Phone media layout (FX-58): mirrors the web mweb `.fx-group-progress`
+    // (flex-direction: column) — the seek bar runs edge-to-edge with the start
+    // / end times flanking it, and the transport row centers beneath, rather
+    // than the desktop one-line "time–bar–time–prev/play/next" cram.
     @ViewBuilder
     private var progressAndTransport: some View {
         let duration = Double(track?.durationMs ?? 0)
@@ -197,15 +201,17 @@ struct GroupCard: View {
             TimelineView(.periodic(from: .now, by: 0.5)) { context in
                 let live = interpolatedPosition(at: context.date, duration: duration)
                 let pos = scrubbing ? scrubValue : live
-                HStack(spacing: Space.md) {
-                    Text(fmtTime(pos)).font(FxFont.timeTrack).monospacedDigit().foregroundStyle(FX.text2)
-                    ScrubBar(value: pos, duration: duration, accent: palette.accent, track: palette.trackTint) {
-                        scrubbing = true; scrubValue = live
-                    } onScrub: { scrubValue = $0 } onCommit: { v in
-                        Haptics.tap(); Task { await store.seek(Int(v), for: group) }; scrubbing = false
+                VStack(spacing: Space.sm) {
+                    HStack(spacing: Space.md) {
+                        Text(fmtTime(pos)).font(FxFont.timeTrack).monospacedDigit().foregroundStyle(FX.text2)
+                        ScrubBar(value: pos, duration: duration, accent: palette.accent, track: palette.trackTint) {
+                            scrubbing = true; scrubValue = live
+                        } onScrub: { scrubValue = $0 } onCommit: { v in
+                            Haptics.tap(); Task { await store.seek(Int(v), for: group) }; scrubbing = false
+                        }
+                        Text(fmtTime(duration)).font(FxFont.timeTrack).monospacedDigit().foregroundStyle(FX.text2)
                     }
-                    Text(fmtTime(duration)).font(FxFont.timeTrack).monospacedDigit().foregroundStyle(FX.text2)
-                    transportActions
+                    transportActions   // centered beneath (web .fx-group-progress-actions align-self: center)
                 }
             }
         }
