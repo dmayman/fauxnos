@@ -43,8 +43,15 @@ struct GroupsListView: View {
             // and makes `.draggable`/`.dropDestination` flaky.
             ScrollView {
                 LazyVStack(spacing: Space.lg) {
-                    ForEach(store.groups) { group in
-                        GroupCard(group: group)
+                    ForEach(Array(store.groups.enumerated()), id: \.element.id) { index, group in
+                        // Staggered reveal (FX-61): real cards fade + rise in on
+                        // first appearance rather than popping, staggered by index
+                        // (web `fx-card-appear` with `--appear-delay`). Per-card
+                        // identity keeps `shown` sticky, so a 60s refresh doesn't
+                        // re-stagger. Reduce-motion shows them immediately.
+                        StaggeredAppear(index: index) {
+                            GroupCard(group: group)
+                        }
                     }
                 }
                 .padding(.horizontal, Space.lg)
@@ -83,22 +90,19 @@ struct GroupsListView: View {
 // MARK: - Loading skeleton
 
 /// Placeholder cards shown only before the first data arrives, so the screen
-/// reads as "loading" rather than "empty" (FX-28). A gentle shimmer keeps it
-/// feeling live without faking content.
+/// reads as "loading" rather than "empty" (FX-28). A directional shimmer sweep
+/// (FX-61) keeps it feeling live without faking content.
 private struct LoadingSkeleton: View {
-    @State private var shimmer = false
-
     var body: some View {
         VStack(spacing: Space.lg) {
-            ForEach(0..<3, id: \.self) { _ in card }
+            ForEach(0..<3, id: \.self) { i in card(index: i) }
         }
         .padding(.horizontal, Space.lg)
         .padding(.top, Space.sm)
-        .onAppear { shimmer = true }
         .accessibilityLabel("Loading devices")
     }
 
-    private var card: some View {
+    private func card(index: Int) -> some View {
         VStack(alignment: .leading, spacing: Space.md) {
             HStack(spacing: Space.sm) {
                 bar(width: 18, height: 18, radius: 5)
@@ -118,21 +122,81 @@ private struct LoadingSkeleton: View {
         }
         .padding(Space.lg)
         .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).fill(FX.surface2))
+        // Directional shimmer (FX-61): a translucent highlight band slides L→R
+        // across each placeholder, staggered per card — the web
+        // `.fx-skeleton-card::after` translateX(-100% → 100%) sweep. Clipped to
+        // the card shape; reduce-motion leaves a static placeholder (no sweep).
+        .overlay { ShimmerSweep(delay: Double(index) * 0.22) }
+        .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
     }
 
     private func bar(width: CGFloat, height: CGFloat, radius: CGFloat = 6) -> some View {
-        shimmerShape(radius: radius).frame(width: width, height: height)
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(FX.surface3)
+            .frame(width: width, height: height)
     }
 
     private func fullBar(height: CGFloat, radius: CGFloat = 6) -> some View {
-        shimmerShape(radius: radius).frame(maxWidth: .infinity).frame(height: height)
-    }
-
-    private func shimmerShape(radius: CGFloat) -> some View {
         RoundedRectangle(cornerRadius: radius, style: .continuous)
             .fill(FX.surface3)
-            .opacity(shimmer ? 0.45 : 0.9)
-            .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: shimmer)
+            .frame(maxWidth: .infinity).frame(height: height)
+    }
+}
+
+// MARK: - Shimmer sweep + staggered reveal (FX-61)
+
+/// A highlight band that slides left→right across its container on a repeating
+/// loop, the touch-platform port of the web skeleton's `translateX` gradient
+/// sweep. Non-interactive; honors reduce-motion (stays parked off-screen).
+private struct ShimmerSweep: View {
+    let delay: Double
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var phase: CGFloat = -1
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            LinearGradient(
+                colors: [.clear, Color.white.opacity(0.10), .clear],
+                startPoint: .leading, endPoint: .trailing
+            )
+            .frame(width: w * 0.5)
+            .offset(x: phase * w * 1.5)
+        }
+        .allowsHitTesting(false)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false).delay(delay)) {
+                phase = 1
+            }
+        }
+    }
+}
+
+/// Fades + rises its content in once, on first appearance, staggered by index
+/// (capped so deep lists don't accumulate long delays). Reduce-motion shows the
+/// content immediately. Interactivity is never gated — only the visual entrance.
+private struct StaggeredAppear<Content: View>: View {
+    let index: Int
+    let content: Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = false
+
+    init(index: Int, @ViewBuilder content: () -> Content) {
+        self.index = index
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .offset(y: shown ? 0 : 10)
+            .onAppear {
+                if reduceMotion { shown = true; return }
+                withAnimation(.easeOut(duration: 0.5).delay(Double(min(index, 6)) * 0.07)) {
+                    shown = true
+                }
+            }
     }
 }
 
