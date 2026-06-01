@@ -225,15 +225,22 @@ function useInterpolatedPosition(playback) {
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * SourceTrigger — single button (current source icon + chevron) that opens
- * a SourcePopover listing every available source with the active one
- * checked and non-spotify locked in multi-room. Anchored top-right of the
- * outer card for V1/V3, inline in the row for V2/V4.
+ * a SourcePopover listing every available source with the active one checked.
+ * On a multi-room card the same full list is shown, but selecting a source
+ * ungroups all members first, then switches (see handleSelect). Anchored
+ * top-right of the outer card for V1/V3, inline in the row for V2/V4.
  * ────────────────────────────────────────────────────────────────────────── */
 function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientId, onSwitchSource, onUngroupAll, onConfigure, anchored = false }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef(null)
 
   const handleSelect = (sourceId) => {
+    // On a multi-device card, picking any source dissolves the group first
+    // (members return to their own home groups), then the chosen source is
+    // switched on the home device. The popover caption warns about this. The
+    // two operations target different clients/endpoints, so firing them back
+    // to back is safe — each does its own optimistic update + refresh (FX-50).
+    if (isMulti) onUngroupAll()
     onSwitchSource(groupId, homeClientId, sourceId)
     setOpen(false)
   }
@@ -261,7 +268,6 @@ function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientI
           anchorRef={triggerRef}
           onClose={() => setOpen(false)}
           onSelect={handleSelect}
-          onUngroupAll={onUngroupAll}
           onConfigure={onConfigure}
         />
       )}
@@ -634,7 +640,8 @@ function DeviceRow({
 
   // Per-row dragging only applies to multi-room *member* rows ("move me to
   // another group"). The multi-room home row isn't draggable (dragging home
-  // would disband the group — users ungroup-all from the source menu), and
+  // would disband the group — users ungroup-all by picking a source in the
+  // source menu, which dissolves the group as a side effect), and
   // single-device cards now drag from the whole card (see GroupCard), not the
   // inner row, so the grab area runs edge-to-edge. Interactive children opt
   // out via DRAG_OPT_OUT in both the pointerdown arm and the dragstart guard.
