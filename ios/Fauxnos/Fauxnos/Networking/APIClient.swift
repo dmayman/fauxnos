@@ -131,6 +131,16 @@ struct APIClient {
     /// Seek a client's player to an absolute position. `POST /api/clients/<id>/
     /// playback/seek {position_ms}` → go-librespot `/player/seek`. The new
     /// position echoes back over MQTT `playback`.
+    /// Set a client's volume through the server control plane (FX-65). The
+    /// server is the single routing authority — it publishes MQTT for internal
+    /// devices and fires the external API (Particle, etc.) for external-volume
+    /// devices, so the app holds no per-client routing logic. The resulting
+    /// value echoes back over MQTT `status/clients/<id>/volume`. Mirrors web's
+    /// `POST /api/clients/<id>/volume`.
+    func setVolume(_ clientId: String, value: Int) async throws {
+        try await post("api/clients/\(clientId)/volume", json: ["value": value])
+    }
+
     func seek(_ clientId: String, positionMs: Int) async throws {
         try await post("api/clients/\(clientId)/playback/seek", json: ["position_ms": positionMs])
     }

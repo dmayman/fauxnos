@@ -119,7 +119,19 @@ class FauxnosAPIServer:
         self._ir_learn_subscribers: dict = {}
         self._ir_learn_last_event: dict = {}
         self._ir_learn_lock = _threading.Lock()
+        # External-volume dispatch throttle (FX-65). The volume control plane
+        # accepts up to ~10 req/sec per client (100ms UI throttle), but an
+        # external controller like Particle budgets ~2 calls/sec — so external
+        # dispatches are coalesced here (leading-edge + trailing-edge flush)
+        # rather than in any UI client. Keyed by client_id, guarded by the lock.
+        self._ext_vol_lock = _threading.Lock()
+        self._ext_vol_state: dict = {}  # client_id -> {"timer": Timer|True|None, "pending": int|None}
         self.setup_routes()
+
+    # Min spacing between external-volume dispatches per client (~4/sec) —
+    # comfortably under Particle's ~2 calls/sec budget once you account for
+    # the leading-edge fire skipping the first window. See FX-65.
+    _EXT_VOL_THROTTLE_S = 0.25
 
     def log(self, message: str, level: str = "INFO"):
         if self.verbose or level in ["ERROR", "WARNING", "SUCCESS"]:
@@ -264,6 +276,16 @@ class FauxnosAPIServer:
         @app.route('/api/clients/<client_id>/external_volume', methods=['POST'])
         def dispatch_external_volume(client_id):
             return self.handle_external_volume_dispatch(client_id)
+
+        # ── Volume (single routing authority — FX-65) ─────────────────────────
+        # All UIs POST volume here; the server decides the route. Internal
+        # devices → publish set/clients/<id>/volume over MQTT (server is the
+        # publisher). External-volume devices → reuse the external_volume
+        # dispatch (throttled, so Particle et al. aren't flooded by a drag).
+        # No UI client holds per-client routing knowledge.
+        @app.route('/api/clients/<client_id>/volume', methods=['POST'])
+        def set_client_volume(client_id):
+            return self.handle_set_client_volume(client_id)
 
         # Inbound webhook — external device POSTs here when its local
         # volume changes (knob turn, etc.). The HTTP-transport equivalent
@@ -1950,24 +1972,59 @@ class FauxnosAPIServer:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    def handle_set_client_volume(self, client_id: str):
+        """POST /api/clients/<id>/volume — single routing authority (FX-65).
+
+        Every UI (web, iOS) sends volume here; the server owns the routing
+        decision so no UI client carries per-client knowledge:
+
+          * Internal device  → publish `set/clients/<id>/volume` over MQTT
+            (server is the publisher; the device subscribes as before).
+          * External-volume device → reuse the external_volume dispatch,
+            coalesced so the external controller isn't flooded by a drag.
+
+        Body: {"value": <0-100>}. External dispatches are fire-and-forget
+        (202) since they're throttled; internal MQTT publishes report 200/502.
+        """
+        try:
+            data = request.get_json() or {}
+            try:
+                value = int(data.get("value"))
+            except (TypeError, ValueError):
+                return jsonify({"error": "value must be an integer 0-100"}), 400
+            if not (0 <= value <= 100):
+                return jsonify({"error": "value out of range (0-100)"}), 400
+
+            evc = self._get_client_external_volume_controller(client_id)
+            if evc is None:
+                return jsonify({"error": f"Client {client_id} not found"}), 404
+
+            if evc.get("enabled"):
+                # External-volume device — coalesce so Particle et al. aren't
+                # hammered at the UI's ~10/sec drag rate. Optimistic UI already
+                # moved the slider, so a throttled/accepted response is fine.
+                self._dispatch_external_volume_throttled(client_id, value)
+                return jsonify({"status": "ok", "transport": "external", "value": value}), 202
+
+            # Internal device — server publishes to the device's set-topic.
+            ok = self._publish_mqtt(f"set/clients/{client_id}/volume", str(value))
+            if not ok:
+                return jsonify({"error": "MQTT publish failed (broker connection?)"}), 502
+            return jsonify({"status": "ok", "transport": "mqtt", "value": value})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     def handle_external_volume_dispatch(self, client_id: str):
         """POST /api/clients/<id>/external_volume — dispatch a volume change.
 
-        Called by the UI volume slider when this client's
-        external_volume_controller is enabled, in place of the direct
-        MQTT publish to `set/clients/<id>/volume`. Does two things:
+        Direct, un-throttled external dispatch. The volume control plane
+        (`handle_set_client_volume`) is the normal entry point for UIs and
+        routes external clients through the throttled path; this endpoint is
+        kept for direct/testing callers and shares the transport send via
+        `_send_external_volume_now`.
 
-          1. Routes the value out via the configured transport:
-             - HTTP: POST to `control_api` with `{{volume}}` substituted
-             - MQTT: publish to `mqtt_topic_out` with `{{volume}}` substituted
-          2. Publishes `set/clients/<id>/volume = 100` over fauxnos's
-             internal MQTT to pin the local PA/snapcast stage at unity
-             — the external controller owns attenuation end-to-end.
-
-        Body: {"value": <0-100>}
-
-        Response includes the transport-specific status so the UI can
-        surface meaningful errors (HTTP status code vs MQTT publish ok).
+        Body: {"value": <0-100>}. Response carries the transport-specific
+        status so a direct caller can surface meaningful errors.
         """
         try:
             data = request.get_json() or {}
@@ -1985,57 +2042,115 @@ class FauxnosAPIServer:
                 return jsonify({"error": "External volume controller is not enabled for this client"}), 409
 
             transport = evc.get("transport", "http")
-            result = {"status": "ok", "transport": transport, "value": value}
-
-            if transport == "http":
-                api_url = evc.get("control_api")
-                if not api_url:
-                    return jsonify({"error": "control_api not configured"}), 400
-                rendered = self._render_volume_payload(evc.get("control_payload"), value)
-                try:
-                    if evc.get("content_type") == "form":
-                        resp = http_requests.post(api_url, data=rendered, timeout=5)
-                    else:
-                        resp = http_requests.post(api_url, json=rendered, timeout=5)
-                    result["external_status"] = resp.status_code
-                    self.log(f"External volume HTTP for {client_id}: {resp.status_code} (v={value})", "SUCCESS")
-                except Exception as e:
-                    self.log(f"External volume HTTP error for {client_id}: {e}", "WARNING")
-                    return jsonify({"error": f"External API call failed: {e}"}), 502
-
-            elif transport == "mqtt":
-                # Canonical topic convention is `fauxnos/<client_id>/volume/set`
-                # — the device subscribes to its own client_id's set-topic and
-                # publishes back on /volume/state. Legacy configs (set by the
-                # old UI fields) override the canonical default so VinylTable's
-                # existing `vinyltable/setVolume` keeps working until that
-                # firmware is reflashed to the new convention.
-                topic = evc.get("mqtt_topic_out") or f"fauxnos/{client_id}/volume/set"
-                template = evc.get("mqtt_payload_out") or "{{volume}}"
-                payload_str = template.replace("{{volume}}", str(value))
-                ok = self._publish_mqtt(topic, payload_str)
-                if not ok:
-                    return jsonify({"error": "MQTT publish failed (broker connection?)"}), 502
-                result["mqtt_topic"] = topic
-                result["mqtt_payload"] = payload_str
-                self.log(f"External volume MQTT for {client_id}: {topic} = {payload_str}", "SUCCESS")
-
-            else:
+            if transport not in ("http", "mqtt"):
                 return jsonify({"error": f"Unknown transport: {transport!r}"}), 400
+            if transport == "http" and not evc.get("control_api"):
+                return jsonify({"error": "control_api not configured"}), 400
 
-            # NOTE — we used to publish `set/clients/<id>/volume = 100` here
-            # to pin the client's local chain at unity, but that pin echoed
-            # back through the client's status republish, briefly snapping
-            # the UI slider to 100 before the Photon's authoritative value
-            # arrived (visible "flicker" on every drag). The client now
-            # consults the retained `config/clients/<id>/external_volume_controller`
-            # topic and pins snapcast=100 internally inside _set_source_volume
-            # whenever external_volume_enabled is True, so the server-side
-            # pin is redundant. Dropped 2026-05-27 to fix the UI flicker.
+            ok, info = self._send_external_volume_now(client_id, value, evc=evc)
+            if not ok:
+                return jsonify({"error": f"External dispatch failed: {info.get('error', 'unknown')}"}), 502
 
+            result = {"status": "ok", "transport": transport, "value": value}
+            result.update(info)
             return jsonify(result)
         except Exception as e:
             return jsonify({"error": str(e)}), 500
+
+    def _send_external_volume_now(self, client_id: str, value: int, evc: Optional[dict] = None):
+        """Fire one external-volume dispatch over the configured transport.
+
+        No Flask request context required — safe to call from a throttle
+        timer thread. Returns (ok: bool, info: dict). `info` carries the
+        transport-specific status (`external_status` / `mqtt_topic` …) on
+        success, or `{"error": ...}` on failure.
+
+        NOTE — we no longer pin `set/clients/<id>/volume = 100` here. The
+        device consults the retained `config/clients/<id>/external_volume_controller`
+        topic and pins snapcast=100 internally whenever external volume is
+        enabled, so a server-side pin is redundant (and used to flicker the
+        UI slider to 100 before the authoritative value arrived).
+        """
+        if evc is None:
+            evc = self._get_client_external_volume_controller(client_id)
+        if not evc or not evc.get("enabled"):
+            return False, {"error": "external volume controller not enabled"}
+
+        transport = evc.get("transport", "http")
+        if transport == "http":
+            api_url = evc.get("control_api")
+            if not api_url:
+                return False, {"error": "control_api not configured"}
+            rendered = self._render_volume_payload(evc.get("control_payload"), value)
+            try:
+                if evc.get("content_type") == "form":
+                    resp = http_requests.post(api_url, data=rendered, timeout=5)
+                else:
+                    resp = http_requests.post(api_url, json=rendered, timeout=5)
+                self.log(f"External volume HTTP for {client_id}: {resp.status_code} (v={value})", "SUCCESS")
+                return True, {"external_status": resp.status_code}
+            except Exception as e:
+                self.log(f"External volume HTTP error for {client_id}: {e}", "WARNING")
+                return False, {"error": str(e)}
+
+        elif transport == "mqtt":
+            # Canonical topic convention is `fauxnos/<client_id>/volume/set`
+            # — the device subscribes to its own client_id's set-topic and
+            # publishes back on /volume/state. Legacy configs (set by the old
+            # UI fields) override the canonical default so VinylTable's
+            # existing `vinyltable/setVolume` keeps working until that
+            # firmware is reflashed to the new convention.
+            topic = evc.get("mqtt_topic_out") or f"fauxnos/{client_id}/volume/set"
+            template = evc.get("mqtt_payload_out") or "{{volume}}"
+            payload_str = template.replace("{{volume}}", str(value))
+            ok = self._publish_mqtt(topic, payload_str)
+            if ok:
+                self.log(f"External volume MQTT for {client_id}: {topic} = {payload_str}", "SUCCESS")
+            else:
+                self.log(f"External volume MQTT publish failed for {client_id}: {topic}", "WARNING")
+            return ok, ({"mqtt_topic": topic, "mqtt_payload": payload_str} if ok
+                        else {"error": "MQTT publish failed (broker connection?)"})
+
+        return False, {"error": f"Unknown transport: {transport!r}"}
+
+    def _dispatch_external_volume_throttled(self, client_id: str, value: int):
+        """Coalesce external-volume dispatches per client (FX-65).
+
+        Leading-edge fire + trailing-edge flush: the first value in a quiet
+        window goes out immediately, intermediate values during the window
+        are dropped, and the latest value is always flushed when the window
+        closes. Keeps an external controller (e.g. Particle, ~2 calls/sec)
+        from being flooded by the UI's ~10/sec drag cadence.
+        """
+        with self._ext_vol_lock:
+            state = self._ext_vol_state.get(client_id)
+            if state and state.get("timer") is not None:
+                state["pending"] = value  # window open → stash latest, drop the rest
+                return
+            self._ext_vol_state[client_id] = {"pending": None, "timer": True}
+        self._send_external_volume_now(client_id, value)
+        self._arm_external_volume_timer(client_id)
+
+    def _arm_external_volume_timer(self, client_id: str):
+        """(Re)arm the trailing-edge flush timer for a client's external volume."""
+        def _flush():
+            with self._ext_vol_lock:
+                state = self._ext_vol_state.get(client_id) or {}
+                pending = state.get("pending")
+                self._ext_vol_state[client_id] = {"pending": None, "timer": None}
+            if pending is not None:
+                # A newer value arrived during the window — send it and keep
+                # the window open so a continuing drag stays coalesced.
+                self._send_external_volume_now(client_id, pending)
+                self._arm_external_volume_timer(client_id)
+
+        t = threading.Timer(self._EXT_VOL_THROTTLE_S, _flush)
+        t.daemon = True
+        with self._ext_vol_lock:
+            st = self._ext_vol_state.get(client_id)
+            if st is not None:
+                st["timer"] = t
+        t.start()
 
     def handle_external_volume_inbound(self, client_id: str):
         """POST /api/clients/<id>/external_volume_inbound — receive a volume update from an external device.

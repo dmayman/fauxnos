@@ -26,17 +26,6 @@ export function useMqtt() {
   const lastCalPublishRef = useRef({})  // key: `${cid}/${sid}` → timestamp
   const calThrottleRef = useRef({})     // key: `${cid}/${sid}` → { timerId, pendingValue }
 
-  // External volume controller routing map: { [clientId]: true } for clients
-  // whose `external_volume_controller.enabled` is true in server_config. App.jsx
-  // populates this via setExternalVolumeMap whenever the client list refreshes.
-  // When a clientId is in this map, publishVolume routes its slider moves to
-  // POST /api/clients/<id>/external_volume (which fires the configured HTTP
-  // POST and pins local PA/snapcast to 100) instead of the direct MQTT publish.
-  const externalVolumeMapRef = useRef({})
-  // HTTP throttle for external dispatch — separate from MQTT throttle so an
-  // external client doesn't share a window with a local one.
-  const externalThrottleRef = useRef({})
-
   useEffect(() => {
     const mqttHost = import.meta.env.DEV ? 'fauxnos000.local' : location.hostname
     const wsUrl = `ws://${mqttHost}:9001`
@@ -140,60 +129,26 @@ export function useMqtt() {
     return () => client.end()
   }, [])
 
-  // Set the external volume routing map. App.jsx calls this after each
-  // /api/clients refresh; we store in a ref so publishVolume always sees the
-  // current value without needing to be re-created when the map changes.
-  const setExternalVolumeMap = useCallback((map) => {
-    externalVolumeMapRef.current = map || {}
-  }, [])
-
-  // Fire the external HTTP dispatch with the same throttle shape as MQTT
-  // publishVolume — immediate first call, then a trailing-edge timer that
-  // sends the latest pending value when the window expires. Particle
-  // setVolume can absorb ~2/sec; THROTTLE_MS=100 (10/sec) would hit limits,
-  // so we use a longer 250ms window for external dispatches.
-  const EXTERNAL_THROTTLE_MS = 250
-  const sendExternalVolume = useCallback((clientId, vol) => {
-    const fire = (v) => {
-      fetch(`/api/clients/${clientId}/external_volume`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: v }),
-      }).catch(() => { /* swallow — UI optimistic update already happened */ })
-    }
-    const state = externalThrottleRef.current[clientId]
-    if (state?.timerId) {
-      state.pendingValue = vol
-      return
-    }
-    fire(vol)
-    externalThrottleRef.current[clientId] = {
-      pendingValue: null,
-      timerId: setTimeout(() => {
-        const s = externalThrottleRef.current[clientId]
-        if (s?.pendingValue != null) fire(s.pendingValue)
-        externalThrottleRef.current[clientId] = null
-      }, EXTERNAL_THROTTLE_MS),
-    }
+  // Send one volume value to the server control plane (FX-65). The server is
+  // the single routing authority — it decides MQTT (internal) vs external
+  // dispatch (Particle, etc.) per client, so the UI carries no routing logic.
+  const sendVolumeHttp = useCallback((clientId, vol) => {
+    fetch(`/api/clients/${clientId}/volume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: vol }),
+    }).catch(() => { /* swallow — UI optimistic update already happened */ })
   }, [])
 
   const publishVolume = useCallback((clientId, vol) => {
-    // Optimistic update — always immediate, regardless of route.
+    // Optimistic update — always immediate.
     setVolumes(prev => ({ ...prev, [clientId]: vol }))
 
-    // Route through the external HTTP endpoint if this client is configured
-    // for an external volume controller. The server handler fires the
-    // configured HTTP POST AND publishes set/.../volume=100 to pin the local
-    // chain at unity, so we don't double-publish here.
-    if (externalVolumeMapRef.current[clientId]) {
-      sendExternalVolume(clientId, vol)
-      return
-    }
+    // Open the echo-suppress window so the inbound status round-trip (still
+    // delivered over MQTT) doesn't fight the optimistic value while dragging.
+    lastPublishRef.current[clientId] = Date.now()
 
-    // Throttle actual MQTT sends per client
-    const now = Date.now()
-    lastPublishRef.current[clientId] = now
-
+    // Throttle HTTP sends per client (leading-edge + trailing-edge flush).
     const state = throttleRef.current[clientId]
     if (state?.timerId) {
       // Timer already running — just update the pending value
@@ -202,22 +157,20 @@ export function useMqtt() {
     }
 
     // No timer running — send immediately and start throttle window
-    if (clientRef.current?.connected) {
-      clientRef.current.publish(`set/clients/${clientId}/volume`, String(vol))
-    }
+    sendVolumeHttp(clientId, vol)
 
     throttleRef.current[clientId] = {
       pendingValue: null,
       timerId: setTimeout(() => {
         const s = throttleRef.current[clientId]
-        if (s?.pendingValue != null && clientRef.current?.connected) {
-          clientRef.current.publish(`set/clients/${clientId}/volume`, String(s.pendingValue))
+        if (s?.pendingValue != null) {
+          sendVolumeHttp(clientId, s.pendingValue)
           lastPublishRef.current[clientId] = Date.now()
         }
         throttleRef.current[clientId] = null
       }, THROTTLE_MS),
     }
-  }, [sendExternalVolume])
+  }, [sendVolumeHttp])
 
   const setMode = useCallback((clientId, mode) => {
     setModes(prev => ({ ...prev, [clientId]: mode }))
@@ -277,6 +230,5 @@ export function useMqtt() {
     publishVolume,
     setMode,
     publishCalibration,
-    setExternalVolumeMap,
   }
 }
