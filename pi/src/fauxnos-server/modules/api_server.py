@@ -1695,7 +1695,15 @@ class FauxnosAPIServer:
         for default_src in synthesized:
             sid = default_src["id"]
             if sid in explicit_by_id:
-                merged.append(explicit_by_id[sid])
+                # Layer the explicit entry ON TOP of the synthesized default
+                # rather than replacing it: the user's edited fields (label,
+                # icon, external_switch, …) win, but any structural fields the
+                # explicit entry omits (sink, type, volume_controller) are
+                # backfilled from the default. This self-heals a built-in that
+                # was persisted bare by an older upsert that didn't seed —
+                # e.g. an analog entry holding only {label, icon} — so the
+                # daemon still sees a routable source. (FX-67)
+                merged.append({**default_src, **explicit_by_id[sid]})
             else:
                 merged.append(dict(default_src))
             seen_ids.add(sid)

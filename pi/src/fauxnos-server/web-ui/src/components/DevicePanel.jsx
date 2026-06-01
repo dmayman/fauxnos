@@ -46,6 +46,7 @@ const BUILTIN_DEFS = [
   { id: 'airplay', label: 'AirPlay',   vc: 'external', alwaysOn: true },
   { id: 'analog',  label: 'Analog In', vc: 'self',     gatedBy: 'has_adc' },
 ]
+const BUILTIN_IDS = new Set(BUILTIN_DEFS.map(d => d.id))
 
 /**
  * Maps a source id (or category for non-default sources) to a recognizable
@@ -210,14 +211,22 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdate
     return () => document.removeEventListener('mousedown', handler)
   }, [addMenuOpen])
 
-  const defaultSources = sources.filter(s => s.category === 'default')
-  const customSources = sources.filter(s => s.category !== 'default')
+  // Split built-ins from custom sources by id, NOT by `category`. A built-in
+  // that's been edited (e.g. analog given a custom label/icon) can come back
+  // from the server missing `category: 'default'` — that's exactly the shape
+  // the analog upsert produced before the server learned to seed structural
+  // fields. Keying off BUILTIN_IDS keeps such an entry on the built-in side
+  // (rendered once, with its custom label) instead of leaking into the custom
+  // list and rendering a phantom second row (FX-67).
+  const customSources = sources.filter(s => !BUILTIN_IDS.has(s.id))
 
   // Build the visible built-in list. Each def is either "always on" or
-  // gated by a per-client flag (currently only has_adc → analog).
+  // gated by a per-client flag (currently only has_adc → analog). Match the
+  // server's source by id so an edited built-in's custom label/icon flows
+  // through; fall back to a synthesized stub only if the server omits it.
   const visibleBuiltIns = BUILTIN_DEFS
     .filter(def => def.alwaysOn || (def.gatedBy === 'has_adc' && hasAdc))
-    .map(def => defaultSources.find(s => s.id === def.id) || {
+    .map(def => sources.find(s => s.id === def.id) || {
       id: def.id, label: def.label, type: 'internal', category: 'default',
       sink: def.id === 'analog' ? 'analogsink' : 'snapsink',
       starting_volume: 50, volume_controller: def.vc,
@@ -667,6 +676,14 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, editableLabel, on
           <span className="fx-source-label">
             <span className="fx-source-icon"><SourceIcon source={source} /></span>
             <span>{source.label || source.id}</span>
+            {/* Type tag matching the external-source badge treatment: marks the
+                (possibly renamed) analog source as the physical Aux input. */}
+            {editableLabel && (
+              <span className="fx-badge">
+                <IconPlug size={12} aria-hidden />
+                Aux In
+              </span>
+            )}
           </span>
         </div>
         <div className="fx-source-actions">
