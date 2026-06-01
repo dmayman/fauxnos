@@ -202,10 +202,14 @@ final class FauxnosStore: ObservableObject {
 
     // MARK: - Volume control (FX-18)
 
-    /// Set one device's volume: optimistic overlay + throttled QoS-0 publish to
-    /// `set/clients/<id>/volume`. The resulting status echoes back over MQTT but
-    /// is suppressed for `echoSuppress` so the optimistic value stays stable
-    /// while dragging. Mirrors web `useMqtt.publishVolume`.
+    /// Set one device's volume: optimistic overlay + throttled POST to the
+    /// server control plane (`POST /api/clients/<id>/volume`, FX-65). The
+    /// server is the single routing authority — it publishes MQTT for internal
+    /// devices and fires the external API for external-volume devices (Particle,
+    /// etc.), which the old direct-MQTT publish silently skipped. The resulting
+    /// status echoes back over MQTT but is suppressed for `echoSuppress` so the
+    /// optimistic value stays stable while dragging. Mirrors web
+    /// `useMqtt.publishVolume`.
     func publishVolume(_ value: Int, clientId: String) {
         let v = max(0, min(100, value))
         volumes[clientId] = v                       // optimistic
@@ -231,7 +235,11 @@ final class FauxnosStore: ObservableObject {
     }
 
     private func sendVolume(_ v: Int, clientId: String) {
-        mqtt?.publish(topic: "set/clients/\(clientId)/volume", payload: Data(String(v).utf8))
+        // Fire-and-forget — the optimistic overlay already moved the slider;
+        // the authoritative value returns over MQTT status.
+        Task { [weak self] in
+            try? await self?.api.setVolume(clientId, value: v)
+        }
     }
 
     /// Current source id for a group: live mode wins, else the stream-name suffix.

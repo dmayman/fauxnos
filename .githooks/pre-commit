@@ -1,0 +1,56 @@
+#!/bin/sh
+#
+# FX-64 — keep the committed web/ bundle in lock-step with web-ui/ source.
+#
+# The web UI is served from a committed build artifact
+# (pi/src/fauxnos-server/web/) that fauxnos.local serves verbatim — the
+# "Update server" UI action git-pulls main and serves web/ as-is; nothing
+# builds on the Pi. So whatever web/ is committed on main is exactly what the
+# device shows. Historically this drifted: four tickets in a row (FX-41/42/54/56)
+# committed web-ui/ source without rebuilding web/, and the board said "shipped"
+# while the device served a 5-day-old bundle (cleanup was FX-63).
+#
+# This hook removes the human from that loop: whenever a commit stages any
+# web-ui/ source change, it rebuilds web/ and stages the result. If the build
+# fails, the commit is aborted loudly rather than committing a stale bundle.
+#
+# Activation: this file lives outside .git/hooks, so it only runs when
+# core.hooksPath points here. `npm install`/`npm ci` in web-ui/ sets that
+# automatically (the "prepare" script), or set it once by hand:
+#     git config core.hooksPath .githooks
+#
+# Bypass (rarely needed, e.g. bootstrapping this hook itself): commit with
+# `--no-verify`.
+
+set -e
+
+WEB_UI_DIR="pi/src/fauxnos-server/web-ui"
+WEB_DIR="pi/src/fauxnos-server/web"
+
+# Only act when this commit actually stages web-ui/ source changes.
+# (node_modules and web/ itself are excluded — node_modules is gitignored, and
+# a web/-only commit must not retrigger a rebuild.)
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+if ! printf '%s\n' "$staged" | grep -q "^$WEB_UI_DIR/"; then
+    exit 0
+fi
+
+echo "[pre-commit] web-ui/ source staged — rebuilding $WEB_DIR ..."
+
+if [ ! -d "$WEB_UI_DIR/node_modules" ]; then
+    echo "[pre-commit] node_modules missing — running 'npm ci' first ..."
+    if ! (cd "$WEB_UI_DIR" && npm ci); then
+        echo "[pre-commit] ABORT: 'npm ci' failed; refusing to commit a possibly-stale bundle." >&2
+        exit 1
+    fi
+fi
+
+if ! (cd "$WEB_UI_DIR" && npm run build); then
+    echo "[pre-commit] ABORT: web-ui build failed; refusing to commit a stale bundle." >&2
+    echo "[pre-commit] Fix the build, then commit again." >&2
+    exit 1
+fi
+
+# -A so deletions of old fingerprinted assets are staged alongside the new ones.
+git add -A "$WEB_DIR"
+echo "[pre-commit] $WEB_DIR rebuilt and staged — bundle now matches web-ui/ source."

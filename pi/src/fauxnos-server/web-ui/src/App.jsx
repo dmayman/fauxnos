@@ -64,14 +64,9 @@ export default function App() {
       if (clientsData) {
         const list = clientsData.clients || []
         setClients(list)
-        // Push the external-volume routing map into useMqtt so its
-        // publishVolume routes each client correctly. We only include
-        // clients with enabled=true — others fall through to MQTT.
-        const map = {}
-        for (const c of list) {
-          if (c?.external_volume_controller?.enabled) map[c.client_id] = true
-        }
-        mqtt.setExternalVolumeMap?.(map)
+        // Volume routing lives entirely on the server now (FX-65) —
+        // publishVolume POSTs to /api/clients/<id>/volume and the server
+        // decides MQTT vs external dispatch. No client-side routing map.
       }
       if (statusData) setServerStatus(statusData)
       if (versionData) setServerVersion(versionData)
