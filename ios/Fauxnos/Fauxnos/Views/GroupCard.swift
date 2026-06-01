@@ -263,12 +263,46 @@ struct GroupCard: View {
             }
         }
         .padding(.horizontal, Space.xl)
-        .padding(.vertical, Space.lg)
+        .padding(.top, Space.lg)
+        .padding(.bottom, showMediaCard ? Space.xl : Space.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(showMediaCard ? palette.innerSurface : Color.clear)
-        .overlay(alignment: .top) {
-            if showMediaCard { Rectangle().fill(FX.lineStrong).frame(height: 1) }
+        // Floating rows sub-card (FX-59): on media cards (V1/V3/V4) the rows read
+        // as a surface floating on the album-art tint — innerSurface fill, rounded
+        // TOP corners curving up into the media above, and a soft lift shadow
+        // (web `.fx-group-rows` border-radius + box-shadow). The outer card's
+        // clipShape keeps the panel's sides/bottom flush, so the hairline is
+        // top-only (web `border-top`), masked off the sides/bottom to avoid
+        // doubling the outer card border. V2 (no media) keeps a plain body.
+        .background {
+            if showMediaCard {
+                rowsPanelShape
+                    .fill(palette.innerSurface)
+                    .shadow(color: .black.opacity(colorScheme == .dark ? 0.28 : 0.08), radius: 6, y: 4)
+            }
         }
+        .overlay {
+            if showMediaCard {
+                rowsPanelShape
+                    .strokeBorder(FX.lineStrong, lineWidth: 1)
+                    .mask(alignment: .top) {
+                        Rectangle()
+                            .frame(height: Radius.inner + 2)
+                            .frame(maxHeight: .infinity, alignment: .top)
+                    }
+            }
+        }
+    }
+
+    /// The floating rows panel outline — rounded top corners only; the bottom
+    /// stays square because the outer card clipShape rounds the card's bottom.
+    private var rowsPanelShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: Radius.inner,
+            bottomLeadingRadius: 0,
+            bottomTrailingRadius: 0,
+            topTrailingRadius: Radius.inner,
+            style: .continuous
+        )
     }
 
     // MARK: Source trigger (web .fx-source-trigger — icon + chevron, no label)
