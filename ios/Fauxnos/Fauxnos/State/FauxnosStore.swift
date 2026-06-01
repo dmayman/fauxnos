@@ -405,3 +405,29 @@ final class FauxnosStore: ObservableObject {
         await refresh()
     }
 }
+
+#if DEBUG
+extension FauxnosStore {
+    /// Build a store pre-seeded with static fixtures for Xcode Previews / the
+    /// canvas — no `start()`, so no network and no MQTT connection. Lives here
+    /// (not in the Preview file) because the overlay properties are
+    /// `private(set)`; only same-file code may seed them. Fixtures: `PreviewData`.
+    static func preview(groups: [SpeakerGroup] = PreviewData.groups,
+                        connected: Bool = true) -> FauxnosStore {
+        // Seed art-tint colors up front so cards theme on first render rather
+        // than flashing neutral while async extraction runs (which never does
+        // in previews — `ensure(_:)` no-ops on a pre-seeded URL).
+        AlbumArtColorStore.shared.preloadForPreview(PreviewData.artColors)
+        let store = FauxnosStore()
+        store.groups = groups
+        store.volumes = PreviewData.volumes
+        store.modes = PreviewData.modes
+        store.tracks = PreviewData.tracks
+        store.playback = PreviewData.playback
+        store.clientNames = PreviewData.names
+        store.mqttConnected = connected
+        store.lastUpdated = Date()
+        return store
+    }
+}
+#endif

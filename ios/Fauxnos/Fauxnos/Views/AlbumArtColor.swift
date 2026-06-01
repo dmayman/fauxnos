@@ -211,3 +211,15 @@ final class AlbumArtColorStore: ObservableObject {
         if let color { colors[urlString] = color } else { failed.insert(urlString) }
     }
 }
+
+#if DEBUG
+extension AlbumArtColorStore {
+    /// Pre-seed extracted colors for Xcode Previews so cards theme instantly and
+    /// deterministically — no network, no async extraction. Seeded URLs also make
+    /// `ensure(_:)` a no-op (it early-returns when a color already exists), so the
+    /// injected hue sticks. In-file because `colors` is `private(set)`.
+    func preloadForPreview(_ map: [String: OKLCH]) {
+        for (url, color) in map { colors[url] = color }
+    }
+}
+#endif

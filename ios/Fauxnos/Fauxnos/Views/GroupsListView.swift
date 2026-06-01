@@ -220,6 +220,12 @@ private struct ConnectionBadge: View {
     }
 }
 
-#Preview {
+#Preview("Groups — populated") {
+    GroupsListView().environmentObject(FauxnosStore.preview())
+}
+
+#Preview("Groups — loading") {
+    // Empty store, never started → no data yet → the loading skeleton path.
     GroupsListView().environmentObject(FauxnosStore())
 }
+

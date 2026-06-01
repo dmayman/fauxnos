@@ -96,7 +96,7 @@ enum FxFont {
     }
     static let titleTrack = fustat(24, .bold)        // web 28 — track title
     static let metaTrack  = fustat(17, .semibold)    // web 20 — artist · album
-    static let nameDevice = fustat(17, .bold)        // web 20 — device-row name
+    static let nameDevice = fustat(19, .bold)        // web 20 — device-row name
     static let timeTrack  = fustat(13, .medium)      // web 14 — progress timecode
     static let emptyCta   = fustat(15, .medium)      // web 16 — V4 zero-state CTA
 }

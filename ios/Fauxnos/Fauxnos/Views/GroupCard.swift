@@ -707,3 +707,32 @@ struct SourcePickerSheet: View {
         .presentationDragIndicator(.visible)
     }
 }
+
+// MARK: - Previews
+
+#if DEBUG
+/// Drops a single card onto the real app ground with list-equivalent padding so
+/// the canvas matches how it reads in `GroupsListView`. Seeds a store scoped to
+/// just that group's data.
+private struct CardPreview: View {
+    let group: SpeakerGroup
+    var body: some View {
+        ScrollView {
+            GroupCard(group: group)
+                .padding(Space.lg)
+        }
+        .background(FX.bg.ignoresSafeArea())
+        .environmentObject(FauxnosStore.preview(groups: [group]))
+    }
+}
+
+#Preview("V1 · multi + media") { CardPreview(group: PreviewData.groupV1) }
+#Preview("V2 · single, no media") { CardPreview(group: PreviewData.groupV2) }
+#Preview("V3 · single + media") { CardPreview(group: PreviewData.groupV3) }
+#Preview("V4 · multi, no media") { CardPreview(group: PreviewData.groupV4) }
+
+#Preview("Source picker") {
+    SourcePickerSheet(group: PreviewData.groupV1)
+        .environmentObject(FauxnosStore.preview())
+}
+#endif
