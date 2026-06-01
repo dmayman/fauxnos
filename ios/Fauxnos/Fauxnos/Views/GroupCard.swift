@@ -517,10 +517,30 @@ struct FxSlider: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(track).frame(height: 6)
                 Capsule().fill(fill).frame(width: max(6, w * pct), height: 6)
+                // Touch-reveal thumb (FX-60): hidden at rest so a resting card
+                // reads as a clean fill bar (web `.fx-volume.card-v2 .fx-volume-
+                // thumb { opacity: 0 }`); fades + grows in while dragging (the
+                // touch analog of the web's hover/active reveal). The contentShape
+                // Rectangle below keeps the full-height drag target regardless.
                 Circle().fill(fill).frame(width: 14, height: 14)
                     .shadow(color: .black.opacity(0.22), radius: 1.5, y: 1)
                     .offset(x: min(max(0, w * pct - 7), w - 14))
-                    .scaleEffect(dragging ? 1.25 : 1)
+                    .scaleEffect(dragging ? 1.25 : 0.5)
+                    .opacity(dragging ? 1 : 0)
+                // Live % bubble (FX-60 nicety): floats above the thumb while
+                // dragging, fades out on release. Non-interactive so it never
+                // intercepts the drag. Center clamped to stay within the track.
+                Text("\(Int(value.rounded()))%")
+                    .font(.caption2.weight(.semibold)).monospacedDigit()
+                    .foregroundStyle(FX.text)
+                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(.regularMaterial, in: Capsule())
+                    .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
+                    .fixedSize()
+                    .position(x: min(max(w * pct, 7), w - 7), y: -16)
+                    .opacity(dragging ? 1 : 0)
+                    .scaleEffect(dragging ? 1 : 0.8, anchor: .bottom)
+                    .allowsHitTesting(false)
             }
             .frame(height: 28)
             .contentShape(Rectangle())
@@ -558,9 +578,15 @@ private struct ScrubBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(track).frame(height: 6)
                 Capsule().fill(accent).frame(width: max(0, w * pct), height: 6)
-                Circle().fill(accent).frame(width: dragging ? 16 : 12, height: dragging ? 16 : 12)
+                // Touch-reveal scrub thumb (FX-60): hidden at rest (web
+                // `.fx-group-progress-thumb { opacity: 0 }`), fades + grows in
+                // while scrubbing. Fixed 16pt frame so the offset math is stable;
+                // reveal is driven by scale + opacity. Hit target stays full-width.
+                Circle().fill(accent).frame(width: 16, height: 16)
                     .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-                    .offset(x: min(max(0, w * pct - (dragging ? 8 : 6)), w - (dragging ? 16 : 12)))
+                    .offset(x: min(max(0, w * pct - 8), w - 16))
+                    .scaleEffect(dragging ? 1 : 0.5)
+                    .opacity(dragging ? 1 : 0)
             }
             .frame(height: 22)
             .contentShape(Rectangle())
