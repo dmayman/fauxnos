@@ -3542,6 +3542,15 @@ rm -- "$0"
         # refresh_external_volume_subscriptions() on every config change.
         self._evc_topic_to_client = {}
 
+        # Per-client last-seen active mode. The mode status topic is a
+        # heartbeat — clients re-broadcast it on every get/clients/all/status
+        # nudge, not only on change — so firing the external source-switch
+        # API on each message would re-command external hardware (e.g. the
+        # Particle vinyl table) every few seconds. We fire only when the
+        # source actually changes from the cached value. Empty on (re)start,
+        # so the first observed mode still fires once → boot-time sync intact.
+        self._last_mode_by_client = {}
+
         def on_connect(client, userdata, flags, rc):
             if rc == 0:
                 # Existing: track each client's active source.
@@ -3594,7 +3603,10 @@ rm -- "$0"
 
             if action == "mode":
                 source_id = msg.payload.decode().strip()
-                if source_id:
+                # Dedup: only act on an actual source change. See
+                # _last_mode_by_client init for why (heartbeat republish).
+                if source_id and self._last_mode_by_client.get(client_id) != source_id:
+                    self._last_mode_by_client[client_id] = source_id
                     self._trigger_external_for_source(client_id, source_id)
                 return
 

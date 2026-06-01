@@ -9,6 +9,7 @@ import UpdateStreamModal from './components/UpdateStreamModal'
 import TuningPanel from './components/TuningPanel'
 import { useMqtt } from './hooks/useMqtt'
 import { apiFetch, getServerVersion } from './api'
+import { SHOW_BRANCH_INDICATOR } from './lib/devFlags'
 
 /**
  * Top-level layout.
@@ -26,6 +27,11 @@ export default function App() {
   const [clients, setClients] = useState([])
   const [groups, setGroups] = useState([])
   const [streams, setStreams] = useState([])
+  // False until the first loadAll() settles. Distinguishes "haven't fetched
+  // yet" (show skeleton) from "fetched, genuinely zero devices" (empty
+  // state) so the empty copy never flashes during the load window (FX-27).
+  // Background 60s refreshes never flip this back, so the list stays put.
+  const [firstLoadDone, setFirstLoadDone] = useState(false)
   const [serverStatus, setServerStatus] = useState(null)
   const [serverVersion, setServerVersion] = useState(null)
   const [devicePanelClientId, setDevicePanelClientId] = useState(null)
@@ -70,6 +76,7 @@ export default function App() {
       if (statusData) setServerStatus(statusData)
       if (versionData) setServerVersion(versionData)
     } catch { /* ignore */ }
+    finally { setFirstLoadDone(true) }
   }, [])
 
   // Initial + 60s background refresh. The popover always wants fresh
@@ -239,6 +246,7 @@ export default function App() {
           groups={groups}
           clients={clients}
           streams={streams}
+          loading={!firstLoadDone}
           mqtt={mqtt}
           onRefresh={loadAll}
           onOpenDevice={openDevice}
@@ -252,6 +260,14 @@ export default function App() {
           onUpdateServer={openUpdateServer}
           onUpdateClients={openUpdateClients}
         />
+        {/* Dev-only: which local checkout (worktree) produced this UI.
+            Branch is injected at build time (vite.config.js); gated by
+            SHOW_BRANCH_INDICATOR so production renders nothing. */}
+        {SHOW_BRANCH_INDICATOR && import.meta.env.VITE_GIT_BRANCH && (
+          <span className="fx-branch-indicator" title="Local web checkout branch (dev)">
+            ⎇ {import.meta.env.VITE_GIT_BRANCH}
+          </span>
+        )}
       </div>
 
       {sidePanelOpen && <div className="fx-overlay" onClick={() => {

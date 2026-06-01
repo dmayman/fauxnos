@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect, useMemo, useLayoutEffect } fr
 import { Speaker, Plus } from 'lucide-react'
 import GroupCard from './GroupCard'
 import ScaffoldGroupCard from './ScaffoldGroupCard'
+import GroupsSkeleton from './GroupsSkeleton'
 import { apiFetch } from '../api'
 
 // Mirrors GroupCard's home-client resolution so we can look up playback in
@@ -14,10 +15,15 @@ const resolveHomeClientId = (g) =>
 
 const hasTrackMeta = (track) => !!track && (track.title || track.artist)
 
-export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevice, onAddDevice }) {
+export default function GroupsTab({ groups, clients, loading, mqtt, onRefresh, onOpenDevice, onAddDevice }) {
   const [dragClientId, setDragClientId] = useState(null)
   const [placeholderClientId, setPlaceholderClientId] = useState(null)
   const [dropTargetGroupId, setDropTargetGroupId] = useState(null)
+  // Which card currently shows its mweb "Edit group" pill. Lifted here (rather
+  // than per-card) so only ONE is ever open at a time — tapping a card reveals
+  // its pill and collapses any other. Keyed by stableKey (home_client_id || id),
+  // matching the React key. (FX-42)
+  const [expandedCardId, setExpandedCardId] = useState(null)
   // Refs track the live drag because dragend fires after dropOnGroup's
   // setDragClientId(null), so reading state from a closure can race.
   const dragRef = useRef({ clientId: null, droppedOnGroup: false })
@@ -36,6 +42,25 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
   const [ungroupAnchors, setUngroupAnchors] = useState(() => new Map())
   const gridRef = useRef(null)
   const prevGroupRectsRef = useRef(new Map())
+
+  // ── Loading → loaded reveal ────────────────────────────────────────────────
+  // Crossfade from the skeleton to the real list: each real card fades — and,
+  // when it's playing media, crop-grows (via GroupCard's existing media
+  // reveal) — into the slot its placeholder occupied, while the skeleton fades
+  // out beneath. `phase` lags the `loading` prop by one tick on purpose: that
+  // way the real grid first *mounts* in 'entering', which is what lets every
+  // GroupCard run its appear animation from its initial mount (FX-27).
+  const REVEAL_MS = 1640
+  const [phase, setPhase] = useState(loading ? 'loading' : 'ready')
+  useEffect(() => {
+    if (loading) { setPhase('loading'); return }
+    setPhase(prev => (prev === 'loading' ? 'entering' : prev))
+  }, [loading])
+  useEffect(() => {
+    if (phase !== 'entering') return undefined
+    const t = setTimeout(() => setPhase('ready'), REVEAL_MS)
+    return () => clearTimeout(t)
+  }, [phase])
 
   // Name lookup
   const nameMap = {}
@@ -173,6 +198,91 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
     }
   }, [onRefresh, groups])
 
+  // Reconcile a group's membership from the checklist's full desired selection.
+  // The popover hands us the complete set of devices that should end up in the
+  // home's group (home included); we diff it against live membership and fire
+  // joins for the additions + return-homes for the removals. We keep the
+  // existing single-device endpoints and loop them client-side rather than
+  // adding a batched endpoint — that keeps this out of api_server.py (and clear
+  // of FX-7's server work). One optimistic update covers the whole diff; the
+  // API calls fire sequentially so the server applies them in order (joins
+  // first, then removals), then a single onRefresh reconciles.
+  const handleAddDevices = useCallback(async (desiredIds, homeClientId) => {
+    const base0 = optimisticGroups || groups
+    const homeGroup = base0.find(
+      g => isHomeGroupOf(g, homeClientId) || g.home_client_id === homeClientId
+    )
+    const currentIds = new Set((homeGroup?.clients || []).map(c => c.id))
+    const desired = new Set(desiredIds)
+    desired.add(homeClientId) // home never leaves its own group
+    const toAdd = [...desired].filter(id => id !== homeClientId && !currentIds.has(id))
+    const toRemove = [...currentIds].filter(id => id !== homeClientId && !desired.has(id))
+    if (toAdd.length === 0 && toRemove.length === 0) return
+
+    setOptimisticGroups(prev => {
+      let base = prev || groups
+      // Additions: pull each device out of wherever it is and into the home group.
+      if (toAdd.length) {
+        const moving = toAdd.map(id => findClient(base, id)).filter(Boolean)
+        const movingIds = new Set(moving.map(c => c.id))
+        base = base.map(g => {
+          const without = (g.clients || []).filter(c => !movingIds.has(c.id))
+          if (isHomeGroupOf(g, homeClientId) || g.home_client_id === homeClientId) {
+            return { ...g, clients: [...without, ...moving] }
+          }
+          return { ...g, clients: without }
+        })
+      }
+      // Removals: send each unchecked member back to its own home group,
+      // synthesizing that group if the server didn't return an empty one.
+      for (const clientId of toRemove) {
+        const moving = findClient(base, clientId)
+        if (!moving) continue
+        let foundHome = false
+        base = base.map(g => {
+          const without = (g.clients || []).filter(c => c.id !== clientId)
+          if (isHomeGroupOf(g, clientId)) {
+            foundHome = true
+            return { ...g, clients: [...without, moving] }
+          }
+          return { ...g, clients: without }
+        })
+        if (!foundHome) {
+          base = [...base, {
+            id: `optimistic_${clientId}_home`,
+            home_client_id: clientId,
+            stream_id: `source_${clientId}_spotify`,
+            clients: [moving],
+            sources: [],
+            available_streams: [],
+          }]
+        }
+      }
+      return base
+    })
+
+    try {
+      for (const id of toAdd) {
+        await apiFetch('/api/groups/join', {
+          method: 'POST',
+          body: JSON.stringify({ client_id: id, target_client_id: homeClientId }),
+        })
+      }
+      for (const id of toRemove) {
+        await apiFetch('/api/groups/return-home', {
+          method: 'POST',
+          body: JSON.stringify({ client_id: id }),
+        })
+      }
+      onRefresh()
+    } catch (e) {
+      console.error('Update group failed:', e)
+      onRefresh() // reconcile to server reality on error too
+    }
+    // isHomeGroupOf is a stable in-component helper
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onRefresh, groups, optimisticGroups])
+
   const handleReturnHome = useCallback(async (clientId) => {
     // Record an ungroup anchor so the new home card pins right below the
     // source multi-card instead of dropping to the bottom of the tier sort.
@@ -256,6 +366,61 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
     // isHomeGroupOf is a stable in-component helper
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [groups])
+
+  // Ungroup every member of a multi-device group at once. The naive approach
+  // — looping `handleReturnHome` per member — fires N concurrent
+  // /api/groups/return-home calls, and the server's return_client_to_home does
+  // a read-modify-write (read group members → SetClients to "everyone but me").
+  // Concurrent calls for the same group both read the full member list and
+  // clobber each other's eviction, so one member survives and the group snaps
+  // back to N-1 devices. We fix it here, on the client: one optimistic update
+  // covering all members, the API calls fired *sequentially* so each reads
+  // fresh snapcast state, then a single onRefresh at the end (rather than one
+  // per call thrashing the optimistic view mid-flight).
+  const handleUngroupAll = useCallback(async (clientIds) => {
+    if (!clientIds?.length) return
+    setOptimisticGroups(prev => {
+      let base = prev || groups
+      for (const clientId of clientIds) {
+        const moving = findClient(base, clientId)
+        if (!moving) continue
+        let foundHome = false
+        base = base.map(g => {
+          const without = (g.clients || []).filter(c => c.id !== clientId)
+          if (isHomeGroupOf(g, clientId)) {
+            foundHome = true
+            return { ...g, clients: [...without, moving] }
+          }
+          return { ...g, clients: without }
+        })
+        if (!foundHome) {
+          base = [...base, {
+            id: `optimistic_${clientId}_home`,
+            home_client_id: clientId,
+            stream_id: `source_${clientId}_spotify`,
+            clients: [moving],
+            sources: [],
+            available_streams: [],
+          }]
+        }
+      }
+      return base
+    })
+    try {
+      for (const clientId of clientIds) {
+        await apiFetch('/api/groups/return-home', {
+          method: 'POST',
+          body: JSON.stringify({ client_id: clientId }),
+        })
+      }
+      onRefresh()
+    } catch (e) {
+      console.error('Ungroup all failed:', e)
+      onRefresh() // reconcile to server reality on error too
+    }
+    // isHomeGroupOf is a stable in-component helper
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onRefresh, groups])
 
   const handleSwitchSource = useCallback(async (groupId, homeClientId, sourceId) => {
     // Optimistic update — show new source immediately
@@ -371,24 +536,52 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
     setPlaceholderClientId(null)
   }, [dragClientId, groups, handleJoinGroup])
 
+  // Loading takes priority over the empty state: until the first groups
+  // response lands we can't tell "no devices" from "not fetched yet", so we
+  // show the skeleton and never the "no devices" copy (FX-27). Driven by
+  // `phase` (not `loading`) so the skeleton lingers one extra tick — see the
+  // phase comment above.
+  if (phase === 'loading') {
+    return (
+      <div className="fx-page">
+        <GroupsSkeleton />
+      </div>
+    )
+  }
+
+  const entering = phase === 'entering'
+  // The skeleton overlay fades out behind the entering content. Absolutely
+  // positioned so it doesn't take layout space — the real content defines the
+  // height while the placeholders dissolve underneath it.
+  const leavingSkeleton = entering && (
+    <div className="fx-skeleton-leaving" aria-hidden>
+      <GroupsSkeleton />
+    </div>
+  )
+
   if (activeGroups.length === 0) {
     return (
       <div className="fx-page">
-        <div className="fx-groups-grid">
-          <ScaffoldGroupCard />
-        </div>
-        <div className="fx-card fx-empty">
-          <Speaker size={28} />
-          <div className="fx-h3">No devices yet</div>
-          <p className="fx-small fx-mute">
-            Add your first Fauxnos device to start streaming. You'll need a
-            Raspberry Pi and a DAC HAT.
-          </p>
-          {onAddDevice && (
-            <button className="fx-btn primary pill" onClick={onAddDevice}>
-              <Plus size={14} /> Add device
-            </button>
-          )}
+        <div className="fx-reveal-stage">
+          <div className={`fx-reveal-content${entering ? ' fx-appear-fade' : ''}`}>
+            <div className="fx-groups-grid">
+              <ScaffoldGroupCard />
+            </div>
+            <div className="fx-card fx-empty">
+              <Speaker size={28} />
+              <div className="fx-h3">No devices yet</div>
+              <p className="fx-small fx-mute">
+                Add your first Fauxnos device to start streaming. You'll need a
+                Raspberry Pi and a DAC HAT.
+              </p>
+              {onAddDevice && (
+                <button className="fx-btn primary pill" onClick={onAddDevice}>
+                  <Plus size={14} /> Add device
+                </button>
+              )}
+            </div>
+          </div>
+          {leavingSkeleton}
         </div>
       </div>
     )
@@ -397,28 +590,43 @@ export default function GroupsTab({ groups, clients, mqtt, onRefresh, onOpenDevi
   const isDragging = !!dragClientId
   return (
     <div className="fx-page">
-      <div className="fx-groups-grid" ref={gridRef}>
-        <ScaffoldGroupCard />
-        {activeGroups.map((group) => (
-          <GroupCard
-            key={stableKey(group)}
-            group={group}
-            nameMap={nameMap}
-            mqtt={mqtt}
-            isDragTarget={dropTargetGroupId === group.id}
-            isDragging={isDragging}
-            dragClientId={dragClientId}
-            placeholderClientId={placeholderClientId}
-            onDragStart={handleDragStart}
-            onDragEnd={handleDragEnd}
-            onDragOverGroup={() => handleDragOverGroup(group.id)}
-            onDragLeaveGroup={handleDragLeaveGroup}
-            onDropOnGroup={() => handleDropOnGroup(group.id)}
-            onReturnHome={handleReturnHome}
-            onSwitchSource={handleSwitchSource}
-            onOpenDevice={onOpenDevice}
-          />
-        ))}
+      <div className="fx-reveal-stage">
+        <div className="fx-groups-grid" ref={gridRef}>
+          <ScaffoldGroupCard />
+          {activeGroups.map((group, idx) => (
+            <GroupCard
+              key={stableKey(group)}
+              group={group}
+              nameMap={nameMap}
+              mqtt={mqtt}
+              clients={clients}
+              appear={entering}
+              // Stagger top-to-bottom so the reveal echoes the skeleton
+              // cascade; capped so a long list doesn't trail indefinitely.
+              appearDelayMs={entering ? Math.min(idx, 6) * 110 : 0}
+              isDragTarget={dropTargetGroupId === group.id}
+              isDragging={isDragging}
+              dragClientId={dragClientId}
+              placeholderClientId={placeholderClientId}
+              onDragStart={handleDragStart}
+              onDragEnd={handleDragEnd}
+              onDragOverGroup={() => handleDragOverGroup(group.id)}
+              onDragLeaveGroup={handleDragLeaveGroup}
+              onDropOnGroup={() => handleDropOnGroup(group.id)}
+              onReturnHome={handleReturnHome}
+              onUngroupAll={handleUngroupAll}
+              onSwitchSource={handleSwitchSource}
+              onOpenDevice={onOpenDevice}
+              onAddDevices={handleAddDevices}
+              isExpanded={expandedCardId === stableKey(group)}
+              onToggleExpand={() => {
+                const key = stableKey(group)
+                setExpandedCardId(prev => (prev === key ? null : key))
+              }}
+            />
+          ))}
+        </div>
+        {leavingSkeleton}
       </div>
     </div>
   )

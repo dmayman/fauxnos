@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import {
   IconXFilled,
   IconUnlink,
@@ -14,9 +15,8 @@ import {
   IconPlayerTrackNextFilled,
 } from '@tabler/icons-react'
 
-/* Drag-handle glyph: two thin parallel bars, matching the Figma kitchen-row
-   indicator. Tabler's IconGripVertical is 6 dots and reads as a different
-   affordance, so we inline this tiny SVG instead. */
+/* Drag-grip glyph — two short vertical bars. This is the original handle the
+   group cards shipped with (restored per preference over the dotted grip). */
 function DragBarsIcon({ size = 10 }) {
   const w = Math.max(4, Math.round(size * 0.6))
   return (
@@ -26,8 +26,10 @@ function DragBarsIcon({ size = 10 }) {
     </svg>
   )
 }
+
 import VolumeSlider, { VolumeIcon } from './VolumeSlider'
 import SourcePopover from './SourcePopover'
+import AddDevicesPopover from './AddDevicesPopover'
 import useAlbumArtColor from '../hooks/useAlbumArtColor'
 import { useTuning } from '../hooks/useTuning'
 import { useTheme } from '../hooks/useTheme'
@@ -83,7 +85,7 @@ function buildDeviceDragGhost(row, cardRect) {
   const clone = row.cloneNode(true)
   clone.classList.remove('with-source', 'is-drag-placeholder')
   clone.querySelectorAll(
-    '.fx-row-drag, .fx-group-member-x, .fx-source-trigger, .fx-group-row-name-subtitle'
+    '.fx-source-trigger, .fx-name-action-btn, .fx-group-row-name-subtitle'
   ).forEach((n) => n.remove())
 
   rows.appendChild(clone)
@@ -95,6 +97,100 @@ function buildDeviceDragGhost(row, cardRect) {
 
 function cleanupDeviceDragGhost() {
   document.querySelectorAll('.fx-device-drag-ghost').forEach(node => node.remove())
+}
+
+/* Anything inside a drag host that owns its own pointer gesture — the volume
+   control, the source trigger, the ungroup button, the add-devices chevron
+   button, and any raw button/input/anchor/slider. A pointerdown landing on one
+   of these must NOT arm the native device drag, so the slider (and every other
+   control) gets a clean, uninterrupted gesture. The same selector gates
+   dragstart as a belt-and-suspenders guard.
+   The device title is deliberately NOT here — it's part of the drag area; its
+   only interactive child (the chevron button) opts out via the `button` rule. */
+const DRAG_OPT_OUT =
+  '.fx-group-row-volume, .fx-source-trigger, ' +
+  '.fx-group-progress, button, input, a, [role="slider"]'
+
+/* Arm/disarm the native drag on the pointerdown that precedes it. Setting
+   `draggable` synchronously here — before the browser's mousemove drag
+   heuristic runs — is what guarantees a press on the slider can never be
+   hijacked into a device drag (the #1 complaint). On whitespace we arm it;
+   on any control we disarm it for this gesture. Each pointerdown recomputes,
+   so state never gets stuck.
+
+   Mweb (≤600px) twist (FX-42, first cut — interaction TBD): there are no drag
+   handles on small screens, so a stray swipe over a card's whitespace would
+   otherwise start a drag instead of scrolling. We gate the arm behind a short
+   press-and-hold: draggable stays false until the pointer has been held ~280ms
+   without moving past a small threshold; any earlier move (a scroll) or release
+   cancels it. Desktop keeps the instant synchronous arm. */
+const DRAG_HOLD_MS = 280
+const DRAG_HOLD_SLOP = 8
+
+function armDragOnPointerDown(hostEl, enabled, e) {
+  if (!hostEl) return
+  const wantDrag = enabled && !e.target.closest(DRAG_OPT_OUT)
+  const isMweb = window.matchMedia('(max-width: 600px)').matches
+  if (!isMweb) {
+    hostEl.draggable = wantDrag
+    return
+  }
+  // Mweb: disarm immediately, then arm after the hold elapses.
+  hostEl.draggable = false
+  if (!wantDrag) return
+  const startX = e.clientX
+  const startY = e.clientY
+  const cleanup = () => {
+    clearTimeout(timer)
+    window.removeEventListener('pointermove', onMove, true)
+    window.removeEventListener('pointerup', cleanup, true)
+    window.removeEventListener('pointercancel', cleanup, true)
+  }
+  const onMove = (ev) => {
+    if (Math.hypot(ev.clientX - startX, ev.clientY - startY) < DRAG_HOLD_SLOP) return
+    hostEl.draggable = false
+    cleanup()
+  }
+  const timer = setTimeout(() => {
+    hostEl.draggable = true
+    cleanup()
+  }, DRAG_HOLD_MS)
+  window.addEventListener('pointermove', onMove, true)
+  window.addEventListener('pointerup', cleanup, true)
+  window.addEventListener('pointercancel', cleanup, true)
+}
+
+/* Shared dragstart for both drag hosts (the whole card for single-device
+   groups, an individual member row for multi-room). Builds the V2-pill ghost
+   from the row element and mirrors the grab point onto it, clamped so a grab
+   started up in the media region still lands the ghost under the cursor. */
+function startDeviceDrag(e, { clientId, hostEl, rowEl, onDragStart }) {
+  if (e.target.closest(DRAG_OPT_OUT)) {
+    e.preventDefault()
+    return
+  }
+  e.dataTransfer.setData('text/plain', clientId)
+  e.dataTransfer.effectAllowed = 'move'
+  const card = hostEl?.closest('.fx-group-card-v2') || hostEl
+  const row = rowEl || card?.querySelector('.fx-group-row-v2')
+  if (row && card) {
+    const rowRect = row.getBoundingClientRect()
+    const cardRect = card.getBoundingClientRect()
+    const ghost = buildDeviceDragGhost(row, cardRect)
+    if (ghost) {
+      // .v2-single .fx-group-rows pads 16/24/16/32 — the cloned row sits at
+      // that offset from the ghost's top-left. Mirror the user's grab point
+      // within the row into the same point on the ghost; clamp so a grab from
+      // the media region (above the row) still pins the ghost to the cursor.
+      const SHELL_PAD_LEFT = 32
+      const SHELL_PAD_TOP = 16
+      const GHOST_H = 74
+      const offsetX = Math.min(Math.max((e.clientX - rowRect.left) + SHELL_PAD_LEFT, 0), cardRect.width)
+      const offsetY = Math.min(Math.max((e.clientY - rowRect.top) + SHELL_PAD_TOP, 0), GHOST_H)
+      e.dataTransfer.setDragImage(ghost, offsetX, offsetY)
+    }
+  }
+  onDragStart(clientId)
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -174,6 +270,149 @@ function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientI
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+ * HoverTip — a small label that floats above an anchor element on hover.
+ * Portaled to document.body so the group card's overflow:hidden never clips
+ * it. Replaces the old inline slide-in labels on the row action buttons.
+ * ────────────────────────────────────────────────────────────────────────── */
+function HoverTip({ anchorRef, label, visible }) {
+  const [pos, setPos] = useState(null)
+  useLayoutEffect(() => {
+    if (!visible) return
+    const el = anchorRef?.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    // Anchor the tip's bottom-center to the button's top-center; the CSS
+    // transform lifts it fully above and centers it horizontally.
+    setPos({ left: r.left + r.width / 2, top: r.top - 8 })
+  }, [visible, anchorRef])
+  if (!visible || !pos) return null
+  return createPortal(
+    <span className="fx-icon-tip" style={{ left: pos.left, top: pos.top }}>{label}</span>,
+    document.body,
+  )
+}
+
+/* IconTipButton — circular icon button with a portaled hover label. Used for
+ * the ungroup / ungroup-all affordances (the add button manages its own
+ * hover state since it also drives a popover). */
+function IconTipButton({ label, className, onClick, children, ...rest }) {
+  const ref = useRef(null)
+  const [hover, setHover] = useState(false)
+  return (
+    <>
+      <button
+        ref={ref}
+        type="button"
+        className={className}
+        onClick={onClick}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+        {...rest}
+      >
+        {children}
+      </button>
+      <HoverTip anchorRef={ref} label={label} visible={hover} />
+    </>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * RowName — the device/group title in a row. The label itself is part of the
+ * drag area (it carries the grab cursor and starts a device drag, same as the
+ * rest of the row/card). A single action button sits next to the label, sharing
+ * one 36×36 treatment (`.fx-name-action-btn`, matching what was the ungroup
+ * icon): the "All" row + single-device cards get the add-to-group disclosure
+ * chevron (`addDevices`); multi-room member rows get the ungroup button
+ * (`ungroup`). Both opt out of the drag via the `button` rule in DRAG_OPT_OUT,
+ * so dragging the title never fights the action click. They reveal together on
+ * card hover (see the CSS), so hovering anywhere over the card shows them all.
+ * ────────────────────────────────────────────────────────────────────────── */
+function RowName({ label, addDevices, ungroup }) {
+  const [open, setOpen] = useState(false)
+  const btnRef = useRef(null)
+  const clickable = !!addDevices
+  return (
+    <div className={`fx-group-row-name${clickable ? ' has-add' : ''}${open ? ' open' : ''}`}>
+      <span className="fx-name-device fx-group-row-name-label">{label}</span>
+      {clickable ? (
+        <button
+          ref={btnRef}
+          type="button"
+          className={`fx-name-action-btn${open ? ' open' : ''}`}
+          onClick={() => setOpen(o => !o)}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          aria-label="Add devices to group"
+        >
+          <IconChevronDownFilled className="fx-name-chevron" size={24} aria-hidden />
+        </button>
+      ) : ungroup ? (
+        <button
+          type="button"
+          className="fx-name-action-btn"
+          onClick={ungroup}
+          aria-label="Ungroup"
+        >
+          <IconUnlink size={20} />
+        </button>
+      ) : null}
+      {clickable && open && (
+        <AddDevicesPopover
+          devices={addDevices.devices}
+          homeClientId={addDevices.homeClientId}
+          memberIds={addDevices.memberIds}
+          isGroup={addDevices.isGroup}
+          anchorRef={btnRef}
+          onClose={() => setOpen(false)}
+          onConfirm={addDevices.onConfirm}
+        />
+      )}
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * EditGroupButton — full-width pill pinned to the bottom of the rows sub-card.
+ * It's the touch-first entry point to the group-membership editor: on mweb
+ * (≤600px) the hover-revealed name chevrons aren't discoverable, so this button
+ * opens the same AddDevicesPopover explicitly. Hidden on desktop via CSS (the
+ * hover affordances cover that case); always visible on multi-room cards at
+ * mweb. Mirrors RowName's clickable branch — own open state, anchors the
+ * popover to itself.
+ * ────────────────────────────────────────────────────────────────────────── */
+function EditGroupButton({ addDevices }) {
+  const [open, setOpen] = useState(false)
+  const btnRef = useRef(null)
+  if (!addDevices) return null
+  return (
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        className={`fx-edit-group-btn${open ? ' open' : ''}`}
+        onClick={() => setOpen(o => !o)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <span>Edit group</span>
+        <IconChevronDownFilled className="fx-edit-group-chevron" size={20} aria-hidden />
+      </button>
+      {open && (
+        <AddDevicesPopover
+          devices={addDevices.devices}
+          homeClientId={addDevices.homeClientId}
+          memberIds={addDevices.memberIds}
+          isGroup={addDevices.isGroup}
+          anchorRef={btnRef}
+          onClose={() => setOpen(false)}
+          onConfirm={addDevices.onConfirm}
+        />
+      )}
+    </>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
  * MediaCard — inner sub-card with album art + track meta + progress + controls.
  * Renders for V1/V3 (anywhere a track is present). Falls back to a source
  * glyph in the art slot when no metadata is available.
@@ -232,9 +471,14 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
     <div className="fx-group-media-card">
       <div className="fx-group-media-art">
         {hasMeta && track.art_url
-          ? <img src={track.art_url} alt="" loading="lazy" />
+          ? <img src={track.art_url} alt="" loading="lazy" draggable={false} />
           : <SourceIcon sourceId={sourceId} size={56} />}
       </div>
+      {/* Desktop keeps the body wrapper (art | body[text, progress]) exactly as
+          before. On mweb (≤600px) index.css sets the body to display:contents so
+          text + progress lift into the media card's grid and reflow via named
+          areas — art+title on top, progress full-width below — without changing
+          the desktop layout. */}
       <div className="fx-group-media-body">
         <div className="fx-group-media-text">
           <span className="fx-title-track" title={titleText}>{titleText}</span>
@@ -294,7 +538,7 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
  * snapshot on the first publish of a drag and discards it after a short
  * idle window, so successive drags compose naturally.
  * ────────────────────────────────────────────────────────────────────────── */
-function AllRow({ clients, mqtt, homeClientId, onReturnHome, inlineSourceTrigger }) {
+function AllRow({ clients, mqtt, addDevices, sourceTrigger }) {
   const readVol = useCallback(
     (c) => mqtt.volumes[c.id] ?? c.config?.volume?.percent ?? 0,
     [mqtt.volumes],
@@ -336,25 +580,8 @@ function AllRow({ clients, mqtt, homeClientId, onReturnHome, inlineSourceTrigger
   }
 
   return (
-    <div className={`fx-group-row-v2 is-all${inlineSourceTrigger ? ' with-source' : ''}`}>
-      <div className="fx-group-row-name">
-        <span className="fx-name-device fx-group-row-name-label">All</span>
-        <button
-          type="button"
-          className="fx-group-member-x"
-          onClick={() => {
-            clients.forEach(c => {
-              if (c.id !== homeClientId) onReturnHome(c.id)
-            })
-          }}
-          title="Ungroup all"
-          aria-label="Ungroup all"
-          style={{ marginLeft: 8 }}
-        >
-          <IconUnlink size={14} stroke={2.5} />
-          <span className="fx-group-member-x-label">Ungroup all</span>
-        </button>
-      </div>
+    <div className="fx-group-row-v2 is-all with-source">
+      <RowName label="All" addDevices={addDevices} />
       <div className="fx-group-row-volume">
         <button
           type="button"
@@ -374,7 +601,7 @@ function AllRow({ clients, mqtt, homeClientId, onReturnHome, inlineSourceTrigger
           ariaLabel="All devices volume"
         />
       </div>
-      {inlineSourceTrigger}
+      {sourceTrigger}
     </div>
   )
 }
@@ -390,7 +617,7 @@ function AllRow({ clients, mqtt, homeClientId, onReturnHome, inlineSourceTrigger
 function DeviceRow({
   client, isHome, isMulti, isOnly, isAirplayHome, hasMedia,
   nameMap, mqtt, onReturnHome, onDragStart, onDragEnd,
-  inlineSourceTrigger, isDragPlaceholder,
+  inlineSourceTrigger, isDragPlaceholder, addDevices,
 }) {
   const name = nameMap[client.id] || client.host?.name || client.id
   const vol = mqtt.volumes[client.id] ?? client.config?.volume?.percent ?? 0
@@ -405,40 +632,23 @@ function DeviceRow({
     mqtt.publishVolume?.(client.id, next)
   }
 
-  // The name container is the row's draggable handle. For multi-room
-  // non-home rows that means "move me to another group"; for single-device
-  // cards (only ever 1 row) it means "move the whole device to another
-  // group." We don't make the home row of a multi-room group draggable
-  // because dragging the home would disband the group, which isn't a
-  // useful affordance — users return-home via the X.
-  const isRowDraggable = !isMulti || !isHome
-  const handleNameDragStart = (e) => {
-    if (e.target.closest('button, input, [role="slider"]')) {
-      e.preventDefault()
-      return
-    }
-    e.dataTransfer.setData('text/plain', client.id)
-    e.dataTransfer.effectAllowed = 'move'
-    const row = rowRef.current
-    const card = row?.closest('.fx-group-card-v2')
-    if (row && card) {
-      const rowRect = row.getBoundingClientRect()
-      const cardRect = card.getBoundingClientRect()
-      const ghost = buildDeviceDragGhost(row, cardRect)
-      if (ghost) {
-        // .v2-single .fx-group-rows pads 16/24/16/32 — the cloned row sits at
-        // that offset from the ghost's top-left. Mirror the user's grab point
-        // within the row into the same point on the ghost.
-        const SHELL_PAD_LEFT = 32
-        const SHELL_PAD_TOP = 16
-        const offsetX = (e.clientX - rowRect.left) + SHELL_PAD_LEFT
-        const offsetY = (e.clientY - rowRect.top) + SHELL_PAD_TOP
-        e.dataTransfer.setDragImage(ghost, offsetX, offsetY)
-      }
-    }
-    onDragStart(client.id)
-  }
-  const handleNameDragEnd = (e) => {
+  // Per-row dragging only applies to multi-room *member* rows ("move me to
+  // another group"). The multi-room home row isn't draggable (dragging home
+  // would disband the group — users ungroup-all from the source menu), and
+  // single-device cards now drag from the whole card (see GroupCard), not the
+  // inner row, so the grab area runs edge-to-edge. Interactive children opt
+  // out via DRAG_OPT_OUT in both the pointerdown arm and the dragstart guard.
+  const isRowDraggable = isMulti && !isHome
+  // The grip handle is a hover-revealed affordance advertising "you can drag
+  // this." It shows on every draggable device row (multi-room members) and on
+  // single-device rows (where the whole card is the drag host). It's a DOM
+  // child of the drag host, so grabbing it starts the drag naturally; it's
+  // deliberately NOT in DRAG_OPT_OUT.
+  const showDragHandle = !isMulti || !isHome
+  const handleRowPointerDown = (e) => armDragOnPointerDown(rowRef.current, isRowDraggable, e)
+  const handleRowDragStart = (e) =>
+    startDeviceDrag(e, { clientId: client.id, rowEl: rowRef.current, onDragStart })
+  const handleRowDragEnd = (e) => {
     cleanupDeviceDragGhost()
     onDragEnd?.(e)
   }
@@ -446,36 +656,22 @@ function DeviceRow({
   return (
     <div
       ref={rowRef}
-      className={`fx-group-row-v2${inlineSourceTrigger ? ' with-source' : ''}${isDragPlaceholder ? ' is-drag-placeholder' : ''}`}
+      className={`fx-group-row-v2${isMulti ? ' with-source no-trailing' : inlineSourceTrigger ? ' with-source' : ''}${isRowDraggable ? ' draggable' : ''}${isDragPlaceholder ? ' is-drag-placeholder' : ''}`}
+      draggable={isRowDraggable}
+      onPointerDown={isRowDraggable ? handleRowPointerDown : undefined}
+      onDragStart={isRowDraggable ? handleRowDragStart : undefined}
+      onDragEnd={isRowDraggable ? handleRowDragEnd : undefined}
     >
-      <div
-        className={`fx-group-row-name${isRowDraggable ? ' draggable' : ''}`}
-        draggable={isRowDraggable}
-        onDragStart={isRowDraggable ? handleNameDragStart : undefined}
-        onDragEnd={isRowDraggable ? handleNameDragEnd : undefined}
-      >
-        {isRowDraggable && (
-          <span className="fx-row-drag" aria-hidden>
-            <DragBarsIcon size={10} />
-          </span>
-        )}
-        <span className="fx-name-device fx-group-row-name-label">
-          {name}
+      {showDragHandle && (
+        <span className="fx-drag-grip" aria-hidden>
+          <DragBarsIcon size={10} />
         </span>
-        {isMulti && !isHome && (
-          <button
-            type="button"
-            className="fx-group-member-x"
-            onClick={() => onReturnHome(client.id)}
-            title="Ungroup"
-            aria-label="Ungroup"
-            style={{ marginLeft: 8 }}
-          >
-            <IconUnlink size={14} stroke={2.5} />
-            <span className="fx-group-member-x-label">Ungroup</span>
-          </button>
-        )}
-      </div>
+      )}
+      <RowName
+        label={name}
+        addDevices={addDevices}
+        ungroup={isMulti && !isHome ? () => onReturnHome(client.id) : undefined}
+      />
       <div className="fx-group-row-volume">
         {isAirplay ? (
           <span className="fx-group-row-volume-icon">
@@ -502,7 +698,12 @@ function DeviceRow({
           external={isAirplay}
         />
       </div>
-      {inlineSourceTrigger}
+      {/* Trailing column (right of the slider): single-device cards keep the
+          source-trigger here. Multi-room rows have no trailing control — the
+          ungroup affordance now lives next to the name (see RowName.ungroup) —
+          so they drop the 68px track (`no-trailing`) and the slider runs to the
+          card's right edge. */}
+      {!isMulti ? inlineSourceTrigger : null}
       {/* AirPlay caption sits below the row, under the name. We position it
           absolutely so the row's grid track heights don't grow when the
           caption is present. */}
@@ -522,11 +723,13 @@ function DeviceRow({
  * GroupCard — orchestrates the four variant layouts.
  * ────────────────────────────────────────────────────────────────────────── */
 export default function GroupCard({
-  group, nameMap, mqtt,
+  group, nameMap, mqtt, clients,
   isDragTarget, isDragging, dragClientId, placeholderClientId,
   onDragStart, onDragEnd,
   onDragOverGroup, onDragLeaveGroup, onDropOnGroup,
-  onReturnHome, onSwitchSource, onOpenDevice,
+  onReturnHome, onUngroupAll, onSwitchSource, onOpenDevice, onAddDevices,
+  isExpanded = false, onToggleExpand,
+  appear = false, appearDelayMs = 0,
 }) {
   const isMulti = group.clients.length > 1
   // home_client_id can be null when the server hasn't materialized it yet
@@ -540,6 +743,37 @@ export default function GroupCard({
     || (group.stream_id?.match(/source_(fauxnos\d+)_/)?.[1])
     || group.clients[0]?.id
   const cardRef = useRef(null)
+
+  // The mweb "Edit group" pill is revealed by tapping the card body; only one
+  // card is expanded at a time (state lives in GroupsTab, passed as isExpanded /
+  // onToggleExpand) so tapping one card collapses any other. Desktop keeps the
+  // hover-chevron path, so the pill is CSS-hidden there regardless. (FX-42)
+
+  // Mweb press feedback: the whole card springs down a touch on press. Driven by
+  // pointerdown (not CSS :active, which mobile browsers suppress the moment a
+  // scroll starts) so the feedback fires on touch-down and — crucially — stays
+  // pressed *while scrolling*. We deliberately do NOT release on pointercancel
+  // (the browser fires that the instant it claims the gesture for scrolling,
+  // which would pop the card back immediately); instead we hold until the finger
+  // actually lifts (touchend/pointerup). Presses on a control are ignored so
+  // adjusting volume / tapping a button doesn't scale the card. (FX-42)
+  const [pressed, setPressed] = useState(false)
+  const handleCardPress = (e) => {
+    if (!window.matchMedia('(max-width: 600px)').matches) return
+    if (e.target.closest(
+      'button, input, a, [role="slider"], .fx-group-row-volume, .fx-group-progress, .fx-source-trigger, .fx-edit-group-btn'
+    )) return
+    setPressed(true)
+    const release = () => {
+      setPressed(false)
+      window.removeEventListener('pointerup', release, true)
+      window.removeEventListener('touchend', release, true)
+      window.removeEventListener('touchcancel', release, true)
+    }
+    window.addEventListener('pointerup', release, true)
+    window.addEventListener('touchend', release, true)
+    window.addEventListener('touchcancel', release, true)
+  }
 
   const sorted = [...group.clients].sort((a, b) => {
     if (a.id === homeClientId) return -1
@@ -610,6 +844,17 @@ export default function GroupCard({
     const prev = prevShowMediaRef.current
     prevShowMediaRef.current = showMediaCard
     if (prev === null) {
+      // First mount. Normally we snap straight to the final state. But during
+      // the groups-list reveal (`appear`), a playing card should crop up from
+      // the placeholder height as it fades in — so run the same collapse→
+      // expand the live V2→V3 path uses, held by the per-card stagger delay so
+      // the crop syncs with the wrapper fade (FX-27).
+      // First mount snaps straight to the final render state. The groups-list
+      // reveal crop (`appear`) is driven by a pure CSS animation on the
+      // media-reveal element (see the fx-media-appear className below), NOT a
+      // JS timer — a timer here is fragile under StrictMode's mount
+      // double-invoke (run → cleanup → run), which cancels the scheduled
+      // expand and strands the media region collapsed (FX-27).
       setRenderMedia(showMediaCard)
       return
     }
@@ -647,10 +892,32 @@ export default function GroupCard({
   const showAnchoredTrigger = false
   const showInlineTrigger = true
 
-  // Card itself is never draggable — drag affordance lives on the device
-  // name. The slider's pointer-down events would otherwise fight the
-  // card's drag start, leaving the slider unusable on touch and mouse
-  // alike.
+  // Single-device cards drag from the whole card (edge-to-edge), not the
+  // inner row — so the grab area covers the card's padding and (in V3) the
+  // media region too. Multi-room cards aren't card-draggable; their member
+  // rows carry their own per-row drag. The pointerdown arm disables the
+  // native drag the instant a control is pressed, so the slider stays clean.
+  const singleDragClientId = !isMulti ? sorted[0]?.id : null
+  const cardDraggable = !!singleDragClientId
+  const handleCardPointerDown = (e) => armDragOnPointerDown(cardRef.current, cardDraggable, e)
+  const handleCardDragStart = (e) =>
+    startDeviceDrag(e, { clientId: singleDragClientId, hostEl: cardRef.current, onDragStart })
+  const handleCardDragEnd = (e) => {
+    cleanupDeviceDragGhost()
+    onDragEnd?.(e)
+  }
+
+  // Tap-to-reveal the Edit-group pill (mweb). Applies to every card — single
+  // and multi-room — so the one-at-a-time selection in GroupsTab governs them
+  // uniformly. Ignores taps that land on a control (slider, source trigger, any
+  // button/input, the pill itself) or the media transport — those own their own
+  // gesture. A drag suppresses the trailing click, so a hold-drag never toggles.
+  const handleCardClick = (e) => {
+    if (e.target.closest(
+      'button, input, a, [role="slider"], .fx-group-row-volume, .fx-group-progress'
+    )) return
+    onToggleExpand?.()
+  }
 
   const handleDragOver = (e) => {
     // Source card is never a drop target — without preventDefault the drop
@@ -661,13 +928,35 @@ export default function GroupCard({
     onDragOverGroup()
   }
 
+  // Batched ungroup — hand the full member list to GroupsTab so it can
+  // serialize the return-home calls. Looping onReturnHome here would fire
+  // concurrent requests that race on the server (see handleUngroupAll there).
   const handleUngroupAll = () => {
-    sorted.forEach(c => {
-      if (c.id !== homeClientId) onReturnHome(c.id)
-    })
+    onUngroupAll(sorted.filter(c => c.id !== homeClientId).map(c => c.id))
   }
 
   const handleConfigure = () => onOpenDevice(homeClientId)
+
+  // The group checklist shows the WHOLE fleet, always — the home device pinned
+  // checked+disabled, current members pre-checked (uncheckable to remove). The
+  // popover diffs its final selection against the live membership, so a single
+  // `onAddDevices(desiredIds, homeClientId)` call covers both add and remove.
+  // `clients` is the fleet (keyed by client_id); members are `group.clients`
+  // (keyed by id). The chevron hides only when the fleet is a single device
+  // (nothing to group). Drives both the "All" row (multi) and the lone row.
+  const memberIds = group.clients.map(c => c.id)
+  const allDevices = (clients || [])
+    .map(c => ({ id: c.client_id, name: nameMap[c.client_id] || c.name || c.client_id }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+  const addDevices = (onAddDevices && allDevices.length > 1)
+    ? {
+        devices: allDevices,
+        homeClientId,
+        memberIds,
+        isGroup: isMulti,
+        onConfirm: (ids) => onAddDevices(ids, homeClientId),
+      }
+    : null
 
   const inlineTrigger = showInlineTrigger ? (
     <SourceTrigger
@@ -696,28 +985,48 @@ export default function GroupCard({
     />
   ) : null
 
-  // Drop zone: single cards keep the whole outer card as the target (the
-  // card body is the device portion). Multi cards constrain the drop zone
-  // to the inner `.fx-group-rows` sub-card so the album-art region isn't
-  // treated as a valid drop target. fx-drop outline follows the same
-  // placement so the indicator hugs the actual drop area.
+  // Drop zone: whenever a media player sits above the device row(s) — every
+  // multi card (V1/V4) and single cards showing a media player (V3) — constrain
+  // the drop zone to the inner `.fx-group-rows` sub-card so the album-art region
+  // isn't treated as a drop target and the fx-drop outline hugs only the row(s).
+  // Single cards with no media (V2) have nothing below the row, so the whole
+  // outer card stays the target. fx-drop placement follows the handlers.
+  const scopeDropToRows = isMulti || hasMedia
   const dropHandlers = {
     onDragOver: handleDragOver,
     onDragLeave: onDragLeaveGroup,
     onDrop: (e) => { e.preventDefault(); onDropOnGroup() },
   }
-  const cardDropHandlers = isMulti ? {} : dropHandlers
-  const rowsDropHandlers = isMulti ? dropHandlers : {}
-  const cardDropClass = !isMulti && isDragTarget ? ' fx-drop' : ''
-  const rowsDropClass = isMulti && isDragTarget ? ' fx-drop' : ''
+  const cardDropHandlers = scopeDropToRows ? {} : dropHandlers
+  const rowsDropHandlers = scopeDropToRows ? dropHandlers : {}
+  const cardDropClass = !scopeDropToRows && isDragTarget ? ' fx-drop' : ''
+  const rowsDropClass = scopeDropToRows && isDragTarget ? ' fx-drop' : ''
+
+  // Groups-list reveal crop: when a playing card mounts during the reveal, its
+  // media region crop-grows in via a pure CSS animation (StrictMode-immune).
+  // Suppressed while the JS V2→V3 reveal owns the region (mediaCollapsed), so
+  // the two never fight over grid-template-rows.
+  const mediaAppear = appear && showMediaCard && !mediaCollapsed
 
   return (
-    <div className="fx-group-row-v2-wrap" data-group-card-id={group.home_client_id || group.id}>
+    <div
+      className={`fx-group-row-v2-wrap${appear ? ' fx-appear' : ''}`}
+      style={appear ? { '--appear-delay': `${appearDelayMs}ms` } : undefined}
+      data-group-card-id={group.home_client_id || group.id}
+    >
       <div
         ref={cardRef}
-        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}`}
+        className={`fx-group-card-v2 fx-card-hover ${variant}${isSingleNoMedia ? ' v2-single' : ''}${isEmptyMedia ? ' v4-empty' : ''}${cardDropClass}${cardDraggable ? ' fx-drag-host' : ''}${isDraggedSingleCard ? ' is-drag-placeholder' : ''}${isExpanded ? ' is-expanded' : ''}${pressed ? ' is-pressed' : ''}`}
         data-has-media={hasMedia ? 'true' : 'false'}
         style={artStyle}
+        draggable={cardDraggable}
+        onPointerDown={(e) => {
+          handleCardPress(e)
+          if (cardDraggable) handleCardPointerDown(e)
+        }}
+        onDragStart={cardDraggable ? handleCardDragStart : undefined}
+        onDragEnd={cardDraggable ? handleCardDragEnd : undefined}
+        onClick={handleCardClick}
         {...cardDropHandlers}
         onDoubleClick={(e) => {
           // Quick path to settings: double-click name area opens device panel
@@ -727,7 +1036,10 @@ export default function GroupCard({
         }}
       >
         {renderMedia && mediaPropsRef.current && (
-          <div className={`fx-media-reveal${mediaCollapsed ? ' is-entering' : ''}`}>
+          <div
+            className={`fx-media-reveal${mediaCollapsed ? ' is-entering' : ''}${mediaAppear ? ' fx-media-appear' : ''}`}
+            style={mediaAppear ? { '--appear-delay': `${appearDelayMs}ms` } : undefined}
+          >
             <div className="fx-media-reveal-inner">
               <MediaCard {...mediaPropsRef.current} />
             </div>
@@ -739,9 +1051,8 @@ export default function GroupCard({
             <AllRow
               clients={sorted}
               mqtt={mqtt}
-              homeClientId={homeClientId}
-              onReturnHome={onReturnHome}
-              inlineSourceTrigger={inlineTrigger}
+              addDevices={addDevices}
+              sourceTrigger={inlineTrigger}
             />
           )}
           {sorted.map(c => (
@@ -759,9 +1070,15 @@ export default function GroupCard({
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
               inlineSourceTrigger={!isMulti && c.id === homeClientId ? inlineTrigger : null}
+              addDevices={!isMulti && c.id === homeClientId ? addDevices : null}
               isDragPlaceholder={isMulti && c.id === placeholderClientId}
             />
           ))}
+          {/* Edit-group pill — mweb-only (CSS-gated). Revealed by tapping the
+              card (single or multi); only one card is expanded at a time (see
+              GroupsTab). The touch-first replacement for the hover chevron that
+              opens the membership editor. */}
+          {isExpanded && <EditGroupButton addDevices={addDevices} />}
         </div>
       </div>
     </div>

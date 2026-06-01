@@ -1,7 +1,41 @@
 /* ── Fonts ─────────────────────────────────────────────────────────────────── */
-/* Fustat + JetBrains Mono loaded via <link> in index.html (preconnect +
-   variable-axis URL per Google Fonts recommendation). Don't @import here
-   too — duplicate loads silently churn the FOUT. */
+/* Self-hosted (FX-44) — woff2 vendored under src/fonts/, no external CDN, so first
+   paint isn't gated on a render-blocking Google Fonts request and the app works on
+   an offline LAN. Fustat is the variable file (wght 200–800); JetBrains Mono's
+   400/500 share one variable file per subset. latin + latin-ext subsets only —
+   unicode-range lets the browser skip latin-ext until a glyph needs it. */
+@font-face {
+  font-family: 'Fustat';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('./fonts/fustat-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Fustat';
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+  src: url('./fonts/fustat-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url('./fonts/jetbrains-mono-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url('./fonts/jetbrains-mono-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
 
 /* ── Reset ─────────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -145,7 +179,7 @@
   /* Card-specific type ramp (group cards, now-playing) */
   --fx-text-title: 28px;
   --fx-text-row:   20px;
-  --fx-text-meta:  14px;
+  --fx-text-meta:  12px;
 
   /* Spacing — strict 4/8/12/16/24/32 */
   --fx-1: 4px;
@@ -753,6 +787,10 @@ a { color: var(--accent); }
   align-items: center;
   gap: var(--fx-3);
   width: 100%;
+  /* Dragging the slider must never start a text selection — without this the
+     browser highlights the % label / nearby text as a "selected" state mid-drag. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 .fx-volume-icon {
   flex-shrink: 0;
@@ -840,7 +878,10 @@ a { color: var(--accent); }
 .fx-volume-input:focus-visible ~ .fx-volume-thumb {
   /* visual focus carried by the track ring */
 }
-.fx-volume-track:focus-within {
+/* Focus ring only for keyboard focus — a range input keeps focus after a
+   mouse/touch drag, so :focus-within would leave the ring stuck on as a
+   "selected" state. :focus-visible suppresses it for pointer interaction. */
+.fx-volume-track:has(.fx-volume-input:focus-visible) {
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
 .fx-volume-label {
@@ -1307,6 +1348,19 @@ body {
   }
 }
 
+/* Dev-only local-checkout branch label (SHOW_BRANCH_INDICATOR). Lives in
+   the version-tracker slot beside the update pills — kept deliberately
+   faint/monospace so it reads as a dev annotation, not chrome. */
+.fx-branch-indicator {
+  font-family: var(--fx-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  line-height: 1;
+  color: var(--fx-text-2);
+  opacity: 0.6;
+  user-select: text;
+  white-space: nowrap;
+}
+
 /* ── Groups ────────────────────────────────────────────────────────────────── */
 .fx-groups-grid {
   display: flex;
@@ -1578,14 +1632,17 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Row action buttons (ungroup / ungroup-all / add) are circular icon-only
+   buttons. Labels moved to a portaled hover tip (.fx-icon-tip) so the row's
+   resting layout never shifts. */
 .fx-group-member-x {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 4px;
-  border-radius: var(--fx-r-pill);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
   border: 0;
   background: transparent;
   color: var(--fx-text-3);
@@ -1594,36 +1651,44 @@ body {
   opacity: 0;
   transition: opacity var(--fx-dur) var(--fx-ease), color var(--fx-dur) var(--fx-ease), background var(--fx-dur) var(--fx-ease);
 }
+/* Reveal on hover of the whole rows container — matching the drag handle
+   (.fx-group-rows:hover .fx-row-drag), not just the individual row. */
 .fx-group-member:hover .fx-group-member-x,
-.fx-group-row-v2:hover .fx-group-member-x,
-.fx-group-member-x:focus-visible { opacity: 1; }
-.fx-group-member-x:hover {
+.fx-group-rows:hover .fx-group-member-x,
+.fx-group-member-x:focus-visible,
+.fx-group-member-x.open { opacity: 1; }
+.fx-group-member-x:hover,
+/* The "+" button must stay highlighted while its checklist popover is open —
+   the popover portals to <body>, so moving the cursor into it drops the
+   row's :hover and would otherwise fade the trigger back to opacity 0. */
+.fx-group-member-add.open {
   color: var(--fx-text);
   background: var(--fx-surface-3);
 }
-/* Label sits to the right of the icon and slides in only on direct
-   button hover so the row's resting layout (when button is invisible)
-   stays unchanged. max-width + margin transition together so the label
-   and its leading space appear in one smooth motion. */
-.fx-group-member-x-label {
-  display: inline-block;
+/* Action cluster: 4px between the two buttons (in the All row). No left
+   margin — the parent .fx-group-row-name 8px gap supplies the space between
+   the device/All label and the first button. */
+.fx-group-row-name-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 0;
+}
+/* Portaled hover label above a row action button. */
+.fx-icon-tip {
+  position: fixed;
+  transform: translate(-50%, -100%);
+  z-index: 700;
+  padding: 4px 8px;
+  border-radius: 8px;
+  background: var(--fx-surface-3);
+  color: var(--fx-text);
   font-size: 11px;
   font-weight: 600;
   line-height: 1;
-  max-width: 0;
-  margin-left: 0;
-  overflow: hidden;
   white-space: nowrap;
-  opacity: 0;
-  transition: max-width var(--fx-dur) var(--fx-ease),
-              margin-left var(--fx-dur) var(--fx-ease),
-              opacity var(--fx-dur) var(--fx-ease);
-}
-.fx-group-member-x:hover .fx-group-member-x-label,
-.fx-group-member-x:focus-visible .fx-group-member-x-label {
-  max-width: 80px;
-  margin-left: 4px;
-  opacity: 1;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
 }
 .fx-group-member-slider { min-width: 0; }
 
@@ -1706,13 +1771,18 @@ body {
   flex-direction: column;
 }
 .fx-group-card-v2[data-has-media="true"] {
-  /* Outer card carries the album-art tint; the media content sits flat
-     on it (no inner card) and the device list floats on top of it as a
-     surface-1 sub-card with its own shadow. With the art tint doing the
-     visual lifting, the outer stroke softens to --fx-line so it doesn't
-     read heavy against the brighter background. */
-  background: var(--art-card-tint, var(--fx-surface-1));
-  border-color: var(--fx-line);
+  /* Outer card carries the album-art tint, but its 1px border must read as
+     a neutral idle-card edge — not pick up the tint. CSS paints a card's
+     background under its border (background-clip: border-box), so the
+     inherited translucent --fx-line-strong stroke over the green tint would
+     bleed green. Fix: two background layers — the tint clipped to
+     padding-box (interior only) sitting over an --fx-surface-1 layer
+     clipped to border-box (fills under the border). The border then
+     composites over --fx-surface-1, exactly like a default card, in both
+     rest and hover — while the interior keeps its album tint. */
+  background:
+    linear-gradient(var(--art-card-tint, var(--fx-surface-1)), var(--art-card-tint, var(--fx-surface-1))) padding-box,
+    var(--fx-surface-1) border-box;
 }
 /* V4 empty (multi-device, no Spotify connected) — tint the outer card a
    slight gray so the inner empty media-card (still surface-1) reads as a
@@ -1751,13 +1821,6 @@ body {
   :root:not([data-theme]) .fx-group-card-v2.fx-card-hover:hover {
     border-color: rgba(0, 0, 0, 0.28);
   }
-}
-/* Media cards rest with the softer --fx-line so the album-art tint
-   carries the edge. Hover lands midway at --fx-line-strong (12/16%)
-   instead of the heavier explicit 20/28% used by non-media cards,
-   which felt too dark against the tinted background. */
-.fx-group-card-v2[data-has-media="true"].fx-card-hover:hover {
-  border-color: var(--fx-line-strong);
 }
 /* Drop indicator — matches the viewport-edge background indicator
    (2px solid --fx-text). It lives on the outer card for every variant so
@@ -1802,6 +1865,23 @@ body {
   transform: translateY(18px);
   opacity: 0;
 }
+/* Groups-list reveal: a playing card's media region crop-grows from the
+   placeholder height as the card fades in. CSS animation (not the JS
+   transition the live V2→V3 path uses) so it's immune to StrictMode's mount
+   effect double-invoke; `both` + the inline --appear-delay hold it collapsed
+   through the per-card stagger, then expand in sync with the wrapper fade
+   (FX-27). */
+.fx-media-reveal.fx-media-appear {
+  animation: fx-media-crop-in 840ms cubic-bezier(0.34, 1.5, 0.64, 1)
+    var(--appear-delay, 0ms) both;
+}
+@keyframes fx-media-crop-in {
+  from { grid-template-rows: 0fr; transform: translateY(18px); opacity: 0; }
+  to   { grid-template-rows: 1fr; transform: translateY(0);    opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-media-reveal.fx-media-appear { animation: none; }
+}
 /* Rows section sits in front so the media card reads as emerging from
    behind it. Also smooth the V2 ↔ V3 style swap so the floating-sub-card
    chrome (white bg, border-top, rounded, shadow) fades in alongside the
@@ -1833,7 +1913,7 @@ body {
   padding: 24px;
   display: grid;
   grid-template-columns: 150px 1fr;
-  gap: 24px;
+  gap: 36px;
   align-items: center;
   /* No background or border — the media content sits flat on the
      outer card's album-art tint. */
@@ -1909,6 +1989,10 @@ body {
   align-items: center;
   gap: 16px;
   min-width: 0;
+  /* Same as the volume slider — dragging the seek bar must not start a text
+     selection on the timestamps. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 .fx-group-progress-bar {
   display: flex;
@@ -1971,7 +2055,7 @@ body {
               margin-left var(--fx-dur) var(--fx-ease);
 }
 .fx-group-progress-track:hover .fx-group-progress-thumb,
-.fx-group-progress-track:focus-within .fx-group-progress-thumb {
+.fx-group-progress-track:has(.fx-group-progress-input:focus-visible) .fx-group-progress-thumb {
   opacity: 1;
   width: 14px;
   height: 14px;
@@ -2046,6 +2130,63 @@ body {
   z-index: 2;
 }
 
+/* Name-action button next to a row's title — the single 36×36 affordance that
+   lives just after the device/group label. Two uses, one treatment: the "All"
+   row + single-device cards render the add-to-group disclosure chevron here;
+   multi-room member rows render the ungroup button here (it used to sit to the
+   right of the slider). Circular, muted, matching the old ungroup icon. Hidden
+   at rest and revealed on hover anywhere on the card (or while its popover is
+   open) so the resting card stays clean and so hovering anywhere over a
+   multi-device card surfaces every member's ungroup at once; keeps its layout
+   box at all times (opacity, not display) so revealing it never reflows. */
+.fx-name-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  background: transparent;
+  border-radius: 99px;
+  color: var(--fx-text-3);
+  cursor: pointer;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity var(--fx-dur) var(--fx-ease), background var(--fx-dur) var(--fx-ease), color var(--fx-dur) var(--fx-ease);
+}
+.fx-group-card-v2:hover .fx-name-action-btn,
+.fx-name-action-btn.open,
+.fx-name-action-btn:focus-visible {
+  opacity: 1;
+}
+.fx-name-action-btn:hover {
+  color: var(--fx-text);
+  background: rgba(74, 74, 74, 0.09);
+}
+[data-theme="dark"] .fx-name-action-btn:hover,
+:root:not([data-theme]) .fx-name-action-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-name-action-btn:hover {
+    background: rgba(74, 74, 74, 0.09);
+  }
+}
+.fx-name-action-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
+}
+.fx-name-chevron {
+  flex-shrink: 0;
+  color: inherit;
+}
+/* Touch devices have no hover — keep the affordance visible there. */
+@media (hover: none) {
+  .fx-name-action-btn { opacity: 1; }
+}
+
 /* Device rows section — V1/V3/V4 (below media card or as the entire body) */
 .fx-group-rows {
   display: flex;
@@ -2118,8 +2259,18 @@ body {
   position: relative;
   min-width: 0;
 }
+/* Fixed 68px trailing track (= the source-trigger's natural width) so the row
+   with a trailing control (the "All" row's source trigger, or a single-device
+   card's inline trigger) lines up with the rest. */
 .fx-group-row-v2.with-source {
-  grid-template-columns: 150px 1fr auto;
+  grid-template-columns: 163px 1fr 68px;
+}
+/* Multi-room member rows have no trailing control anymore (ungroup moved next
+   to the name), so they drop the 68px track and let the slider run to the
+   card's right edge — keeping the 163px name column so the slider START still
+   lines up with the "All" row above. */
+.fx-group-row-v2.with-source.no-trailing {
+  grid-template-columns: 163px 1fr;
 }
 /* Multi-card row placeholder — gray pill matching the dragged ghost's shape,
    so the "what was here" outline reads as a device card outline rather than
@@ -2132,24 +2283,26 @@ body {
   visibility: hidden;
 }
 
-/* Device rows are darker by default (single-device groups); muted only
-   when there's more than one device in the card (V1 + V4 multi variants).
-   Accent is reserved for the .is-all entry that controls the whole group
-   (see below). */
+/* Device rows use the full text color — including the member rows below
+   "All" in multi-device cards (V1 + V4), so they read at the same weight as
+   the .is-all entry that controls the whole group. */
 .fx-group-row-v2 .fx-name-device { color: var(--fx-text); }
-.fx-group-card-v2.v1 .fx-group-row-v2 .fx-name-device,
-.fx-group-card-v2.v4 .fx-group-row-v2 .fx-name-device { color: var(--fx-text-2); }
 
+/* The name/title sizes to its content (label + optional chevron) and pins to
+   the start of its track, so the rest of the track is row whitespace the user
+   can grab to drag (see the drag-cursor rules below). */
 .fx-group-row-name {
-  display: flex;
+  display: inline-flex;
   align-items: center;
+  gap: 4px;
   position: relative;
   min-width: 0;
-  cursor: inherit;
+  justify-self: start;
+  align-self: center;
+  width: max-content;
+  max-width: 100%;
   user-select: none;
 }
-.fx-group-row-name.draggable { cursor: grab; }
-.fx-group-row-name.draggable:active { cursor: grabbing; }
 .fx-group-row-name-label {
   white-space: nowrap;
   overflow: hidden;
@@ -2164,11 +2317,32 @@ body {
   white-space: nowrap;
 }
 
-/* Per-row drag handle — only renders for non-home devices in multi-room;
-   visible on row hover. Two parallel bars sitting 20px left of the name
-   (still inside the card's 24px outer padding so the affordance never
-   clips). Matches the Figma kitchen-row drag indicator. */
-.fx-row-drag {
+/* Drag cursor. The ROW is the drag source; the device title is part of the
+   drag area so it carries the grab cursor too. Interactive children opt out in
+   JS (and reset their cursor here): the volume control + ungroup spacer read as
+   default; buttons (incl. the chevron button) carry pointer. */
+.fx-group-row-v2.draggable { cursor: grab; }
+.fx-group-row-v2.draggable:active { cursor: grabbing; }
+.fx-group-row-v2.draggable .fx-group-row-volume { cursor: default; }
+
+/* Single-device cards drag from the whole card edge-to-edge, so the grab
+   cursor lives on the card surface (and the title). Interactive children reset:
+   buttons read as pointer, the volume slider + seek track read as default
+   (their pointer gesture changes the value, not a drag). */
+.fx-group-card-v2.fx-drag-host { cursor: grab; }
+.fx-group-card-v2.fx-drag-host:active { cursor: grabbing; }
+.fx-group-card-v2.fx-drag-host .fx-group-row-volume,
+.fx-group-card-v2.fx-drag-host .fx-group-progress { cursor: default; }
+.fx-group-card-v2.fx-drag-host button,
+.fx-group-card-v2.fx-drag-host input { cursor: pointer; }
+
+/* Drag-grip affordance — the original two-vertical-bars handle in the row's
+   left gutter (the 24–32px the rows container reserves on the left). It sits
+   absolutely to the left of the row content; because it's a DOM child of the
+   draggable host, grabbing it starts the drag. Hidden at rest, fades in on
+   card hover so the resting card reads clean, and brightens to full on a
+   direct hover of the grip itself. */
+.fx-drag-grip {
   position: absolute;
   left: -14px;
   top: 50%;
@@ -2183,17 +2357,19 @@ body {
   opacity: 0;
   transition: opacity var(--fx-dur) var(--fx-ease);
 }
-.fx-group-rows:hover .fx-row-drag,
-.fx-row-drag:focus-visible {
-  opacity: 0.7;
+.fx-drag-grip:active { cursor: grabbing; }
+.fx-group-card-v2:hover .fx-drag-grip,
+.fx-drag-grip:focus-visible { opacity: 0.7; }
+.fx-drag-grip:hover { opacity: 1; }
+/* Touch devices have no hover — keep the grip visible there. */
+@media (hover: none) {
+  .fx-drag-grip { opacity: 0.7; }
 }
-.fx-row-drag:hover { opacity: 1; }
-.fx-row-drag:active { cursor: grabbing; }
 
 .fx-group-row-volume {
   display: flex;
   align-items: center;
-  gap: 18px;
+  gap: 16px;
   min-width: 0;
 }
 .fx-group-row-volume-icon {
@@ -2257,7 +2433,7 @@ button.fx-group-row-volume-icon:focus-visible {
 }
 .fx-volume.card-v2:hover .fx-volume-thumb,
 .fx-volume.card-v2:active .fx-volume-thumb,
-.fx-volume.card-v2:focus-within .fx-volume-thumb {
+.fx-volume.card-v2:has(.fx-volume-input:focus-visible) .fx-volume-thumb {
   opacity: 1;
   width: 14px; height: 14px; margin-left: -7px;
 }
@@ -2310,11 +2486,19 @@ button.fx-group-row-volume-icon:focus-visible {
 .fx-group-card-v2.v2-single .fx-group-row-v2 .fx-name-device {
   color: var(--fx-text);
 }
+.fx-group-card-v2.v1 .fx-group-row-v2 .fx-group-row-volume-icon,
+.fx-group-card-v2.v4 .fx-group-row-v2 .fx-group-row-volume-icon,
 .fx-group-card-v2.v3 .fx-group-row-v2 .fx-group-row-volume-icon,
 .fx-group-card-v2.v2-single .fx-group-row-v2 .fx-group-row-volume-icon {
   color: var(--fx-text);
   opacity: 1;
 }
+.fx-group-card-v2.v1 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-fill,
+.fx-group-card-v2.v1 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-thumb,
+.fx-group-card-v2.v1 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-hover,
+.fx-group-card-v2.v4 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-fill,
+.fx-group-card-v2.v4 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-thumb,
+.fx-group-card-v2.v4 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-hover,
 .fx-group-card-v2.v3 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-fill,
 .fx-group-card-v2.v3 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-thumb,
 .fx-group-card-v2.v3 .fx-group-row-v2 .fx-volume.card-v2 .fx-volume-hover,
@@ -2342,6 +2526,159 @@ button.fx-group-row-volume-icon:focus-visible {
 .fx-group-media-card .fx-group-progress-actions .fx-icon-btn:hover {
   color: var(--art-accent);
   background: var(--art-accent-soft, var(--fx-accent-soft));
+}
+
+/* Edit-group pill (rendered only on multi-room cards). Desktop edits group
+   membership via the hover-revealed name chevron, so the explicit button is
+   hidden here and only surfaces at the mweb breakpoint below. */
+.fx-edit-group-btn { display: none; }
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   Mweb (≤600px) — small-screen layout for the group card (FX-42)
+   ═════════════════════════════════════════════════════════════════════════════
+   The same DOM as desktop, reflowed: the media region stacks (album art + title
+   on top, edge-to-edge progress + centered transport below), every device row
+   goes two-line (name over a full-width slider), drag handles are dropped in
+   favor of a press-and-hold drag, and an explicit "Edit group" pill replaces the
+   hover-only membership chevron. Most type/spacing stays at desktop scale — only
+   the media titles shrink (per Figma).
+   ═════════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 600px) {
+  /* ── Press feedback: the whole card springs down on touch ──────────────
+     Driven by an `is-pressed` class (JS pointerdown) rather than :active so it
+     fires on touch-down even when the gesture becomes a scroll. The spring
+     ease (slight overshoot) gives the scale a bouncy settle on release. We fold
+     transform into the card's existing transition so the hover-chrome
+     transitions survive. */
+  .fx-group-card-v2.fx-card-hover {
+    transition:
+      transform 260ms cubic-bezier(0.34, 1.55, 0.64, 1),
+      background 460ms cubic-bezier(0.34, 1.5, 0.64, 1),
+      border-color var(--fx-dur) var(--fx-ease),
+      box-shadow var(--fx-dur) var(--fx-ease);
+  }
+  .fx-group-card-v2.is-pressed { transform: scale(0.97); }
+
+  /* ── Media region: art + title on top, progress full-width below ─────────
+     Desktop keeps the body wrapper (art | body[text, progress]); here the body
+     becomes display:contents so its children (text, progress) lift into the
+     media card's grid and place via named areas. This leaves the desktop layout
+     untouched — only the mweb breakpoint reflows. */
+  .fx-group-media-card {
+    grid-template-columns: 100px 1fr;
+    grid-template-areas:
+      "art      text"
+      "progress progress";
+    column-gap: 16px;
+    row-gap: 16px;
+    align-content: start;
+    padding: 24px 24px 16px;
+  }
+  .fx-group-media-art,
+  .fx-group-media-art.is-empty {
+    width: 100px;
+    height: 100px;
+  }
+  .fx-group-media-art { grid-area: art; }
+  /* Playing variant: lift text + progress into the card grid. */
+  .fx-group-media-card:not(.is-empty) .fx-group-media-body { display: contents; }
+  .fx-group-media-text { grid-area: text; }
+  .fx-group-progress   { grid-area: progress; }
+  /* Empty (V4) variant keeps its body box, parked in the title slot. */
+  .fx-group-media-card.is-empty .fx-group-media-body {
+    grid-area: text;
+    padding-top: 0;
+  }
+  /* No anchored source-trigger on mobile (it lives inline in the All row), so
+     the title can use the full column width. */
+  .fx-group-media-text { padding-right: 0; }
+  .fx-group-media-text .fx-title-track { font-size: 24px; }
+  .fx-group-media-text .fx-meta-track  { font-size: 16px; }
+
+  /* Progress bar runs edge-to-edge (times flank it); transport centers below. */
+  .fx-group-progress {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .fx-group-progress-actions { align-self: center; }
+
+  /* ── Device rows: two lines — name (+ trailing action) over the slider ─── */
+  .fx-group-row-v2,
+  .fx-group-row-v2.with-source,
+  .fx-group-row-v2.with-source.no-trailing {
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "name action"
+      "vol  vol";
+    column-gap: 8px;
+    row-gap: 10px;
+  }
+  .fx-group-row-v2 > .fx-group-row-name   { grid-area: name; }
+  .fx-group-row-v2 > .fx-group-row-volume { grid-area: vol; }
+  /* The inline source trigger (All row + single-device cards) sits top-right. */
+  .fx-group-row-v2 > .fx-source-trigger {
+    grid-area: action;
+    justify-self: end;
+  }
+  /* Member rows have no trailing element — their ungroup button lives inside
+     the name cluster. Stretch the name across the row and push the button to
+     the right edge so it lines up with the source triggers above it. */
+  .fx-group-row-v2.no-trailing > .fx-group-row-name {
+    width: 100%;
+    justify-self: stretch;
+  }
+  .fx-group-row-v2.no-trailing > .fx-group-row-name .fx-name-action-btn {
+    margin-left: auto;
+  }
+  /* Row action buttons (chevron / ungroup) are always visible on touch — keep
+     them at full opacity rather than the desktop hover-reveal. */
+  .fx-name-action-btn { opacity: 1; }
+
+  /* No drag gutter on mobile — the handle is gone (press-and-hold drags), so
+     reclaim the left inset the desktop layout reserved for the grip. */
+  .fx-drag-grip { display: none; }
+  .fx-group-card-v2[data-has-media="true"] .fx-group-rows,
+  .fx-group-card-v2.v2-single .fx-group-rows,
+  .fx-group-card-v2.v3 .fx-group-rows {
+    padding: 24px;
+  }
+
+  /* ── Edit-group pill — full-width, pinned to the bottom of the rows card ─ */
+  .fx-edit-group-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    width: 100%;
+    padding: 13px;
+    margin: 0;
+    border: 0;
+    border-radius: 99px;
+    background: var(--fx-surface-3);
+    color: var(--fx-text);
+    font: inherit;
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background var(--fx-dur) var(--fx-ease);
+  }
+  .fx-edit-group-btn:active,
+  .fx-edit-group-btn.open { background: var(--fx-line-strong); }
+  .fx-edit-group-chevron { color: var(--fx-text-3); flex-shrink: 0; }
+  /* Single-device cards reveal the pill on tap — fade it in so it doesn't
+     pop. Multi-room cards render it from the start, so they're unaffected. */
+  .fx-group-card-v2.is-expanded .fx-edit-group-btn {
+    animation: fx-edit-group-reveal 220ms var(--fx-ease);
+  }
+}
+@keyframes fx-edit-group-reveal {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-group-card-v2.is-expanded .fx-edit-group-btn { animation: none; }
+  .fx-group-card-v2.is-pressed { transform: none; }
 }
 
 /* ── Source popover ───────────────────────────────────────────────────────
@@ -2485,36 +2822,222 @@ button.fx-group-row-volume-icon:focus-visible {
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
 
-/* "Configure" row at the bottom of the source popover — 12px bold label
-   on the left, 16px chevron on the right, muted by default, full text
-   color on hover. Sits in the popover's normal flex flow so the outer
-   16px gap separates it from the AirPlay row above. */
+/* "Configure" button at the bottom of the source popover — full-width
+   outlined pill matching AddDevicesPopover's confirm button (`.fx-add-devices
+   -confirm.tertiary`): bold centered label, outlined ghost that firms up on
+   hover. Sits in the popover's normal flex flow so the outer 16px gap
+   separates it from the row above. */
 .fx-source-popover-configure {
-  display: flex;
+  flex-shrink: 0;
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0;
-  background: none;
-  border: 0;
-  cursor: pointer;
+  justify-content: center;
+  gap: 6px;
   width: 100%;
-  text-align: left;
-  color: var(--fx-text-2);
-  transition: color var(--fx-dur) var(--fx-ease);
-}
-.fx-source-popover-configure-label {
-  font-size: 12px;
+  height: 36px;
+  border: 1px solid var(--fx-line-strong);
+  border-radius: var(--fx-r-pill);
+  background: transparent;
+  color: var(--fx-text);
+  font: inherit;
+  font-size: var(--fx-text-sm);
   font-weight: 700;
-  line-height: 1;
+  cursor: pointer;
+  transition: background var(--fx-dur) var(--fx-ease),
+              border-color var(--fx-dur) var(--fx-ease),
+              color var(--fx-dur) var(--fx-ease);
 }
 .fx-source-popover-configure:hover {
-  color: var(--fx-text);
+  background: var(--fx-surface-2);
+  border-color: var(--fx-text-3);
 }
 .fx-source-popover-configure:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px var(--fx-accent-ring);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Add-devices checklist popover (FX-16)
+   Opens from a group's "+" button. Device name on the left, checkbox on the
+   right; an "Add to group" button slides in at the bottom once ≥1 is picked.
+   Shares the soft-halo chrome of the source popover.
+   ─────────────────────────────────────────────────────────────────────────── */
+.fx-add-devices-popover {
+  position: fixed;
+  z-index: 600;
+  width: 232px;
+  max-height: min(60vh, 360px);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background: var(--fx-surface-1);
+  border: 1px solid var(--fx-line);
+  border-radius: 16px;
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.09);
+}
+[data-theme="dark"] .fx-add-devices-popover,
+:root:not([data-theme]) .fx-add-devices-popover {
+  box-shadow: 0 0 16px rgba(0, 0, 0, 0.36);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-add-devices-popover {
+    box-shadow: 0 0 16px rgba(0, 0, 0, 0.09);
+  }
+}
+/* Popover title, same treatment as the "Devices" header in the devices
+   popover (12px / 600 / muted). */
+.fx-add-devices-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 8px 0;
+}
+.fx-add-devices-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fx-text-3);
+}
+/* "Select all" reads as a text link: same size as the title but the primary
+   text color so it carries more weight; darkens toward the accent on hover. */
+.fx-add-devices-select-all {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fx-text);
+  cursor: pointer;
+  transition: color var(--fx-dur) var(--fx-ease);
+}
+.fx-add-devices-select-all:hover { color: var(--fx-accent); }
+.fx-add-devices-select-all:focus-visible {
+  outline: none;
   border-radius: 4px;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
+}
+.fx-add-devices-empty {
+  font-size: var(--fx-text-sm);
+  color: var(--fx-text-2);
+  padding: 4px 8px;
+}
+.fx-add-devices-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  min-height: 0;
+}
+.fx-add-devices-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--fx-text);
+  text-align: left;
+  transition: background var(--fx-dur) var(--fx-ease);
+}
+.fx-add-devices-row:hover { background: var(--fx-surface-2); }
+.fx-add-devices-row:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
+}
+/* Home/master row: checked + locked. No hover, default cursor — it can't
+   leave its own group. The label stays full-strength; only the checkbox dims
+   (60% opacity) to read as disabled. */
+.fx-add-devices-row.locked {
+  cursor: default;
+}
+.fx-add-devices-row.locked:hover { background: none; }
+.fx-add-devices-row.locked .fx-add-devices-check {
+  opacity: 0.6;
+}
+.fx-add-devices-row-label {
+  flex: 1;
+  min-width: 0;
+  /* Match the source dropdown row label (16px / 700). */
+  font-size: 16px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fx-add-devices-check {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1.5px solid var(--fx-line-strong);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fx-on-accent);
+  transition: background var(--fx-dur) var(--fx-ease),
+              border-color var(--fx-dur) var(--fx-ease);
+}
+.fx-add-devices-check.on {
+  background: var(--fx-accent);
+  border-color: var(--fx-accent);
+}
+.fx-add-devices-confirm {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 36px;
+  border: 1px solid transparent;
+  border-radius: var(--fx-r-pill);
+  font: inherit;
+  font-size: var(--fx-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--fx-dur) var(--fx-ease),
+              border-color var(--fx-dur) var(--fx-ease),
+              color var(--fx-dur) var(--fx-ease),
+              opacity var(--fx-dur) var(--fx-ease);
+}
+/* Commit button ("Create group" / "Update group"): accent fill, disabled
+   until the selection actually changes the membership. The accent-hover token
+   is a near-invisible delta on this solid fill, so the hover leans on a slight
+   opacity drop (perceptible in both themes since the fill picks up the popover
+   surface beneath it). */
+.fx-add-devices-confirm.primary {
+  background: var(--fx-accent);
+  color: var(--fx-on-accent);
+}
+.fx-add-devices-confirm.primary:not(:disabled):hover {
+  background: var(--fx-accent-hover);
+  opacity: 0.88;
+}
+.fx-add-devices-confirm:disabled {
+  background: var(--fx-surface-3);
+  color: var(--fx-text-3);
+  cursor: default;
+}
+/* Tertiary ("Break group" on an untouched existing group): outlined ghost
+   with the full text color; the surface firms up on hover. */
+.fx-add-devices-confirm.tertiary {
+  background: transparent;
+  border-color: var(--fx-line-strong);
+  color: var(--fx-text);
+}
+.fx-add-devices-confirm.tertiary:hover {
+  background: var(--fx-surface-2);
+  border-color: var(--fx-text-3);
+}
+.fx-add-devices-confirm:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--fx-accent-ring);
 }
 
 /* Trigger button "open" state — subtle background reflecting current accent.
@@ -2839,6 +3362,85 @@ button.fx-group-row-volume-icon:focus-visible {
   width: 14px;
   height: 14px;
   border-width: 2px;
+}
+
+/* ── Groups loading skeleton ─────────────────────────────────────────────────
+   Placeholder cards shown until the first /api/groups response lands (FX-27).
+   They borrow the device card's outer shape (full width, 36px radius, idle
+   single-card height) but drop the stroke + shadow — the same treatment as
+   the drag drop-placeholder (.is-drag-placeholder). A staggered shimmer sweep
+   cascades down the column; per-card opacity (set inline) fades the stack to
+   nothing so it reads as continuing off-page rather than ending hard. */
+.fx-skeleton-card {
+  /* 74px = the idle single-device card height (1 + 16 + 40 + 16 + 1). */
+  min-height: 74px;
+  border-radius: 36px;
+  background: var(--fx-surface-3);
+  position: relative;
+  overflow: hidden;
+}
+.fx-skeleton-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--fx-text) 7%, transparent),
+    transparent
+  );
+  /* animation-delay is set inline per card to stagger the cascade. */
+  animation: fx-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+@keyframes fx-skeleton-shimmer {
+  100% { transform: translateX(100%); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-skeleton-card::after { animation: none; }
+}
+
+/* ── Groups list reveal (loading → loaded crossfade) ─────────────────────────
+   The real cards fade — and, when playing media, crop-grow (via the existing
+   .fx-media-reveal) — into the slots their placeholders held, while the
+   skeleton fades out beneath them (FX-27). The stage is the positioning
+   context: real content defines the height in normal flow; the leaving
+   skeleton is absolute on top of nothing (z 0) so it dissolves underneath. */
+.fx-reveal-stage { position: relative; }
+.fx-reveal-content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--fx-4);
+}
+.fx-skeleton-leaving {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 0;
+  pointer-events: none;
+  animation: fx-skeleton-out 920ms var(--fx-ease) both;
+}
+@keyframes fx-skeleton-out { to { opacity: 0; } }
+
+/* Entering content sits above the fading skeleton and fades in. Cards stagger
+   top-to-bottom via the inline --appear-delay so the reveal echoes the
+   skeleton's cascade. */
+.fx-group-row-v2-wrap.fx-appear { position: relative; z-index: 1; }
+.fx-reveal-content.fx-appear-fade { position: relative; z-index: 1; }
+.fx-group-row-v2-wrap.fx-appear {
+  animation: fx-card-appear 840ms var(--fx-ease) both;
+  animation-delay: var(--appear-delay, 0ms);
+}
+.fx-reveal-content.fx-appear-fade {
+  animation: fx-card-appear 840ms var(--fx-ease) both;
+}
+@keyframes fx-card-appear {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-skeleton-leaving { animation: none; opacity: 0; }
+  .fx-group-row-v2-wrap.fx-appear,
+  .fx-reveal-content.fx-appear-fade { animation: none; }
 }
 
 /* ── Empty state ───────────────────────────────────────────────────────────── */

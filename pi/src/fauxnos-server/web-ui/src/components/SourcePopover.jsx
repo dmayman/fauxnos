@@ -8,7 +8,6 @@ import {
   IconExternalLinkFilled,
   IconHeadphonesFilled,
   IconUnlink,
-  IconChevronRight,
 } from '@tabler/icons-react'
 import CustomIcon from './CustomIcon'
 
@@ -130,8 +129,7 @@ export default function SourcePopover({
           className="fx-source-popover-configure"
           onClick={() => { onConfigure(); onClose() }}
         >
-          <span className="fx-source-popover-configure-label">Configure</span>
-          <IconChevronRight size={16} aria-hidden />
+          Configure
         </button>
       )}
     </div>
