@@ -26,12 +26,14 @@ struct GroupCard: View {
     @EnvironmentObject private var store: FauxnosStore
     @ObservedObject private var artStore = AlbumArtColorStore.shared
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let group: SpeakerGroup
 
     @State private var showSourcePicker = false
     @State private var dropTargeted = false
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
+    @State private var pressed = false
 
     // MARK: Derived state (mirrors web GroupCard)
 
@@ -84,6 +86,25 @@ struct GroupCard: View {
         }
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.07),
                 radius: dropTargeted ? 16 : 6, y: dropTargeted ? 7 : 2)
+        .scaleEffect((pressed && !reduceMotion) ? 0.97 : 1)
+        .animation(.fxPress, value: pressed)
+        // Springy card press (FX-57): the whole card dips on touch-down and
+        // settles with a bouncy release, the signature "live, tactile control"
+        // cue. A long-press gesture (with an effectively-never-firing perform)
+        // gives clean press-down/up callbacks while cooperating with the
+        // enclosing ScrollView — moving past `maximumDistance` fails the
+        // gesture so a scroll takes over and the card pops back. SwiftUI's
+        // descendant-gesture priority keeps the volume slider, scrub bar,
+        // transport / mute buttons, source trigger, and the row's `.draggable`
+        // drag-to-group winning in their own regions, so a press there does NOT
+        // scale the card (the web's `closest(controls)` opt-out). Honors
+        // reduce-motion (no scale, mirroring `@media (prefers-reduced-motion)`).
+        .onLongPressGesture(minimumDuration: 9999, maximumDistance: 12) {
+            // perform — unreachable in practice; press/release runs below.
+        } onPressingChanged: { isPressing in
+            if isPressing, !pressed { Haptics.lift() }
+            pressed = isPressing
+        }
         .dropDestination(for: String.self) { items, _ in
             guard let dropped = items.first else { return false }
             Haptics.success()

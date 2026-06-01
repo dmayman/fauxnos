@@ -125,6 +125,12 @@ extension Animation {
     /// feel native on touch. Used for card / drop-target / reveal transitions.
     static var fxEase: Animation { .spring(response: 0.34, dampingFraction: 0.82) }
     static var fxQuick: Animation { .easeOut(duration: 0.18) }
+
+    /// Card press feedback — a low-damping spring whose overshoot on release
+    /// gives the bouncy settle. Mirrors the web `.is-pressed` transition
+    /// `transform 260ms cubic-bezier(0.34, 1.55, 0.64, 1)` (the 1.55 control
+    /// point is the overshoot). Used for the signature "tactile control" press.
+    static var fxPress: Animation { .spring(response: 0.28, dampingFraction: 0.55) }
 }
 
 // MARK: - Haptics
