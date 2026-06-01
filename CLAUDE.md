@@ -39,6 +39,24 @@ amixer set softvol_analog 80%
 amixer set softvol_system 80%
 ```
 
+### Web UI build (the committed bundle MUST stay in sync)
+The web UI is React/Vite source at `pi/src/fauxnos-server/web-ui/` that compiles to a
+**committed build artifact** at `pi/src/fauxnos-server/web/`. Flask serves `web/` verbatim
+(`api_server.py`, `static_folder=WEB_DIR`), and the "Update server" UI action just git-pulls
+`main` and serves whatever `web/` is committed — **nothing builds on the Pi**. So `web/` on
+`main` must always match `web-ui/` source on `main`, or fauxnos.local serves stale UI.
+
+A `pre-commit` hook (`.githooks/pre-commit`) enforces this: any commit that stages a
+`web-ui/` change auto-rebuilds and stages `web/`, and aborts the commit if the build fails.
+It activates automatically the first time you run `npm install`/`npm ci` in `web-ui/` (via the
+`prepare` script), or enable it by hand once per clone:
+```bash
+git config core.hooksPath .githooks
+```
+Manual build / deploy still work: `npm run build` (→ `../web/`) and `npm run deploy`
+(build + scp + restart). `npm run deploy` always builds first, so a *direct* deploy is never
+stale — the hook is what keeps the **committed** bundle (what the UI deploy pulls) honest.
+
 ### Installing Dependencies
 ```bash
 # Python dependencies
