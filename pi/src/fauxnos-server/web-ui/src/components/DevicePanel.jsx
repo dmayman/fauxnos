@@ -326,6 +326,7 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdate
                 clientId={client.client_id}
                 mqtt={mqtt}
                 removable={s.id === 'analog'}
+                editableLabel={s.id === 'analog'}
                 onRemove={() => handleRemoveBuiltIn(s.id)}
                 onUpdate={loadSources}
               />
@@ -563,7 +564,7 @@ function DevicePanelHeader({ client, onClose, onRefresh }) {
  * just hairline-separated rows instead of nested cards, and the form drops
  * inline beneath the row instead of inside its own surface fill.
  */
-function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdate }) {
+function BuiltInSourceRow({ source, clientId, mqtt, removable, editableLabel, onRemove, onUpdate }) {
   const [expanded, setExpanded] = useState(false)
   const ext = source.external_switch || {}
   const [enabled, setEnabled] = useState(ext.enabled || false)
@@ -572,6 +573,11 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
     ext.control_payload ? JSON.stringify(ext.control_payload) : ''
   )
   const [contentType, setContentType] = useState(ext.content_type || 'json')
+  // Label + icon are only editable on built-ins that opt in (analog today —
+  // the user renames it "Turntable"/"Aux" and picks a glyph per device).
+  // Spotify/AirPlay keep their fixed identity. FX-67.
+  const [label, setLabel] = useState(source.label || '')
+  const [icon, setIcon] = useState(source.icon || '')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
 
@@ -622,12 +628,20 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
     if (payload.trim()) {
       try { parsedPayload = JSON.parse(payload) } catch { parsedPayload = payload }
     }
+    const body = {
+      external_switch: { enabled, control_api: url, control_payload: parsedPayload, content_type: contentType },
+    }
+    // Persist the per-device label/icon for opt-in built-ins (analog). The
+    // server seeds a synthesized built-in's structural fields on first upsert,
+    // so sending just these (with external_switch) is safe. FX-67.
+    if (editableLabel) {
+      body.label = label.trim() || source.label || source.id
+      body.icon = icon || null
+    }
     try {
       await apiFetch(`/api/clients/${clientId}/sources/${source.id}`, {
         method: 'PUT',
-        body: JSON.stringify({
-          external_switch: { enabled, control_api: url, control_payload: parsedPayload, content_type: contentType },
-        }),
+        body: JSON.stringify(body),
       })
       setSaved(true)
       setTimeout(() => setSaved(false), 1500)
@@ -678,6 +692,17 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
       </div>
       {expanded && (
         <div className="fx-source-form">
+          {editableLabel && (
+            <div>
+              <label className="fx-label">Label</label>
+              <div className="fx-input-with-icon">
+                <Suspense fallback={<button type="button" className="fx-icon-picker-trigger" disabled aria-label="Pick an icon" />}>
+                  <LazyIconPickerButton value={icon} onChange={setIcon} />
+                </Suspense>
+                <input className="fx-input" type="text" value={label} onChange={e => setLabel(e.target.value)} placeholder={source.id} />
+              </div>
+            </div>
+          )}
           <div className="fx-source-setting">
             <span className="fx-source-setting-label">
               Volume calibration
@@ -737,11 +762,16 @@ function BuiltInSourceRow({ source, clientId, mqtt, removable, onRemove, onUpdat
                   <option value="form">Form (x-www-form-urlencoded)</option>
                 </select>
               </div>
-              <div>
-                <button className="fx-btn primary" onClick={handleSave} disabled={saving}>
-                  {saved ? <><IconCheckFilled size={14} /> Saved</> : <><IconCheckFilled size={14} /> Save</>}
-                </button>
-              </div>
+            </div>
+          )}
+          {/* Save covers label/icon (editableLabel) and/or the external-API
+              config. Shown whenever there's something to persist beyond the
+              live-via-MQTT calibration: an editable label, or the API toggle. */}
+          {(editableLabel || enabled) && (
+            <div>
+              <button className="fx-btn primary" onClick={handleSave} disabled={saving}>
+                {saved ? <><IconCheckFilled size={14} /> Saved</> : <><IconCheckFilled size={14} /> Save</>}
+              </button>
             </div>
           )}
         </div>

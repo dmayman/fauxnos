@@ -1631,7 +1631,32 @@ class FauxnosAPIServer:
         "id": "analog", "label": "Analog In", "type": "internal",
         "category": "default", "sink": "analogsink",
         "starting_volume": 50, "volume_controller": "self",
+        # Sensible default glyph so unedited analog renders something in the
+        # source picker (matches the IconMicrophoneFilled fallback the web UI
+        # uses for analog). Tabler icon names are "<style>:<base>" — see
+        # web-ui/src/icons/iconData.js. The user can override this per-device
+        # via PUT /api/clients/<id>/sources/analog (FX-67).
+        "icon": "filled:microphone",
     }
+
+    def _synthesized_default_source(self, source_id: str) -> Optional[dict]:
+        """Return a copy of the built-in default for `source_id`, if any.
+
+        Used to seed an upsert when a built-in source (spotify/airplay/analog)
+        is edited for the first time on a client whose explicit `sources`
+        array doesn't yet contain it (it was being synthesized by
+        `_effective_client_sources`). Seeding preserves the structural fields
+        (`sink`, `type`, `volume_controller`, …) that the daemon needs for
+        routing — otherwise a `{label, icon}` patch would persist a bare entry
+        that, once present, overrides the synthesized default by id and strips
+        those fields.
+        """
+        for src in self._DEFAULT_BUILTIN_SOURCES:
+            if src.get("id") == source_id:
+                return dict(src)
+        if source_id == self._DEFAULT_ANALOG_SOURCE["id"]:
+            return dict(self._DEFAULT_ANALOG_SOURCE)
+        return None
 
     def _effective_client_sources(self, client_id: str) -> list:
         """Return the sources we expose to the UI for `client_id`.
@@ -1909,8 +1934,13 @@ class FauxnosAPIServer:
                     self._set_client_sources(client_id, sources)
                     return jsonify({"status": "updated", "source": source})
 
-            # Source not found — upsert (create with provided data)
-            new_source = {"id": source_id, **data}
+            # Source not found in the explicit array — upsert. If it's a
+            # built-in that was being synthesized (e.g. analog on a has_adc
+            # device), seed from its default so a {label, icon} patch doesn't
+            # strip the structural fields the daemon routes on (sink, type,
+            # volume_controller). The patch + canonical id win over the seed.
+            seed = self._synthesized_default_source(source_id) or {}
+            new_source = {**seed, **data, "id": source_id}
             sources.append(new_source)
             self._set_client_sources(client_id, sources)
             return jsonify({"status": "created", "source": new_source}), 201
