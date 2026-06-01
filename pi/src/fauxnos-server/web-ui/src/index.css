@@ -1784,11 +1784,16 @@ body {
     linear-gradient(var(--art-card-tint, var(--fx-surface-1)), var(--art-card-tint, var(--fx-surface-1))) padding-box,
     var(--fx-surface-1) border-box;
 }
-/* V4 empty (multi-device, no Spotify connected) — tint the outer card a
-   slight gray so the inner empty media-card (still surface-1) reads as a
-   raised element, mirroring the visual hierarchy of V1 where album-art
-   tints the outer card. Subtle on purpose: this is the "Spotify not
-   connected" affordance, not a featured state. */
+/* V4 empty (multi-device, no Spotify connected) — the outer card carries a
+   recessed --fx-surface-2 backdrop and the device-rows float on top of it as
+   a white bordered sub-card (see the rule below), mirroring exactly how a
+   playing card works: album-art tint on the outer card, white rows sub-card
+   floating over it. The gray therefore shows only in the empty media region
+   up top and in the rounded-corner notches *behind* the sub-card — never on
+   the always-interactive device rows themselves, which read as active/white
+   regardless of play state. Plain single-layer surface-2 is fine here:
+   unlike the album-art tint, a neutral gray needs no padding-box/border-box
+   split to keep the translucent border neutral (the FX-37 concern). (FX-41) */
 .fx-group-card-v2.v4-empty {
   background: var(--fx-surface-2);
 }
@@ -1941,7 +1946,14 @@ body {
    actively loading, which it isn't here — Spotify just hasn't been
    pointed at this room yet). */
 .fx-group-media-art.is-empty {
+  /* White tile (not the default surface-2 art bg) so the thumbnail reads as a
+     distinct, raised element against the recessed gray media region. (FX-41) */
+  background: var(--fx-surface-1);
   color: var(--fx-text-3);
+}
+/* Fade only the placeholder glyph, not the white tile beneath it — the muted
+   Spotify mark signals "no media yet" without dimming the thumbnail. (FX-41) */
+.fx-group-media-art.is-empty svg {
   opacity: 0.35;
 }
 .fx-media-empty-cta {
@@ -1949,6 +1961,13 @@ body {
   line-height: 1.4;
   font-weight: 500;
   color: var(--fx-text-2);
+}
+/* Emphasize the device/group name in the "Connect to <name> in Spotify"
+   zero-state — bolder weight + primary text color so the room reads as the
+   subject of the prompt. (FX-41) */
+.fx-media-empty-name {
+  font-weight: 700;
+  color: var(--fx-text);
 }
 .fx-group-media-art img {
   width: 100%;
@@ -2197,8 +2216,14 @@ body {
 /* When stacked under a media card the rows section becomes a floating
    surface-1 sub-card sitting on the outer card's album-art tint —
    reverse of the original layout. Margin reveals the tint around all
-   four edges; the shadow lifts the white surface off the tint. */
-.fx-group-card-v2[data-has-media="true"] .fx-group-rows {
+   four edges; the shadow lifts the white surface off the tint.
+   V4 (multi-device, idle) shares this exact treatment so the device-rows
+   read as the same active white+border sub-card whether or not media is
+   playing — here the tint is the recessed --fx-surface-2 media region
+   above, not album art. --art-inner-surface is unset without art, so the
+   background falls back to white surface-1. (FX-41) */
+.fx-group-card-v2[data-has-media="true"] .fx-group-rows,
+.fx-group-card-v2.v4-empty .fx-group-rows {
   gap: 20px;
   margin: 0;
   /* Dark mode: a darker shade of the album-art tint (--art-inner-surface,
@@ -2214,11 +2239,9 @@ body {
      just inside the outer card's interior radius. */
   border-radius: 36px 36px 35px 35px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-  /* Match the V2-single card's intrinsic row height (40px inline source
-     trigger + 24px padding-y) so cards line up at the same height
-     regardless of whether they're in V2 or V3 mode. Top pad mirrors V3
-     (16px) so the multi-room rows tuck snug under the media card. */
-  padding: 16px 24px 32px 32px;
+  /* Top pad (16px) mirrors V3 so the multi-room rows tuck snug under the
+     media card; bottom matches the top for symmetric vertical inset. */
+  padding: 16px 24px 16px 32px;
 }
 [data-theme="dark"] .fx-group-card-v2[data-has-media="true"] .fx-group-rows,
 :root:not([data-theme]) .fx-group-card-v2[data-has-media="true"] .fx-group-rows {
@@ -2639,6 +2662,7 @@ button.fx-group-row-volume-icon:focus-visible {
      reclaim the left inset the desktop layout reserved for the grip. */
   .fx-drag-grip { display: none; }
   .fx-group-card-v2[data-has-media="true"] .fx-group-rows,
+  .fx-group-card-v2.v4-empty .fx-group-rows,
   .fx-group-card-v2.v2-single .fx-group-rows,
   .fx-group-card-v2.v3 .fx-group-rows {
     padding: 24px;

@@ -426,7 +426,7 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
         </div>
         <div className="fx-group-media-body">
           <span className="fx-media-empty-cta">
-            Connect to {groupName} in Spotify
+            Connect to <strong className="fx-media-empty-name">{groupName}</strong> in Spotify to begin
           </span>
         </div>
       </div>
