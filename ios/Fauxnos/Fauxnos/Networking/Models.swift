@@ -83,6 +83,10 @@ struct Source: Decodable, Identifiable {
     let id: String
     let label: String?
     let type: String?
+    /// User-picked Tabler icon, e.g. "outline:home" / "filled:disc" (web
+    /// `source.icon`). Rendered via `SourceIcon`, falling back to the semantic
+    /// glyph when unset or not present in the bundled webfont.
+    let icon: String?
 }
 
 // MARK: - REST: GET /api/clients

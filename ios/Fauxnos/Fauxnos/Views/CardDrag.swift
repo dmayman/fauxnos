@@ -67,6 +67,10 @@ final class CardDragController: ObservableObject {
     @Published var preview: AnyView?
     @Published var previewWidth: CGFloat = 0
     @Published var previewScale: CGFloat = 1
+    /// Float opacity — 1 while dragging; faded to 0 as the float glides into a
+    /// destination card on a successful drop (so it dissolves as the card grows
+    /// the real row), then restored on reset.
+    @Published var previewOpacity: CGFloat = 1
 
     /// Raised the instant an in-row control (volume slider, scrub bar) takes the
     /// touch, so the lift gesture knows the press belongs to that control and
@@ -128,6 +132,7 @@ final class CardDragController: ObservableObject {
         preview = nil
         previewWidth = 0
         previewScale = 1
+        previewOpacity = 1
         grabOffset = .zero
     }
 }
@@ -293,9 +298,23 @@ struct LiftToRegroup: ViewModifier {
         if let target = controller.hoverGroupId, let g = store.groups.first(where: { $0.id == target }) {
             Haptics.success()
             let home = store.homeClientId(of: g) ?? g.id
+            lifted = false                       // source slot is leaving; drop its placeholder
+            // The destination card grows a row to accept the device (animated
+            // inside `joinGroup`); meanwhile the float glides down into that card
+            // and dissolves, so it reads as landing in its new home rather than
+            // vanishing in place.
+            let landing = controller.cardFrames[target].map {
+                CGPoint(x: $0.midX + controller.grabOffset.width,
+                        y: $0.maxY + controller.grabOffset.height)
+            }
             Task { await store.joinGroup(clientId: client.id, targetHomeClientId: home) }
-            lifted = false
-            withAnimation(.fxEase) { controller.reset() }
+            withAnimation(.fxEase) {
+                if let landing { controller.dragLocation = landing }
+                controller.previewScale = 0.92
+                controller.previewOpacity = 0
+            } completion: {
+                controller.reset()
+            }
         } else if controller.hoverBackground {
             // Dropped on empty background — leave the group, returning the device
             // to its own. The list re-renders it as a standalone card.

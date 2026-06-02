@@ -96,10 +96,11 @@ struct GroupsListView: View {
             preview
                 .frame(width: dragController.previewWidth)
                 .scaleEffect(dragController.previewScale)
-                .shadow(color: .black.opacity(opacity),
+                .shadow(color: .black.opacity(opacity * dragController.previewOpacity),
                         radius: 6 + 16 * lift, y: 2 + 10 * lift)
                 .position(x: dragController.dragLocation.x - dragController.grabOffset.width,
                           y: dragController.dragLocation.y - dragController.grabOffset.height)
+                .opacity(dragController.previewOpacity)
                 .allowsHitTesting(false)
                 .transition(.opacity)
         }

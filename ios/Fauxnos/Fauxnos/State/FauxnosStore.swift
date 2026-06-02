@@ -13,6 +13,7 @@
 //
 
 import Foundation
+import SwiftUI   // withAnimation for optimistic group remaps (drop-to-accept)
 import Combine
 
 @MainActor
@@ -332,13 +333,12 @@ final class FauxnosStore: ObservableObject {
 
     // MARK: - Source switching (FX-19)
 
-    /// Sources offerable for a group, mirroring the web popover: the server
-    /// enriches `/api/groups` with each group's `sources`, and multi-room
-    /// groups can only run Spotify (the lone snapcast-routed source) — others
-    /// are local-per-device and would silence the rest of the group.
+    /// Every source offerable for a group. Multi-room groups list them all too:
+    /// picking a non-Spotify (local-per-device) source ungroups the room first
+    /// (see `switchSourceUngrouping`), so the picker shows the full set with a
+    /// "changing source will ungroup" caption rather than hiding the others.
     func availableSources(for group: SpeakerGroup) -> [Source] {
-        let all = group.sources ?? []
-        return group.clients.count > 1 ? all.filter { $0.id == "spotify" } : all
+        group.sources ?? []
     }
 
     /// Switch a group's active source via `POST /api/groups/source`. We set the
@@ -354,6 +354,24 @@ final class FauxnosStore: ObservableObject {
             apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
             // Let the next /api/groups refresh or mode echo reconcile the
             // optimistic value if the switch was rejected (e.g. 409).
+        }
+    }
+
+    /// Pick a source on a multi-device group: only Spotify plays across grouped
+    /// devices, so any other (local-per-device) source first ungroups the room —
+    /// every member returns to its own home — then the now-single home group is
+    /// pointed at the chosen source.
+    func switchSourceUngrouping(_ sourceId: String, in group: SpeakerGroup) async {
+        guard let home = homeClientId(of: group) else { return }
+        modes[home] = sourceId                       // optimistic; echo confirms
+        for c in group.clients where c.id != home {
+            await returnHome(clientId: c.id)         // each awaits its own refresh
+        }
+        let homeGroupId = groups.first { homeClientId(of: $0) == home }?.id ?? group.id
+        do {
+            try await api.setGroupSource(groupId: homeGroupId, homeClientId: home, sourceId: sourceId)
+        } catch {
+            apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -376,12 +394,16 @@ final class FauxnosStore: ObservableObject {
             return  // already a member
         }
         guard let moving = findClient(clientId) else { return }
-        groups = groups.compactMap { g in
-            let without = g.clients.filter { $0.id != clientId }
-            if homeClientId(of: g) == targetHomeClientId {
-                return g.replacingClients(without + [moving])
+        // Animate the optimistic remap so the destination card grows a row to
+        // "accept" the dropped device (and the source card shrinks) smoothly.
+        withAnimation(.fxEase) {
+            groups = groups.compactMap { g in
+                let without = g.clients.filter { $0.id != clientId }
+                if homeClientId(of: g) == targetHomeClientId {
+                    return g.replacingClients(without + [moving])
+                }
+                return without.isEmpty ? nil : g.replacingClients(without)
             }
-            return without.isEmpty ? nil : g.replacingClients(without)
         }
         do {
             try await api.joinGroup(clientId: clientId, targetClientId: targetHomeClientId)

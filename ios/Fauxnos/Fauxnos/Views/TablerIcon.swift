@@ -87,3 +87,104 @@ func volumeTablerGlyph(_ v: Int) -> TablerIcon.Glyph {
     if v < 40 { return .volumeLow }
     return .volumeHigh
 }
+
+// MARK: - Arbitrary Tabler icons by name (custom source icons)
+
+import CoreText
+
+/// Resolves an arbitrary Tabler icon *name* (e.g. "home", "disc") to its glyph
+/// codepoint in the bundled webfonts, so the custom icons users pick per source
+/// (web `source.icon` = "outline:home" / "filled:disc") render natively instead
+/// of falling back. The webfonts carry PostScript glyph names matching Tabler's
+/// slugs; we build a name→codepoint map once per family by walking the font's
+/// own character set, then cache it.
+enum TablerIconCatalog {
+    private static var maps: [String: [String: UInt32]] = [:]
+    private static let lock = NSLock()
+
+    /// Codepoint for `base` (a bare slug like "device-tv") in the given family,
+    /// or nil if the font doesn't carry it (e.g. a first-party "custom:" icon).
+    static func codepoint(base: String, filled: Bool) -> UInt32? {
+        let family = filled ? "tabler-icons-filled" : "tabler-icons"
+        lock.lock(); defer { lock.unlock() }
+        if maps[family] == nil { maps[family] = build(family) }
+        return maps[family]?[base]
+    }
+
+    private static func build(_ family: String) -> [String: UInt32] {
+        let ctFont = CTFontCreateWithName(family as CFString, 16, nil)
+        let cgFont = CTFontCopyGraphicsFont(ctFont, nil)
+        let charset = CTFontCopyCharacterSet(ctFont) as CharacterSet
+        var map: [String: UInt32] = [:]
+
+        // CharacterSet bitmap: 8192 bytes for the BMP, then (planeByte + 8192
+        // bytes) per non-empty supplementary plane. A set bit = a member
+        // codepoint; resolving its glyph name gives the Tabler slug.
+        let data = [UInt8](charset.bitmapRepresentation)
+        var offset = 0
+        func scan(planeBase: UInt32) {
+            guard offset + 8192 <= data.count else { return }
+            for byteIndex in 0..<8192 {
+                let byte = data[offset + byteIndex]
+                if byte == 0 { continue }
+                for bit in 0..<8 where (byte & (1 << bit)) != 0 {
+                    let cp = planeBase + UInt32(byteIndex * 8 + bit)
+                    resolve(cp)
+                }
+            }
+            offset += 8192
+        }
+        func resolve(_ cp: UInt32) {
+            guard let scalar = UnicodeScalar(cp) else { return }
+            var utf16 = Array(String(scalar).utf16)
+            var glyphs = [CGGlyph](repeating: 0, count: utf16.count)
+            guard CTFontGetGlyphsForCharacters(ctFont, &utf16, &glyphs, utf16.count),
+                  let glyph = glyphs.first, glyph != 0,
+                  let name = cgFont.name(for: glyph) as String? else { return }
+            map[name] = cp
+        }
+
+        scan(planeBase: 0)                               // BMP
+        while offset < data.count {                      // supplementary planes
+            let plane = UInt32(data[offset]); offset += 1
+            scan(planeBase: plane << 16)
+        }
+        return map
+    }
+}
+
+/// Renders an arbitrary Tabler glyph by name (style "outline"/"filled" + slug),
+/// falling back to a semantic source glyph if the font doesn't carry it.
+struct SourceIcon: View {
+    /// Raw `source.icon` value, e.g. "outline:home" / "filled:disc" (or nil).
+    var icon: String?
+    /// Source id, for the semantic fallback (spotify/airplay/analog/…).
+    var sourceId: String?
+    var size: CGFloat = 20
+
+    var body: some View {
+        if let parsed = Self.parse(icon),
+           let cp = TablerIconCatalog.codepoint(base: parsed.base, filled: parsed.filled),
+           let scalar = UnicodeScalar(cp) {
+            Text(String(scalar))
+                .font(.custom(parsed.filled ? "tabler-icons-filled" : "tabler-icons", size: size))
+                .fixedSize()
+        } else {
+            TablerIcon(glyph: sourceTablerGlyph(sourceId), size: size)
+        }
+    }
+
+    /// "outline:home" → (base: "home", filled: false). Anything without a known
+    /// outline/filled prefix (e.g. "custom:…") returns nil → semantic fallback.
+    private static func parse(_ icon: String?) -> (base: String, filled: Bool)? {
+        guard let icon, !icon.isEmpty else { return nil }
+        let parts = icon.split(separator: ":", maxSplits: 1)
+        if parts.count == 2 {
+            let style = parts[0], base = String(parts[1])
+            if style == "filled" { return (base, true) }
+            if style == "outline" { return (base, false) }
+            return nil   // "custom:" and anything else isn't in the webfont
+        }
+        return (icon, false)   // bare slug → treat as outline
+    }
+}

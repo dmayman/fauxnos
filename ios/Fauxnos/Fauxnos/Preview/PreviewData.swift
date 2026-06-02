@@ -94,8 +94,8 @@ enum PreviewData {
     // MARK: Sources offered per group (web /api/groups `sources`)
 
     static let spotifyAndAnalog: [Source] = [
-        Source(id: "spotify", label: "Spotify", type: "internal"),
-        Source(id: "analog", label: "Analog In", type: "internal"),
+        Source(id: "spotify", label: "Spotify", type: "internal", icon: nil),
+        Source(id: "analog", label: "Analog In", type: "internal", icon: "outline:microphone"),
     ]
 
     // MARK: Tracks / playback overlays (keyed by home client id)

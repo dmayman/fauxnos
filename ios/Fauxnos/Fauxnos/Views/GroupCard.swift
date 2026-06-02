@@ -49,7 +49,10 @@ struct GroupCard: View {
     private var source: String? { store.currentSource(of: group) }
 
     private var isMulti: Bool { group.clients.count > 1 }
-    private var hasMedia: Bool { track?.hasMeta == true }
+    // Spotify is the only source with a media player — other sources (AirPlay,
+    // Vinyl, Alexa, …) are local-per-device and carry no track metadata, so they
+    // render as a plain device card (V2) rather than the album-art media lockup.
+    private var hasMedia: Bool { source == "spotify" && track?.hasMeta == true }
     private var showMediaCard: Bool { hasMedia || isMulti }   // V1/V3/V4
     private var isEmptyMedia: Bool { isMulti && !hasMedia }    // V4 zero-state
     private var hasControls: Bool { source == "spotify" && hasMedia }
@@ -98,9 +101,15 @@ struct GroupCard: View {
         .background(outerBackground)
         .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .circular))
         .overlay {
+            // The whole card is the drop hit-area, but the white drop indicator
+            // only outlines the device-card (rows) portion when there's a media /
+            // rows sub-panel (V1/V3/V4) — that stroke is drawn on the panel in
+            // `rowsSection`. A plain single-device card (V2) has no sub-panel, so
+            // its drop indicator stays the full-card stroke.
+            let dropOnWholeCard = isDropTarget && !showMediaCard
             RoundedRectangle(cornerRadius: Radius.card, style: .circular)
-                .strokeBorder(isDropTarget ? FX.text : (hasMedia ? FX.line : FX.lineStrong),
-                              lineWidth: isDropTarget ? 2 : 1)
+                .strokeBorder(dropOnWholeCard ? FX.text : (hasMedia ? FX.line : FX.lineStrong),
+                              lineWidth: dropOnWholeCard ? 2 : 1)
         }
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.07),
                 radius: isDropTarget ? 16 : 6, y: isDropTarget ? 7 : 2)
@@ -200,7 +209,14 @@ struct GroupCard: View {
     }
 
     private var sourceGlyph: some View {
-        TablerIcon(glyph: sourceTablerGlyph(source), size: 44).mediaMuted(faint, additive: mediaAdditive)
+        SourceIcon(icon: currentSourceObject?.icon, sourceId: source, size: 44)
+            .mediaMuted(faint, additive: mediaAdditive)
+    }
+
+    /// The current source's full object (for its custom icon), looked up in the
+    /// group's enriched sources by the active source id.
+    private var currentSourceObject: Source? {
+        group.sources?.first { $0.id == source }
     }
 
     // MARK: Progress + inline transport (web .fx-group-progress)
@@ -302,9 +318,8 @@ struct GroupCard: View {
                     // Single-device cards keep the name chevron → device menu; on a
                     // multi card the rows have no dropdown (the "All" row owns it).
                     onOpenMenu: isMulti ? nil : { showDeviceMenu = true },
-                    // On a multi card the home device shows an inline home marker;
-                    // every other member gets a trailing unlink (ungroup) button.
-                    showHomeIcon: isMulti && isHomeDevice,
+                    // Non-home members get a trailing unlink (ungroup) button; the
+                    // home member has no trailing affordance in the list.
                     onUnlink: (isMulti && !isHomeDevice)
                         ? { Haptics.tap(); Task { await store.returnHome(clientId: client.id) } }
                         : nil
@@ -331,13 +346,14 @@ struct GroupCard: View {
         }
         .overlay {
             if showMediaCard {
-                rowsPanelShape
-                    .strokeBorder(FX.lineStrong, lineWidth: 1)
-                    .mask(alignment: .top) {
-                        Rectangle()
-                            .frame(height: Radius.inner + 2)
-                            .frame(maxHeight: .infinity, alignment: .top)
-                    }
+                // Full-perimeter outline for the device sub-card (top divider +
+                // sides + rounded bottom), so its bottom/sides read at the SAME
+                // strength as the top divider. Previously only the top was stroked
+                // and the bottom/sides leaned on the lighter outer card border
+                // (FX.line over the album tint), which made the bottom look faint.
+                // Drop state swaps to the bright white indicator.
+                rowsDropShape.strokeBorder(isDropTarget ? FX.text : FX.lineStrong,
+                                           lineWidth: isDropTarget ? 2 : 1)
             }
         }
         // On a single + media card (V3) the device sub-panel is its own draggable
@@ -362,6 +378,19 @@ struct GroupCard: View {
         )
     }
 
+    /// Drop-indicator outline for the rows portion: like `rowsPanelShape` but its
+    /// bottom corners match the outer card radius so the white stroke hugs the
+    /// card's rounded bottom instead of being clipped square.
+    private var rowsDropShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: Radius.inner,
+            bottomLeadingRadius: Radius.card,
+            bottomTrailingRadius: Radius.card,
+            topTrailingRadius: Radius.inner,
+            style: .circular
+        )
+    }
+
     // MARK: Source trigger (web .fx-source-trigger — icon + chevron, no label)
 
     private var sourceTrigger: some View {
@@ -369,7 +398,7 @@ struct GroupCard: View {
             Haptics.tap(); showSourcePicker = true
         } label: {
             HStack(spacing: Space.xs) {
-                TablerIcon(glyph: sourceTablerGlyph(source), size: 22)
+                SourceIcon(icon: currentSourceObject?.icon, sourceId: source, size: 22)
                     .foregroundStyle(FX.text)
                 // The disclosure chevron is the gray token (FX.text3) — the same
                 // gray the name chevrons + old unlink icon use — so every
@@ -446,8 +475,6 @@ struct DeviceRow: View {
     var additive: Bool = false
     var sourceTrigger: AnyView? = nil
     var onOpenMenu: (() -> Void)? = nil
-    /// Multi-device home member: shows an inline home glyph after the name.
-    var showHomeIcon: Bool = false
     /// Multi-device non-home member: shows a trailing unlink (ungroup) button.
     var onUnlink: (() -> Void)? = nil
 
@@ -464,16 +491,7 @@ struct DeviceRow: View {
         // on top, the volume row below — sitting close beneath the name.
         VStack(alignment: .leading, spacing: Space.xs) {
             HStack(spacing: Space.md) {
-                HStack(spacing: Space.xs) {
-                    name
-                    if showHomeIcon {
-                        Image("TinyHome")
-                            .renderingMode(.template)
-                            .resizable().scaledToFit()
-                            .frame(width: 10, height: 10)
-                            .mediaMuted(faintTint, additive: additive)
-                    }
-                }
+                name
                 Spacer(minLength: 0)
                 if let onUnlink {
                     Button { Haptics.tap(); onUnlink() } label: {
@@ -998,14 +1016,23 @@ struct SourcePickerPopover: View {
             ForEach(sources) { s in
                 let isActive = active == s.id
                 Button {
-                    Haptics.select(); Task { await store.switchSource(s.id, in: group) }; dismiss()
+                    Haptics.select()
+                    Task {
+                        // Group + a non-Spotify pick → ungroup then switch.
+                        if isMulti && s.id != active {
+                            await store.switchSourceUngrouping(s.id, in: group)
+                        } else {
+                            await store.switchSource(s.id, in: group)
+                        }
+                    }
+                    dismiss()
                 } label: {
                     HStack(spacing: Space.md) {
-                        TablerIcon(glyph: sourceTablerGlyph(s.id), size: 20)
+                        SourceIcon(icon: s.icon, sourceId: s.id, size: 20)
                             .foregroundStyle(isActive ? FX.text : FX.text2)
                             .frame(width: 24)
                         Text(s.label?.isEmpty == false ? s.label! : s.id.capitalized)
-                            .font(FxFont.fustat(17, isActive ? .semibold : .medium))
+                            .font(FxFont.fustat(17, .bold))
                             .foregroundStyle(isActive ? FX.text : FX.text2)
                         Spacer(minLength: Space.xl)
                         if isActive {
@@ -1017,8 +1044,10 @@ struct SourcePickerPopover: View {
                 }
                 .buttonStyle(.plain)
             }
+            // On a group, every source is listed, but switching to anything other
+            // than Spotify breaks the room first — caption at the bottom flags it.
             if isMulti {
-                Text("Ungroup to use other sources — only Spotify plays across multiple grouped devices.")
+                Text("Changing source will ungroup all")
                     .font(.caption).foregroundStyle(FX.text3)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, Space.lg)
@@ -1095,7 +1124,7 @@ struct DeviceMenuSheet: View {
 
     private var header: some View {
         HStack {
-            Text("Audio group").font(FxFont.fustat(20, .bold)).foregroundStyle(FX.text)
+            Text("Audio group").font(FxFont.fustat(15, .bold)).foregroundStyle(FX.text)
             Spacer(minLength: Space.lg)
             Button {
                 Haptics.tap()
@@ -1121,12 +1150,11 @@ struct DeviceMenuSheet: View {
                     if checked { selected.remove(d.id) } else { selected.insert(d.id) }
                 } label: {
                     HStack(spacing: Space.sm) {
-                        // Device name matches the source dropdown's type treatment
-                        // — same 17pt size, bold weight, primary text color. The
-                        // home reads normal (not dimmed); a small light house glyph
-                        // to its right marks it as the group's anchor.
+                        // Device name matches the multi-card device-row treatment
+                        // (FxFont.nameDevice). The home reads at the same normal
+                        // weight/color as the rest — no dimming.
                         Text(store.displayName(for: d))
-                            .font(FxFont.fustat(17, .bold))
+                            .font(FxFont.nameDevice)
                             .foregroundStyle(FX.text)
                             .lineLimit(1)
                         if locked {
@@ -1178,7 +1206,7 @@ struct DeviceMenuSheet: View {
                 Button { if let home { confirm([home]) } } label: {
                     HStack(spacing: Space.sm) {
                         TablerIcon(glyph: .unlink, size: 18)
-                        Text("Break group").font(FxFont.fustat(17, .semibold))
+                        Text("Ungroup all").font(FxFont.fustat(17, .semibold))
                     }
                     .foregroundStyle(FX.text)
                     .frame(maxWidth: .infinity).frame(height: 50)
