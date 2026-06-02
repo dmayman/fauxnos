@@ -4,18 +4,34 @@
 //
 //  The control-core screen: a live list of speaker groups. Membership and
 //  sources come from /api/groups; now-playing / transport / active-idle reflect
-//  MQTT in real time with no manual refresh. Each group renders as a `GroupCard`
-//  (FX-17). Volume and source-switch affordances land in FX-18 / FX-19.
+//  MQTT in real time with no manual refresh. Each group renders as a `GroupCard`.
+//
+//  FX-33 design pass: the deliberate Fauxnos ground (FX.bg), generous card
+//  spacing, a refined live/offline pill, and — folding in FX-28 — a genuine
+//  loading state (skeleton placeholder cards) distinct from the loaded-empty
+//  state, so the list never flashes "no devices" before the first data lands.
 //
 
 import SwiftUI
 
 struct GroupsListView: View {
     @EnvironmentObject private var store: FauxnosStore
+    @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var dragController = CardDragController()
 
     var body: some View {
         NavigationStack {
             content
+                // Background tints when a grouped device is dragged over empty
+                // space, marking it as the "drop to remove from group" zone.
+                .background {
+                    ZStack {
+                        FX.bg
+                        FX.text.opacity(dragController.hoverBackground ? 0.07 : 0)
+                    }
+                    .ignoresSafeArea()
+                    .animation(.fxEase, value: dragController.hoverBackground)
+                }
                 .navigationTitle("Fauxnos")
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -24,40 +40,80 @@ struct GroupsListView: View {
                 }
                 .refreshable { await store.refresh() }
         }
+        .tint(FX.text)
+        .environmentObject(dragController)
     }
 
     @ViewBuilder
     private var content: some View {
         if store.groups.isEmpty {
             // ScrollView so pull-to-refresh still works while empty/erroring.
-            ScrollView { emptyOrError.frame(maxWidth: .infinity).padding(.top, 80) }
+            ScrollView { emptyOrError.frame(maxWidth: .infinity) }
         } else {
-            // ScrollView + LazyVStack (not List) so the FX-20 drag-and-drop
-            // grouping behaves predictably — List intercepts drags for its own
-            // reordering and makes `.draggable`/`.dropDestination` flaky.
+            // ScrollView + LazyVStack (not List) so the drag-and-drop grouping
+            // behaves predictably — List intercepts drags for its own reordering
+            // and makes `.draggable`/`.dropDestination` flaky.
             ScrollView {
-                LazyVStack(spacing: 12) {
-                    ForEach(store.groups) { group in
-                        GroupCard(group: group)
-                    }
-                    if let updated = store.lastUpdated {
-                        Text("Updated \(updated.formatted(date: .omitted, time: .standard))")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                            .padding(.top, 4)
+                LazyVStack(spacing: Space.lg) {
+                    ForEach(Array(store.displayGroups.enumerated()), id: \.element.id) { index, group in
+                        // Staggered reveal (FX-61): real cards fade + rise in on
+                        // first appearance rather than popping, staggered by index
+                        // (web `fx-card-appear` with `--appear-delay`). Per-card
+                        // identity keeps `shown` sticky, so a 60s refresh doesn't
+                        // re-stagger. Reduce-motion shows them immediately.
+                        StaggeredAppear(index: index) {
+                            GroupCard(group: group)
+                        }
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                .padding(.horizontal, Space.lg)
+                .padding(.top, Space.sm)
+                .padding(.bottom, Space.xl)
+                // Shared geometry for lift-to-regroup: cards report their frames
+                // here, and the lifted device's floating preview rides above them.
+                .coordinateSpace(name: kCardSpace)
+                .onPreferenceChange(CardFrameKey.self) { dragController.cardFrames = $0 }
+                .overlay(alignment: .topLeading) { dragPreview }
             }
+            // Freeze scrolling while a card is airborne so the drag owns the touch.
+            .scrollDisabled(dragController.isDragging)
         }
     }
 
+    /// The lifted device's floating card, tracking the finger in `kCardSpace`.
+    /// Non-interactive so it never intercepts the in-flight drag.
+    @ViewBuilder
+    private var dragPreview: some View {
+        if let preview = dragController.preview {
+            // One scale drives both the card and its shadow. `previewLift` is 0
+            // while the card is pressed and 1 once it floats, so the shadow grows
+            // from the resting card's shadow (radius 6 / y 2 — what the source
+            // card showed at the press handoff) to the full float shadow (radius
+            // 22 / y 12). Same source as `scaleEffect`, so there's no separate
+            // keyframe to flash bigger the instant it becomes draggable.
+            let lift = dragController.previewLift
+            let opacity = colorScheme == .dark ? 0.4 + 0.1 * lift : 0.07 + 0.11 * lift
+            preview
+                .frame(width: dragController.previewWidth)
+                .scaleEffect(dragController.previewScale)
+                .shadow(color: .black.opacity(opacity * dragController.previewOpacity),
+                        radius: 6 + 16 * lift, y: 2 + 10 * lift)
+                .position(x: dragController.dragLocation.x - dragController.grabOffset.width,
+                          y: dragController.dragLocation.y - dragController.grabOffset.height)
+                .opacity(dragController.previewOpacity)
+                .allowsHitTesting(false)
+                .transition(.opacity)
+        }
+    }
+
+    /// Three distinct states, never blurred together (FX-28):
+    ///   loading (no data yet)  → skeleton cards
+    ///   error                  → reachability ContentUnavailableView + retry
+    ///   loaded-empty           → genuine "no devices" ContentUnavailableView
     @ViewBuilder
     private var emptyOrError: some View {
-        if store.isLoading && store.apiError == nil {
-            ProgressView("Connecting to \(store.config.host)…")
+        if store.isLoading && store.apiError == nil && store.lastUpdated == nil {
+            LoadingSkeleton()
         } else if let error = store.apiError {
             ContentUnavailableView {
                 Label("Can't reach the server", systemImage: "wifi.exclamationmark")
@@ -67,10 +123,125 @@ struct GroupsListView: View {
                 Button("Retry") { Task { await store.refresh() } }
                     .buttonStyle(.borderedProminent)
             }
+            .padding(.top, 80)
         } else {
-            ContentUnavailableView("No groups", systemImage: "hifispeaker.2",
+            ContentUnavailableView("No devices", systemImage: "hifispeaker.2",
                                    description: Text("No connected devices reported by \(store.config.host)."))
+            .padding(.top, 80)
         }
+    }
+}
+
+// MARK: - Loading skeleton
+
+/// Placeholder cards shown only before the first data arrives, so the screen
+/// reads as "loading" rather than "empty" (FX-28). A directional shimmer sweep
+/// (FX-61) keeps it feeling live without faking content.
+private struct LoadingSkeleton: View {
+    var body: some View {
+        VStack(spacing: Space.lg) {
+            ForEach(0..<3, id: \.self) { i in card(index: i) }
+        }
+        .padding(.horizontal, Space.lg)
+        .padding(.top, Space.sm)
+        .accessibilityLabel("Loading devices")
+    }
+
+    private func card(index: Int) -> some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            HStack(spacing: Space.sm) {
+                bar(width: 18, height: 18, radius: 5)
+                bar(width: 120, height: 14)
+                Spacer()
+                bar(width: 78, height: 28, radius: 14)
+            }
+            HStack(spacing: Space.md) {
+                bar(width: 64, height: 64, radius: Radius.art)
+                VStack(alignment: .leading, spacing: 8) {
+                    bar(width: 160, height: 16)
+                    bar(width: 110, height: 12)
+                }
+                Spacer()
+            }
+            fullBar(height: 4, radius: 2)
+        }
+        .padding(Space.lg)
+        .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).fill(FX.surface2))
+        // Directional shimmer (FX-61): a translucent highlight band slides L→R
+        // across each placeholder, staggered per card — the web
+        // `.fx-skeleton-card::after` translateX(-100% → 100%) sweep. Clipped to
+        // the card shape; reduce-motion leaves a static placeholder (no sweep).
+        .overlay { ShimmerSweep(delay: Double(index) * 0.22) }
+        .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+    }
+
+    private func bar(width: CGFloat, height: CGFloat, radius: CGFloat = 6) -> some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(FX.surface3)
+            .frame(width: width, height: height)
+    }
+
+    private func fullBar(height: CGFloat, radius: CGFloat = 6) -> some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(FX.surface3)
+            .frame(maxWidth: .infinity).frame(height: height)
+    }
+}
+
+// MARK: - Shimmer sweep + staggered reveal (FX-61)
+
+/// A highlight band that slides left→right across its container on a repeating
+/// loop, the touch-platform port of the web skeleton's `translateX` gradient
+/// sweep. Non-interactive; honors reduce-motion (stays parked off-screen).
+private struct ShimmerSweep: View {
+    let delay: Double
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var phase: CGFloat = -1
+
+    var body: some View {
+        GeometryReader { geo in
+            let w = geo.size.width
+            LinearGradient(
+                colors: [.clear, Color.white.opacity(0.10), .clear],
+                startPoint: .leading, endPoint: .trailing
+            )
+            .frame(width: w * 0.5)
+            .offset(x: phase * w * 1.5)
+        }
+        .allowsHitTesting(false)
+        .onAppear {
+            guard !reduceMotion else { return }
+            withAnimation(.linear(duration: 1.4).repeatForever(autoreverses: false).delay(delay)) {
+                phase = 1
+            }
+        }
+    }
+}
+
+/// Fades + rises its content in once, on first appearance, staggered by index
+/// (capped so deep lists don't accumulate long delays). Reduce-motion shows the
+/// content immediately. Interactivity is never gated — only the visual entrance.
+private struct StaggeredAppear<Content: View>: View {
+    let index: Int
+    let content: Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = false
+
+    init(index: Int, @ViewBuilder content: () -> Content) {
+        self.index = index
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .offset(y: shown ? 0 : 10)
+            .onAppear {
+                if reduceMotion { shown = true; return }
+                withAnimation(.easeOut(duration: 0.5).delay(Double(min(index, 6)) * 0.07)) {
+                    shown = true
+                }
+            }
     }
 }
 
@@ -81,16 +252,25 @@ private struct ConnectionBadge: View {
     var body: some View {
         HStack(spacing: 5) {
             Circle()
-                .fill(connected ? Color.green : Color.orange)
-                .frame(width: 8, height: 8)
+                .fill(connected ? FX.ok : FX.warn)
+                .frame(width: 7, height: 7)
             Text(connected ? "Live" : "Offline")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(FX.text2)
         }
+        .padding(.horizontal, Space.sm)
+        .padding(.vertical, 5)
+        .background(.ultraThinMaterial, in: Capsule())
         .accessibilityLabel(connected ? "Real-time connected" : "Real-time disconnected")
     }
 }
 
-#Preview {
+#Preview("Groups — populated") {
+    GroupsListView().environmentObject(FauxnosStore.preview())
+}
+
+#Preview("Groups — loading") {
+    // Empty store, never started → no data yet → the loading skeleton path.
     GroupsListView().environmentObject(FauxnosStore())
 }
+

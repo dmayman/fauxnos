@@ -13,6 +13,7 @@
 //
 
 import Foundation
+import SwiftUI   // withAnimation for optimistic group remaps (drop-to-accept)
 import Combine
 
 @MainActor
@@ -23,6 +24,9 @@ final class FauxnosStore: ObservableObject {
     @Published private(set) var apiError: String?
     @Published private(set) var isLoading = false
     @Published private(set) var lastUpdated: Date?
+
+    // Friendly display names from /api/clients, keyed by client id (web nameMap).
+    @Published private(set) var clientNames: [String: String] = [:]
 
     // Connection
     @Published private(set) var mqttConnected = false
@@ -89,6 +93,16 @@ final class FauxnosStore: ObservableObject {
             status = s
             apiError = nil
             lastUpdated = Date()
+            // Display names are best-effort — a failure here must not blank the
+            // group list, so it's fetched outside the required groups/status set.
+            if let cs = try? await api.fetchClients() {
+                clientNames = Dictionary(
+                    uniqueKeysWithValues: cs.compactMap { c in
+                        guard let n = c.name, !n.isEmpty else { return nil }
+                        return (c.clientId, n)
+                    }
+                )
+            }
         } catch {
             apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
         }
@@ -174,6 +188,23 @@ final class FauxnosStore: ObservableObject {
 
     // MARK: - Derived helpers for the view
 
+    /// Groups ordered for display: any actively playing media floats to the top
+    /// (then media-loaded-but-paused), everything else keeps its existing order.
+    /// Stable, so a routine refresh / position tick never reshuffles peers.
+    var displayGroups: [SpeakerGroup] {
+        groups.enumerated()
+            .sorted { a, b in
+                let ra = mediaRank(a.element), rb = mediaRank(b.element)
+                return ra == rb ? a.offset < b.offset : ra < rb
+            }
+            .map(\.element)
+    }
+
+    private func mediaRank(_ g: SpeakerGroup) -> Int {
+        guard track(for: g)?.hasMeta == true else { return 2 }
+        return playback(for: g)?.isPlaying == true ? 0 : 1
+    }
+
     /// Mirror of the web's home-client resolution: explicit field, else the
     /// lone client, else parse the `source_<id>_…` stream name, else first client.
     func homeClientId(of group: SpeakerGroup) -> String? {
@@ -186,6 +217,16 @@ final class FauxnosStore: ObservableObject {
                         .replacingOccurrences(of: "_", with: "")
         }
         return group.clients.first?.id
+    }
+
+    /// Friendly display name for a client ("Living Room"), falling back to the
+    /// device hostname ("fauxnos000") until /api/clients lands. Mirrors the web
+    /// `nameMap[id] || host.name`.
+    func displayName(for client: SnapClient) -> String {
+        clientNames[client.id] ?? client.host.name
+    }
+    func displayName(forId id: String, fallback: String) -> String {
+        clientNames[id] ?? fallback
     }
 
     /// Live volume for a client: MQTT overlay wins, else the REST snapshot value.
@@ -300,13 +341,12 @@ final class FauxnosStore: ObservableObject {
 
     // MARK: - Source switching (FX-19)
 
-    /// Sources offerable for a group, mirroring the web popover: the server
-    /// enriches `/api/groups` with each group's `sources`, and multi-room
-    /// groups can only run Spotify (the lone snapcast-routed source) — others
-    /// are local-per-device and would silence the rest of the group.
+    /// Every source offerable for a group. Multi-room groups list them all too:
+    /// picking a non-Spotify (local-per-device) source ungroups the room first
+    /// (see `switchSourceUngrouping`), so the picker shows the full set with a
+    /// "changing source will ungroup" caption rather than hiding the others.
     func availableSources(for group: SpeakerGroup) -> [Source] {
-        let all = group.sources ?? []
-        return group.clients.count > 1 ? all.filter { $0.id == "spotify" } : all
+        group.sources ?? []
     }
 
     /// Switch a group's active source via `POST /api/groups/source`. We set the
@@ -322,6 +362,24 @@ final class FauxnosStore: ObservableObject {
             apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
             // Let the next /api/groups refresh or mode echo reconcile the
             // optimistic value if the switch was rejected (e.g. 409).
+        }
+    }
+
+    /// Pick a source on a multi-device group: only Spotify plays across grouped
+    /// devices, so any other (local-per-device) source first ungroups the room —
+    /// every member returns to its own home — then the now-single home group is
+    /// pointed at the chosen source.
+    func switchSourceUngrouping(_ sourceId: String, in group: SpeakerGroup) async {
+        guard let home = homeClientId(of: group) else { return }
+        modes[home] = sourceId                       // optimistic; echo confirms
+        for c in group.clients where c.id != home {
+            await returnHome(clientId: c.id)         // each awaits its own refresh
+        }
+        let homeGroupId = groups.first { homeClientId(of: $0) == home }?.id ?? group.id
+        do {
+            try await api.setGroupSource(groupId: homeGroupId, homeClientId: home, sourceId: sourceId)
+        } catch {
+            apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -344,12 +402,16 @@ final class FauxnosStore: ObservableObject {
             return  // already a member
         }
         guard let moving = findClient(clientId) else { return }
-        groups = groups.compactMap { g in
-            let without = g.clients.filter { $0.id != clientId }
-            if homeClientId(of: g) == targetHomeClientId {
-                return g.replacingClients(without + [moving])
+        // Animate the optimistic remap so the destination card grows a row to
+        // "accept" the dropped device (and the source card shrinks) smoothly.
+        withAnimation(.fxEase) {
+            groups = groups.compactMap { g in
+                let without = g.clients.filter { $0.id != clientId }
+                if homeClientId(of: g) == targetHomeClientId {
+                    return g.replacingClients(without + [moving])
+                }
+                return without.isEmpty ? nil : g.replacingClients(without)
             }
-            return without.isEmpty ? nil : g.replacingClients(without)
         }
         do {
             try await api.joinGroup(clientId: clientId, targetClientId: targetHomeClientId)
@@ -389,4 +451,59 @@ final class FauxnosStore: ObservableObject {
         }
         await refresh()
     }
+
+    /// The whole fleet — every connected client across all groups, de-duped and
+    /// sorted by display name. Backs the device-menu membership editor, which
+    /// shows all devices (web `AddDevicesPopover` `devices`), not just one group.
+    var allClients: [SnapClient] {
+        var seen = Set<String>()
+        var out: [SnapClient] = []
+        for g in groups {
+            for c in g.clients where seen.insert(c.id).inserted { out.append(c) }
+        }
+        return out.sorted {
+            displayName(for: $0).localizedCaseInsensitiveCompare(displayName(for: $1)) == .orderedAscending
+        }
+    }
+
+    /// Reconcile a group's membership against a desired set of device IDs — the
+    /// commit path for the device menu (web `handleAddDevices`). Diffs desired vs
+    /// the home group's live members, then joins the additions and returns the
+    /// removals home. The home device always stays. Reuses the tested
+    /// `joinGroup` / `returnHome` (each optimistic + refreshing).
+    func setGroupMembership(desiredIds: Set<String>, homeClientId home: String) async {
+        var desired = desiredIds
+        desired.insert(home)  // home never leaves its own group
+        let currentIds = Set(groups.first { homeClientId(of: $0) == home }?.clients.map(\.id) ?? [])
+        let toAdd = desired.subtracting(currentIds)
+        let toRemove = currentIds.subtracting(desired)
+        for id in toAdd where id != home { await joinGroup(clientId: id, targetHomeClientId: home) }
+        for id in toRemove where id != home { await returnHome(clientId: id) }
+    }
 }
+
+#if DEBUG
+extension FauxnosStore {
+    /// Build a store pre-seeded with static fixtures for Xcode Previews / the
+    /// canvas — no `start()`, so no network and no MQTT connection. Lives here
+    /// (not in the Preview file) because the overlay properties are
+    /// `private(set)`; only same-file code may seed them. Fixtures: `PreviewData`.
+    static func preview(groups: [SpeakerGroup] = PreviewData.groups,
+                        connected: Bool = true) -> FauxnosStore {
+        // Seed art-tint colors up front so cards theme on first render rather
+        // than flashing neutral while async extraction runs (which never does
+        // in previews — `ensure(_:)` no-ops on a pre-seeded URL).
+        AlbumArtColorStore.shared.preloadForPreview(PreviewData.artColors)
+        let store = FauxnosStore()
+        store.groups = groups
+        store.volumes = PreviewData.volumes
+        store.modes = PreviewData.modes
+        store.tracks = PreviewData.tracks
+        store.playback = PreviewData.playback
+        store.clientNames = PreviewData.names
+        store.mqttConnected = connected
+        store.lastUpdated = Date()
+        return store
+    }
+}
+#endif
