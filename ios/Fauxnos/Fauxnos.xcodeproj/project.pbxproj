@@ -10,6 +10,16 @@
 		FA0000000000000000000004 /* Fauxnos.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Fauxnos.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		FA0000000000000000000010 /* Exceptions for "Fauxnos" folder in "Fauxnos" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = FA0000000000000000000006 /* Fauxnos */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		FA0000000000000000000005 /* Fauxnos */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
@@ -20,16 +30,6 @@
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
-
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		FA0000000000000000000010 /* Exceptions for "Fauxnos" folder in "Fauxnos" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = FA0000000000000000000006 /* Fauxnos */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		FA0000000000000000000008 /* Frameworks */ = {

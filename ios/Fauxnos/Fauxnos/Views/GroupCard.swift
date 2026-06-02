@@ -24,16 +24,14 @@ import SwiftUI
 
 struct GroupCard: View {
     @EnvironmentObject private var store: FauxnosStore
+    @EnvironmentObject private var dragController: CardDragController
     @ObservedObject private var artStore = AlbumArtColorStore.shared
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let group: SpeakerGroup
 
     @State private var showSourcePicker = false
-    @State private var dropTargeted = false
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
-    @State private var pressed = false
 
     // MARK: Derived state (mirrors web GroupCard)
 
@@ -70,6 +68,9 @@ struct GroupCard: View {
 
     // MARK: Body
 
+    /// This card is the active drop zone for the device currently being lifted.
+    private var isDropTarget: Bool { dragController.hoverGroupId == group.id }
+
     var body: some View {
         VStack(spacing: 0) {
             if showMediaCard {
@@ -78,46 +79,32 @@ struct GroupCard: View {
             rowsSection
         }
         .background(outerBackground)
-        .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .circular))
         .overlay {
-            RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
-                .strokeBorder(dropTargeted ? FX.text : (hasMedia ? FX.line : FX.lineStrong),
-                              lineWidth: dropTargeted ? 2 : 1)
+            RoundedRectangle(cornerRadius: Radius.card, style: .circular)
+                .strokeBorder(isDropTarget ? FX.text : (hasMedia ? FX.line : FX.lineStrong),
+                              lineWidth: isDropTarget ? 2 : 1)
         }
         .shadow(color: .black.opacity(colorScheme == .dark ? 0.4 : 0.07),
-                radius: dropTargeted ? 16 : 6, y: dropTargeted ? 7 : 2)
-        .scaleEffect((pressed && !reduceMotion) ? 0.97 : 1)
-        .animation(.fxPress, value: pressed)
-        // Springy card press (FX-57): the whole card dips on touch-down and
-        // settles with a bouncy release, the signature "live, tactile control"
-        // cue. A long-press gesture (with an effectively-never-firing perform)
-        // gives clean press-down/up callbacks while cooperating with the
-        // enclosing ScrollView — moving past `maximumDistance` fails the
-        // gesture so a scroll takes over and the card pops back. SwiftUI's
-        // descendant-gesture priority keeps the volume slider, scrub bar,
-        // transport / mute buttons, source trigger, and the row's `.draggable`
-        // drag-to-group winning in their own regions, so a press there does NOT
-        // scale the card (the web's `closest(controls)` opt-out). Honors
-        // reduce-motion (no scale, mirroring `@media (prefers-reduced-motion)`).
-        .onLongPressGesture(minimumDuration: 9999, maximumDistance: 12) {
-            // perform — unreachable in practice; press/release runs below.
-        } onPressingChanged: { isPressing in
-            if isPressing, !pressed { Haptics.lift() }
-            pressed = isPressing
-        }
-        .dropDestination(for: String.self) { items, _ in
-            guard let dropped = items.first else { return false }
-            Haptics.success()
-            Task { await store.joinGroup(clientId: dropped, targetHomeClientId: homeId ?? group.id) }
-            return true
-        } isTargeted: { targeted in
-            if targeted, !dropTargeted { Haptics.tap() }
-            dropTargeted = targeted
-        }
-        .animation(.fxEase, value: dropTargeted)
+                radius: isDropTarget ? 16 : 6, y: isDropTarget ? 7 : 2)
+        // Publish this card's frame so a lifted device can hit-test it as a
+        // drop zone (collected by GroupsListView into the drag controller).
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(key: CardFrameKey.self,
+                                       value: [group.id: geo.frame(in: .named(kCardSpace))])
+            }
+        )
+        // V2 (single, no media) lifts as a whole — the card IS the device. V3
+        // (single + media) instead makes ONLY its device sub-panel draggable (see
+        // rowsSection), so the media region isn't a grab target; multi cards lift
+        // per row. The press-ramp, detent and drag all live in the LiftToRegroup
+        // modifier; it yields to the slider/buttons/source trigger and the ScrollView.
+        .liftToRegroup(client: (!isMulti && !showMediaCard) ? clients.first : nil,
+                       groupId: group.id, inPlace: true)
+        .animation(.fxEase, value: isDropTarget)
         .animation(.fxEase, value: palette)
         .task(id: track?.artUrl) { artStore.ensure(track?.artUrl) }
-        .sheet(isPresented: $showSourcePicker) { SourcePickerSheet(group: group) }
     }
 
     @ViewBuilder
@@ -206,8 +193,10 @@ struct GroupCard: View {
                         Text(fmtTime(pos)).font(FxFont.timeTrack).monospacedDigit().foregroundStyle(FX.text2)
                         ScrubBar(value: pos, duration: duration, accent: palette.accent, track: palette.trackTint) {
                             scrubbing = true; scrubValue = live
+                            dragController.controlsEngaged = true   // claim the touch; don't let the card lift
                         } onScrub: { scrubValue = $0 } onCommit: { v in
-                            Haptics.tap(); Task { await store.seek(Int(v), for: group) }; scrubbing = false
+                            Haptics.tap(); Task { await store.seek(Int(v), for: group) }
+                            scrubbing = false; dragController.controlsEngaged = false
                         }
                         Text(fmtTime(duration)).font(FxFont.timeTrack).monospacedDigit().foregroundStyle(FX.text2)
                     }
@@ -254,7 +243,11 @@ struct GroupCard: View {
                 DeviceRow(
                     client: client,
                     isHome: client.id == homeId,
-                    isMulti: isMulti,
+                    groupId: group.id,
+                    // Multi-device members lift out by row (the home stays put —
+                    // pull it out of its own group makes no sense). Single cards
+                    // lift at the card level, so their row isn't draggable.
+                    draggable: isMulti && client.id != homeId,
                     nameColor: isMulti ? FX.text2 : FX.text,
                     accent: hasMedia ? palette.accent : FX.text,
                     track: hasMedia ? palette.trackTint : FX.surface3,
@@ -291,6 +284,14 @@ struct GroupCard: View {
                     }
             }
         }
+        // On a single + media card (V3) the device sub-panel is its own draggable
+        // entity, with the same lift behaviors as a standalone device card — the
+        // media region above is not a grab target. The slot placeholder is tinted
+        // with the album color; the float is a synthesized single-device card so
+        // the return crossfades (matchesSource: false) rather than hard-swapping.
+        .liftToRegroup(client: (!isMulti && showMediaCard) ? clients.first : nil,
+                       groupId: group.id, inPlace: true,
+                       placeholderTint: palette.placeholderTint, matchesSource: false)
     }
 
     /// The floating rows panel outline — rounded top corners only; the bottom
@@ -301,7 +302,7 @@ struct GroupCard: View {
             bottomLeadingRadius: 0,
             bottomTrailingRadius: 0,
             topTrailingRadius: Radius.inner,
-            style: .continuous
+            style: .circular
         )
     }
 
@@ -322,6 +323,14 @@ struct GroupCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Source: \(sourceLabel). Tap to change.")
+        // A real popover anchored to the trigger — on a compact iPhone width
+        // SwiftUI would auto-adapt `.popover` into a sheet, so we opt back out
+        // with `.presentationCompactAdaptation(.popover)`. Picking a source is a
+        // single tap; a full-height bottom sheet was too heavy a gesture.
+        .popover(isPresented: $showSourcePicker, arrowEdge: .top) {
+            SourcePickerPopover(group: group)
+                .presentationCompactAdaptation(.popover)
+        }
     }
 
     private var sourceLabel: String {
@@ -335,9 +344,11 @@ struct GroupCard: View {
 
 struct DeviceRow: View {
     @EnvironmentObject private var store: FauxnosStore
+    @EnvironmentObject private var dragController: CardDragController
     let client: SnapClient
     var isHome: Bool = false
-    var isMulti: Bool = false
+    var groupId: String = ""
+    var draggable: Bool = false
     var nameColor: Color = FX.text
     var accent: Color = FX.text
     var track: Color = FX.surface3
@@ -348,39 +359,32 @@ struct DeviceRow: View {
     @State private var lastNonZero: Int = 50
 
     private var current: Int { store.volume(for: client) }
-    private var canRegroup: Bool { isMulti && !isHome }
 
     private var deviceName: String { store.displayName(for: client) }
 
     var body: some View {
-        // Two lines: device name on top, controls (volume + source) below.
-        VStack(alignment: .leading, spacing: Space.sm) {
-            name
+        // Two lines: device name (with the source trigger inline on the right)
+        // on top, the volume row below — sitting close beneath the name.
+        VStack(alignment: .leading, spacing: Space.xs) {
             HStack(spacing: Space.md) {
-                volume
+                name
+                Spacer(minLength: 0)
                 if let sourceTrigger { sourceTrigger }
             }
+            volume
         }
+        // The whole row lifts out into a single-device-card preview (multi-group
+        // members only — no drag handle anymore; the row itself is the target).
+        // The float is a synthesized card, not a pixel match for the row, so the
+        // return crossfades rather than hard-swapping.
+        .liftToRegroup(client: draggable ? client : nil, groupId: groupId, inPlace: false,
+                       matchesSource: false)
     }
 
     @ViewBuilder
     private var name: some View {
-        let label = Text(deviceName)
+        Text(deviceName)
             .font(FxFont.nameDevice).foregroundStyle(nameColor).lineLimit(1)
-
-        if canRegroup {
-            HStack(spacing: 6) {
-                Image(systemName: "line.3.horizontal").font(.caption2).foregroundStyle(FX.text3)
-                label
-            }
-            .draggable(client.id) {
-                Label(deviceName, systemImage: "hifispeaker.fill")
-                    .font(.subheadline).padding(Space.sm).background(.regularMaterial, in: Capsule())
-            }
-            .accessibilityLabel("Drag \(deviceName) to another group")
-        } else {
-            label
-        }
     }
 
     @ViewBuilder
@@ -406,6 +410,7 @@ struct DeviceRow: View {
 
                 FxSlider(value: binding, fill: accent, track: track) { isEditing in
                     editing = isEditing
+                    dragController.controlsEngaged = isEditing   // claim the touch; don't let the row lift
                     if isEditing { dragValue = Double(current) }
                 }
                 .frame(maxWidth: .infinity)
@@ -429,6 +434,7 @@ struct DeviceRow: View {
 
 struct AllRow: View {
     @EnvironmentObject private var store: FauxnosStore
+    @EnvironmentObject private var dragController: CardDragController
     let clients: [SnapClient]
     var accent: Color = FX.text
     var sourceTrigger: AnyView
@@ -447,7 +453,7 @@ struct AllRow: View {
     private var displayAvg: Int { editing ? Int(dragAvg.rounded()) : avg }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
+        VStack(alignment: .leading, spacing: Space.xs) {
             HStack(spacing: 6) {
                 Text("All").font(FxFont.nameDevice).foregroundStyle(accent)
                 Button {
@@ -458,6 +464,8 @@ struct AllRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Ungroup all")
+                Spacer(minLength: 0)
+                sourceTrigger
             }
             HStack(spacing: Space.md) {
                 Button { Haptics.tap(); toggleMuteAll() } label: {
@@ -467,6 +475,7 @@ struct AllRow: View {
                 .accessibilityLabel(displayAvg == 0 ? "Unmute all" : "Mute all")
                 FxSlider(value: binding, fill: accent, track: accent.opacity(0.18)) { isEditing in
                     editing = isEditing
+                    dragController.controlsEngaged = isEditing   // claim the touch; don't let the card lift
                     if isEditing {
                         baseAvg = avg; dragAvg = Double(avg)
                         baseVols = Dictionary(uniqueKeysWithValues: clients.map { ($0.id, store.volume(for: $0)) })
@@ -474,7 +483,6 @@ struct AllRow: View {
                 }
                 .frame(maxWidth: .infinity)
                 .accessibilityLabel("All devices volume")
-                sourceTrigger
             }
         }
     }
@@ -652,9 +660,12 @@ private struct TransportButton: View {
     }
 }
 
-// MARK: - Source picker sheet (FX-19)
+// MARK: - Source picker popover (FX-19)
 
-struct SourcePickerSheet: View {
+/// A compact, self-sizing popover for switching the group's source — a single
+/// tap, no full-height sheet. Dismisses on selection or on a tap outside (the
+/// system popover behavior), so there's no explicit "Done" affordance.
+struct SourcePickerPopover: View {
     @EnvironmentObject private var store: FauxnosStore
     @Environment(\.dismiss) private var dismiss
     let group: SpeakerGroup
@@ -664,47 +675,45 @@ struct SourcePickerSheet: View {
     private var active: String? { store.currentSource(of: group) }
 
     var body: some View {
-        NavigationStack {
-            List {
-                Section {
-                    if sources.isEmpty {
-                        Text("No sources available").foregroundStyle(FX.text2)
-                    }
-                    ForEach(sources) { s in
-                        Button {
-                            Haptics.select(); Task { await store.switchSource(s.id, in: group) }; dismiss()
-                        } label: {
-                            HStack(spacing: Space.md) {
-                                TablerIcon(glyph: sourceTablerGlyph(s.id), size: 22)
-                                    .foregroundStyle(active == s.id ? Color.accentColor : FX.text2)
-                                    .frame(width: 26)
-                                Text(s.label?.isEmpty == false ? s.label! : s.id.capitalized)
-                                    .foregroundStyle(FX.text)
-                                    .fontWeight(active == s.id ? .semibold : .regular)
-                                Spacer()
-                                if active == s.id {
-                                    Image(systemName: "checkmark").foregroundStyle(.tint).fontWeight(.semibold)
-                                }
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                if isMulti {
-                    Section {
-                        Label("Ungroup to use other sources — only Spotify plays across multiple grouped devices.",
-                              systemImage: "info.circle")
-                            .font(.footnote).foregroundStyle(FX.text2)
-                    }
-                }
+        VStack(alignment: .leading, spacing: 0) {
+            if sources.isEmpty {
+                Text("No sources available")
+                    .font(.subheadline).foregroundStyle(FX.text2)
+                    .padding(.horizontal, Space.lg).padding(.vertical, Space.md)
             }
-            .navigationTitle("Source")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            ForEach(sources) { s in
+                let isActive = active == s.id
+                Button {
+                    Haptics.select(); Task { await store.switchSource(s.id, in: group) }; dismiss()
+                } label: {
+                    HStack(spacing: Space.md) {
+                        TablerIcon(glyph: sourceTablerGlyph(s.id), size: 20)
+                            .foregroundStyle(isActive ? FX.text : FX.text2)
+                            .frame(width: 24)
+                        Text(s.label?.isEmpty == false ? s.label! : s.id.capitalized)
+                            .font(FxFont.fustat(17, isActive ? .semibold : .medium))
+                            .foregroundStyle(isActive ? FX.text : FX.text2)
+                        Spacer(minLength: Space.xl)
+                        if isActive {
+                            Image(systemName: "checkmark").foregroundStyle(FX.text).fontWeight(.semibold)
+                        }
+                    }
+                    .padding(.horizontal, Space.lg).padding(.vertical, Space.md)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if isMulti {
+                Text("Ungroup to use other sources — only Spotify plays across multiple grouped devices.")
+                    .font(.caption).foregroundStyle(FX.text3)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, Space.lg)
+                    .padding(.top, Space.sm).padding(.bottom, Space.md)
+            }
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        .padding(.vertical, Space.sm)
+        .frame(minWidth: 240, maxWidth: 280, alignment: .leading)
+        .presentationBackground(FX.surface1)
     }
 }
 
@@ -723,6 +732,7 @@ private struct CardPreview: View {
         }
         .background(FX.bg.ignoresSafeArea())
         .environmentObject(FauxnosStore.preview(groups: [group]))
+        .environmentObject(CardDragController())
     }
 }
 
@@ -732,7 +742,7 @@ private struct CardPreview: View {
 #Preview("V4 · multi, no media") { CardPreview(group: PreviewData.groupV4) }
 
 #Preview("Source picker") {
-    SourcePickerSheet(group: PreviewData.groupV1)
+    SourcePickerPopover(group: PreviewData.groupV1)
         .environmentObject(FauxnosStore.preview())
 }
 #endif

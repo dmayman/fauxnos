@@ -16,11 +16,22 @@ import SwiftUI
 
 struct GroupsListView: View {
     @EnvironmentObject private var store: FauxnosStore
+    @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var dragController = CardDragController()
 
     var body: some View {
         NavigationStack {
             content
-                .background(FX.bg.ignoresSafeArea())
+                // Background tints when a grouped device is dragged over empty
+                // space, marking it as the "drop to remove from group" zone.
+                .background {
+                    ZStack {
+                        FX.bg
+                        FX.text.opacity(dragController.hoverBackground ? 0.07 : 0)
+                    }
+                    .ignoresSafeArea()
+                    .animation(.fxEase, value: dragController.hoverBackground)
+                }
                 .navigationTitle("Fauxnos")
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -30,6 +41,7 @@ struct GroupsListView: View {
                 .refreshable { await store.refresh() }
         }
         .tint(FX.text)
+        .environmentObject(dragController)
     }
 
     @ViewBuilder
@@ -57,7 +69,39 @@ struct GroupsListView: View {
                 .padding(.horizontal, Space.lg)
                 .padding(.top, Space.sm)
                 .padding(.bottom, Space.xl)
+                // Shared geometry for lift-to-regroup: cards report their frames
+                // here, and the lifted device's floating preview rides above them.
+                .coordinateSpace(name: kCardSpace)
+                .onPreferenceChange(CardFrameKey.self) { dragController.cardFrames = $0 }
+                .overlay(alignment: .topLeading) { dragPreview }
             }
+            // Freeze scrolling while a card is airborne so the drag owns the touch.
+            .scrollDisabled(dragController.isDragging)
+        }
+    }
+
+    /// The lifted device's floating card, tracking the finger in `kCardSpace`.
+    /// Non-interactive so it never intercepts the in-flight drag.
+    @ViewBuilder
+    private var dragPreview: some View {
+        if let preview = dragController.preview {
+            // One scale drives both the card and its shadow. `previewLift` is 0
+            // while the card is pressed and 1 once it floats, so the shadow grows
+            // from the resting card's shadow (radius 6 / y 2 — what the source
+            // card showed at the press handoff) to the full float shadow (radius
+            // 22 / y 12). Same source as `scaleEffect`, so there's no separate
+            // keyframe to flash bigger the instant it becomes draggable.
+            let lift = dragController.previewLift
+            let opacity = colorScheme == .dark ? 0.4 + 0.1 * lift : 0.07 + 0.11 * lift
+            preview
+                .frame(width: dragController.previewWidth)
+                .scaleEffect(dragController.previewScale)
+                .shadow(color: .black.opacity(opacity),
+                        radius: 6 + 16 * lift, y: 2 + 10 * lift)
+                .position(x: dragController.dragLocation.x - dragController.grabOffset.width,
+                          y: dragController.dragLocation.y - dragController.grabOffset.height)
+                .allowsHitTesting(false)
+                .transition(.opacity)
         }
     }
 
