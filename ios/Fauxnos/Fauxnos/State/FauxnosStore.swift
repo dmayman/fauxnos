@@ -187,6 +187,23 @@ final class FauxnosStore: ObservableObject {
 
     // MARK: - Derived helpers for the view
 
+    /// Groups ordered for display: any actively playing media floats to the top
+    /// (then media-loaded-but-paused), everything else keeps its existing order.
+    /// Stable, so a routine refresh / position tick never reshuffles peers.
+    var displayGroups: [SpeakerGroup] {
+        groups.enumerated()
+            .sorted { a, b in
+                let ra = mediaRank(a.element), rb = mediaRank(b.element)
+                return ra == rb ? a.offset < b.offset : ra < rb
+            }
+            .map(\.element)
+    }
+
+    private func mediaRank(_ g: SpeakerGroup) -> Int {
+        guard track(for: g)?.hasMeta == true else { return 2 }
+        return playback(for: g)?.isPlaying == true ? 0 : 1
+    }
+
     /// Mirror of the web's home-client resolution: explicit field, else the
     /// lone client, else parse the `source_<id>_…` stream name, else first client.
     func homeClientId(of group: SpeakerGroup) -> String? {

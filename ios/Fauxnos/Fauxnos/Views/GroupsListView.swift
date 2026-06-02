@@ -55,7 +55,7 @@ struct GroupsListView: View {
             // and makes `.draggable`/`.dropDestination` flaky.
             ScrollView {
                 LazyVStack(spacing: Space.lg) {
-                    ForEach(Array(store.groups.enumerated()), id: \.element.id) { index, group in
+                    ForEach(Array(store.displayGroups.enumerated()), id: \.element.id) { index, group in
                         // Staggered reveal (FX-61): real cards fade + rise in on
                         // first appearance rather than popping, staggered by index
                         // (web `fx-card-appear` with `--appear-delay`). Per-card

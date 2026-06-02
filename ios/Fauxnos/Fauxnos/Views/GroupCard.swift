@@ -59,6 +59,22 @@ struct GroupCard: View {
         return buildArtPalette(from: raw, dark: colorScheme == .dark)
     }
 
+    // On a tinted media card a fixed neutral gray (text2/text3) reads muddy over
+    // the album tint, so the card's secondary "grays" become an ink that tracks
+    // the appearance instead. Dark mode blends ADDITIVELY (see `.mediaMuted`), so
+    // it wants a lower opacity than light mode's flat composite.
+    // ── FINE-TUNE THESE TWO OPACITIES ──
+    private var mediaInkDarkOpacity: CGFloat { 0.45 }   // additive white over the tint
+    private var mediaInkLightOpacity: CGFloat { 0.60 }  // flat black over the tint
+    private var mediaInk: Color {
+        colorScheme == .dark ? .white.opacity(mediaInkDarkOpacity)
+                             : .black.opacity(mediaInkLightOpacity)
+    }
+    /// Use the additive blend only where the ink actually sits on the album tint.
+    private var mediaAdditive: Bool { hasMedia && colorScheme == .dark }
+    private var muted: Color { hasMedia ? mediaInk : FX.text2 }   // secondary grays
+    private var faint: Color { hasMedia ? mediaInk : FX.text3 }   // tertiary grays
+
     private var groupName: String {
         if let name = group.name, !name.isEmpty { return name }
         if let home = homeId, let c = group.clients.first(where: { $0.id == home }) {
@@ -127,15 +143,14 @@ struct GroupCard: View {
         // Figma 2495-4019 lockup: album art + a text column (title, subtitle, then
         // the prev/play/next transport row left-aligned beneath), with the full-
         // width seek bar + flanking timestamps as a separate block 24pt below.
-        VStack(alignment: .leading, spacing: Space.xl) {
+        VStack(alignment: .leading, spacing: Space.md) {
             HStack(alignment: .center, spacing: Space.lg) {
                 albumArt
                 VStack(alignment: .leading, spacing: Space.sm) {
                     VStack(alignment: .leading, spacing: 0) {
-                        Text(track?.title ?? "—")
-                            .font(FxFont.titleTrack).foregroundStyle(FX.text).lineLimit(1)
+                        MarqueeText(text: track?.title ?? "—", font: FxFont.titleTrack, color: FX.text)
                         if let sub = trackSubtitle {
-                            Text(sub).font(FxFont.metaTrack).foregroundStyle(palette.accent).lineLimit(1)
+                            MarqueeText(text: sub, font: FxFont.metaTrack, color: palette.accent)
                         }
                     }
                     if hasControls { transportActions }
@@ -185,7 +200,7 @@ struct GroupCard: View {
     }
 
     private var sourceGlyph: some View {
-        TablerIcon(glyph: sourceTablerGlyph(source), size: 44).foregroundStyle(FX.text3)
+        TablerIcon(glyph: sourceTablerGlyph(source), size: 44).mediaMuted(faint, additive: mediaAdditive)
     }
 
     // MARK: Progress + inline transport (web .fx-group-progress)
@@ -200,7 +215,7 @@ struct GroupCard: View {
             TimelineView(.periodic(from: .now, by: 0.5)) { context in
                 let live = interpolatedPosition(at: context.date, duration: duration)
                 let pos = scrubbing ? scrubValue : live
-                VStack(spacing: Space.xs) {
+                VStack(spacing: 2) {
                     ScrubBar(value: pos, duration: duration, accent: palette.accent, track: palette.trackTint) {
                         scrubbing = true; scrubValue = live
                         dragController.controlsEngaged = true   // claim the touch; don't let the card lift
@@ -209,9 +224,9 @@ struct GroupCard: View {
                         scrubbing = false; dragController.controlsEngaged = false
                     }
                     HStack(spacing: 0) {
-                        Text(fmtTime(pos)).font(FxFont.timeTrack).monospacedDigit().foregroundStyle(FX.text2)
+                        Text(fmtTime(pos)).font(FxFont.timeTrack).monospacedDigit().mediaMuted(muted, additive: mediaAdditive)
                         Spacer(minLength: Space.sm)
-                        Text(fmtTime(duration)).font(FxFont.timeTrack).monospacedDigit().foregroundStyle(FX.text2)
+                        Text(fmtTime(duration)).font(FxFont.timeTrack).monospacedDigit().mediaMuted(muted, additive: mediaAdditive)
                     }
                 }
             }
@@ -222,12 +237,12 @@ struct GroupCard: View {
     // 16pt + play 20pt, all in the album accent), sitting under the subtitle.
     private var transportActions: some View {
         HStack(spacing: Space.sm) {
-            TransportButton(glyph: .trackPrev, label: "Previous", tint: palette.accent) {
-                Haptics.tap(); Task { await store.sendPlayback(.prev, for: group) }
+            TransportButton(asset: "MediaPrev", label: "Previous", tint: palette.accent) {
+                Task { await store.sendPlayback(.prev, for: group) }
             }
             PlayPauseButton(group: group, tint: palette.accent)
-            TransportButton(glyph: .trackNext, label: "Next", tint: palette.accent) {
-                Haptics.tap(); Task { await store.sendPlayback(.next, for: group) }
+            TransportButton(asset: "MediaNext", label: "Next", tint: palette.accent) {
+                Task { await store.sendPlayback(.next, for: group) }
             }
         }
     }
@@ -255,7 +270,8 @@ struct GroupCard: View {
                 // strong, not the accent), and the "All" master shares the exact
                 // same colors as its member rows below — they're set apart by a
                 // hairline rule, not a color shift.
-                AllRow(clients: clients, accent: FX.text, track: FX.lineStrong,
+                AllRow(clients: clients, accent: FX.text, track: FX.lineStrong, iconTint: muted,
+                       additive: mediaAdditive,
                        sourceTrigger: AnyView(sourceTrigger),
                        onOpenMenu: { showDeviceMenu = true })
                 // Edge-to-edge separator between the "All" master and the member
@@ -273,10 +289,15 @@ struct GroupCard: View {
                     // lift at the card level, so their row isn't draggable.
                     draggable: isMulti && !isHomeDevice,
                     nameColor: FX.text,
-                    // Multi rows are always neutral (matching the "All" row above);
-                    // only single + media cards carry the album accent.
-                    accent: isMulti ? FX.text : (hasMedia ? palette.accent : FX.text),
-                    track: isMulti ? FX.lineStrong : (hasMedia ? palette.trackTint : FX.surface3),
+                    // Every card's slider is neutral now — no album accent on the
+                    // fill (matching the "All" row). Track is the translucent
+                    // line-strong on any media card (it sits on a tint), or the
+                    // solid neutral surface on a plain single-device card.
+                    accent: FX.text,
+                    track: showMediaCard ? FX.lineStrong : FX.surface3,
+                    iconTint: muted,
+                    faintTint: faint,
+                    additive: mediaAdditive,
                     sourceTrigger: (!isMulti && isHomeDevice) ? AnyView(sourceTrigger) : nil,
                     // Single-device cards keep the name chevron → device menu; on a
                     // multi card the rows have no dropdown (the "All" row owns it).
@@ -354,7 +375,7 @@ struct GroupCard: View {
                 // gray the name chevrons + old unlink icon use — so every
                 // dropdown affordance reads consistently against its primary icon.
                 TablerIcon(glyph: .chevronDown, size: 14)
-                    .foregroundStyle(FX.text3)
+                    .mediaMuted(faint, additive: mediaAdditive)
             }
             .frame(height: 40)
             .padding(.horizontal, Space.sm)
@@ -388,13 +409,15 @@ struct GroupCard: View {
 private struct DeviceNameTrigger: View {
     let label: String
     var color: Color = FX.text
+    var chevronColor: Color = FX.text3
+    var additiveChevron: Bool = false
     let action: () -> Void
 
     var body: some View {
         Button { Haptics.tap(); action() } label: {
             HStack(spacing: Space.xs) {
                 Text(label).font(FxFont.nameDevice).foregroundStyle(color).lineLimit(1)
-                TablerIcon(glyph: .chevronDown, size: 16).foregroundStyle(FX.text3)
+                TablerIcon(glyph: .chevronDown, size: 16).mediaMuted(chevronColor, additive: additiveChevron)
             }
             .contentShape(Rectangle())
         }
@@ -415,6 +438,12 @@ struct DeviceRow: View {
     var nameColor: Color = FX.text
     var accent: Color = FX.text
     var track: Color = FX.surface3
+    /// Secondary "gray" (volume / broadcast icons); media ink on media cards.
+    var iconTint: Color = FX.text2
+    /// Tertiary "gray" (home glyph, unlink, name chevron); media ink on media cards.
+    var faintTint: Color = FX.text3
+    /// Additive (linear-add) blend for the gray icons — on dark-mode media cards.
+    var additive: Bool = false
     var sourceTrigger: AnyView? = nil
     var onOpenMenu: (() -> Void)? = nil
     /// Multi-device home member: shows an inline home glyph after the name.
@@ -442,13 +471,13 @@ struct DeviceRow: View {
                             .renderingMode(.template)
                             .resizable().scaledToFit()
                             .frame(width: 10, height: 10)
-                            .foregroundStyle(FX.text3)
+                            .mediaMuted(faintTint, additive: additive)
                     }
                 }
                 Spacer(minLength: 0)
                 if let onUnlink {
                     Button { Haptics.tap(); onUnlink() } label: {
-                        TablerIcon(glyph: .unlink, size: 18).foregroundStyle(FX.text3)
+                        TablerIcon(glyph: .unlink, size: 18).mediaMuted(faintTint, additive: additive)
                             .frame(width: 32, height: 32)
                             .contentShape(Rectangle())
                     }
@@ -471,7 +500,8 @@ struct DeviceRow: View {
     @ViewBuilder
     private var name: some View {
         if let onOpenMenu {
-            DeviceNameTrigger(label: deviceName, color: nameColor, action: onOpenMenu)
+            DeviceNameTrigger(label: deviceName, color: nameColor, chevronColor: faintTint,
+                              additiveChevron: additive, action: onOpenMenu)
         } else {
             Text(deviceName)
                 .font(FxFont.nameDevice).foregroundStyle(nameColor).lineLimit(1)
@@ -482,8 +512,8 @@ struct DeviceRow: View {
     private var volume: some View {
         if store.isExternalVolume(client.id) {
             HStack(spacing: Space.sm) {
-                TablerIcon(glyph: .broadcastTower, size: 16).foregroundStyle(FX.text2)
-                Text("Volume controlled by iPhone").font(.caption).foregroundStyle(FX.text3).lineLimit(1)
+                TablerIcon(glyph: .broadcastTower, size: 16).mediaMuted(iconTint, additive: additive)
+                Text("Volume controlled by iPhone").font(.caption).mediaMuted(faintTint, additive: additive).lineLimit(1)
                 Spacer(minLength: 0)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -494,7 +524,8 @@ struct DeviceRow: View {
                     if current > 0 { lastNonZero = current }
                     store.publishVolume(current == 0 ? max(lastNonZero, 1) : 0, clientId: client.id)
                 } label: {
-                    VolumeIcon(level: displayValue, size: 20, tint: FX.text2).frame(width: 22)
+                    VolumeIcon(level: displayValue, size: 20, tint: iconTint).frame(width: 22)
+                        .blendMode(additive ? .plusLighter : .normal)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(displayValue == 0 ? "Unmute \(deviceName)" : "Mute \(deviceName)")
@@ -529,6 +560,8 @@ struct AllRow: View {
     let clients: [SnapClient]
     var accent: Color = FX.text
     var track: Color = FX.lineStrong
+    var iconTint: Color = FX.text2
+    var additive: Bool = false
     var sourceTrigger: AnyView
     var onOpenMenu: () -> Void
 
@@ -547,13 +580,15 @@ struct AllRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
             HStack(spacing: 6) {
-                DeviceNameTrigger(label: "All", color: accent, action: onOpenMenu)
+                DeviceNameTrigger(label: "All", color: accent, chevronColor: iconTint,
+                                  additiveChevron: additive, action: onOpenMenu)
                 Spacer(minLength: 0)
                 sourceTrigger
             }
             HStack(spacing: Space.md) {
                 Button { Haptics.tap(); toggleMuteAll() } label: {
-                    VolumeIcon(level: displayAvg, size: 20, tint: FX.text2).frame(width: 22)
+                    VolumeIcon(level: displayAvg, size: 20, tint: iconTint).frame(width: 22)
+                        .blendMode(additive ? .plusLighter : .normal)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(displayAvg == 0 ? "Unmute all" : "Mute all")
@@ -601,6 +636,7 @@ struct FxSlider: View {
     var track: Color
     var onEditingChanged: (Bool) -> Void
     @State private var dragging = false
+    @State private var grabOffset: CGFloat = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -637,12 +673,24 @@ struct FxSlider: View {
             .frame(height: 28)
             .contentShape(Rectangle())
             .gesture(
+                // Drag the head only: engage solely when the touch starts on the
+                // thumb (within a generous hit radius); taps elsewhere on the
+                // track do nothing. `grabOffset` keeps the grab from jumping.
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
-                        if !dragging { dragging = true; onEditingChanged(true) }
-                        value = Double(min(max(g.location.x / w, 0), 1)) * 100
+                        if !dragging {
+                            let thumbX = min(max(w * pct, 7), w - 7)
+                            guard abs(g.startLocation.x - thumbX) <= 22 else { return }
+                            dragging = true
+                            grabOffset = g.startLocation.x - thumbX
+                            onEditingChanged(true)
+                        }
+                        let x = g.location.x - grabOffset
+                        value = Double(min(max(x / w, 0), 1)) * 100
                     }
-                    .onEnded { _ in dragging = false; onEditingChanged(false) }
+                    .onEnded { _ in
+                        if dragging { dragging = false; onEditingChanged(false) }
+                    }
             )
             .animation(.fxQuick, value: dragging)
         }
@@ -662,6 +710,7 @@ private struct ScrubBar: View {
     var onCommit: (Double) -> Void
 
     @State private var dragging = false
+    @State private var grabOffset: CGFloat = 0
 
     var body: some View {
         GeometryReader { geo in
@@ -683,14 +732,26 @@ private struct ScrubBar: View {
             .frame(height: 22)
             .contentShape(Rectangle())
             .gesture(
+                // Drag the head only: engage solely when the touch starts on the
+                // thumb; a tap elsewhere on the track does NOT seek. `grabOffset`
+                // keeps the grab from jumping the position.
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
-                        if !dragging { dragging = true; onStart() }
-                        onScrub(min(max(g.location.x / w, 0), 1) * duration)
+                        if !dragging {
+                            let thumbX = min(max(w * pct, 8), w - 8)
+                            guard abs(g.startLocation.x - thumbX) <= 22 else { return }
+                            dragging = true
+                            grabOffset = g.startLocation.x - thumbX
+                            onStart()
+                        }
+                        let x = g.location.x - grabOffset
+                        onScrub(min(max(x / w, 0), 1) * duration)
                     }
                     .onEnded { g in
+                        guard dragging else { return }   // never grabbed the head
                         dragging = false
-                        onCommit(min(max(g.location.x / w, 0), 1) * duration)
+                        let x = g.location.x - grabOffset
+                        onCommit(min(max(x / w, 0), 1) * duration)
                     }
             )
             .animation(.fxQuick, value: dragging)
@@ -701,7 +762,167 @@ private struct ScrubBar: View {
     }
 }
 
-// MARK: - Transport buttons (web .fx-group-progress-actions — 32pt icon-btn)
+// MARK: - Media muted ink
+
+extension View {
+    /// Tints a muted "gray" element on a media card. On dark mode it uses an
+    /// additive (linear-add / plus-lighter) blend so a low-opacity white reads as
+    /// a soft highlight that picks up the album tint, rather than a flat overlay;
+    /// on light mode (and off-media) it's a normal composite.
+    func mediaMuted(_ color: Color, additive: Bool) -> some View {
+        foregroundStyle(color).blendMode(additive ? .plusLighter : .normal)
+    }
+}
+
+// MARK: - Marquee text (overflow-only scroll with soft edge fades)
+
+/// A single-line label that sits static when it fits, but when the text is wider
+/// than the available width it scrolls continuously (a second copy trails behind
+/// a gap for a seamless loop) under a soft left/right fade. Used for the media
+/// title + subtitle so long names read in full rather than truncating.
+private struct MarqueeText: View {
+    let text: String
+    var font: Font
+    var color: Color
+    var fadeWidth: CGFloat = 14
+    var gap: CGFloat = 44
+    var pointsPerSecond: Double = 30
+
+    @State private var textWidth: CGFloat = 0
+    @State private var containerWidth: CGFloat = 0
+    @State private var animate = false
+
+    private var overflow: Bool { textWidth > containerWidth + 1 }
+
+    var body: some View {
+        // A clear, layout-driving copy reserves the row's height and the
+        // available width (truncating, so it never forces overflow on the
+        // parent); the real content draws as an overlay and is masked.
+        Text(text)
+            .font(font)
+            .lineLimit(1)
+            .foregroundStyle(.clear)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { containerWidth = g.size.width }
+                    .onChange(of: g.size.width) { _, w in containerWidth = w }
+            })
+            .overlay(alignment: .leading) { content }
+            .background(alignment: .leading) { measurer }
+            .mask(overflow ? AnyView(fadeMask) : AnyView(Color.black))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(text)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if overflow {
+            HStack(spacing: gap) {
+                label
+                label
+            }
+            .offset(x: animate ? -(textWidth + gap) : 0)
+            .animation(
+                .linear(duration: max(4, Double(textWidth + gap) / pointsPerSecond)).repeatForever(autoreverses: false),
+                value: animate
+            )
+            .onAppear { animate = true }
+            // Restart the loop cleanly when the track changes width.
+            .onChange(of: text) { _, _ in
+                animate = false
+                DispatchQueue.main.async { animate = true }
+            }
+            .fixedSize()
+        } else {
+            label
+        }
+    }
+
+    private var label: some View {
+        Text(text).font(font).foregroundStyle(color).lineLimit(1).fixedSize()
+    }
+
+    /// Hidden full-width measurement so we know whether to scroll.
+    private var measurer: some View {
+        label
+            .background(GeometryReader { g in
+                Color.clear
+                    .onAppear { textWidth = g.size.width }
+                    .onChange(of: g.size.width) { _, w in textWidth = w }
+            })
+            .hidden()
+    }
+
+    private var fadeMask: some View {
+        HStack(spacing: 0) {
+            LinearGradient(colors: [.clear, .black], startPoint: .leading, endPoint: .trailing)
+                .frame(width: fadeWidth)
+            Color.black
+            LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
+                .frame(width: fadeWidth)
+        }
+    }
+}
+
+// MARK: - Transport buttons (web .fx-group-progress-actions)
+
+/// A template-rendered media glyph from the asset catalog (custom Play/Pause/
+/// Prev/Next SVGs), tinted by the caller's `foregroundStyle`.
+private struct MediaGlyph: View {
+    let name: String
+    let size: CGFloat
+    init(_ name: String, size: CGFloat) { self.name = name; self.size = size }
+    var body: some View {
+        Image(name).renderingMode(.template).resizable().scaledToFit()
+            .frame(width: size, height: size)
+    }
+}
+
+/// Press feedback for the media transport: the glyph scales up and a translucent
+/// halo (the button's own tint) fades/grows in behind it while held, plus a tap
+/// haptic on press-down — a stronger, more tactile affordance than a flat icon.
+private struct MediaButtonStyle: ButtonStyle {
+    var tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        Content(tint: tint, pressed: configuration.isPressed, label: configuration.label)
+    }
+
+    /// Press-in is INSTANT (no animation) so even a quick tap shows the full
+    /// pressed state; only the release animates back out. Driven by explicit
+    /// `withAnimation` (the `.animation(ternary, value:)` form evaluates with the
+    /// stale state and can't express this asymmetry).
+    private struct Content: View {
+        let tint: Color
+        let pressed: Bool
+        let label: ButtonStyleConfiguration.Label
+        @State private var lift: CGFloat = 0   // 0 = rest, 1 = pressed
+
+        var body: some View {
+            // Layout frame stays 24pt (so the lockup's button spacing is
+            // unchanged); the halo + scale overflow that frame and aren't clipped.
+            label
+                .frame(width: 24, height: 24)
+                .background {
+                    Circle()
+                        .fill(tint.opacity(0.16 * lift))
+                        .frame(width: 38, height: 38)
+                        .scaleEffect(0.5 + 0.5 * lift)
+                }
+                .scaleEffect(1 + 0.18 * lift)
+                .contentShape(Circle())
+                .onChange(of: pressed) { _, isPressed in
+                    if isPressed {
+                        Haptics.tap()
+                        lift = 1   // instant — snaps to pressed even on a fast tap
+                    } else {
+                        withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) { lift = 0 }
+                    }
+                }
+        }
+    }
+}
 
 private struct PlayPauseButton: View {
     @EnvironmentObject private var store: FauxnosStore
@@ -714,34 +935,34 @@ private struct PlayPauseButton: View {
 
     var body: some View {
         Button {
-            Haptics.tap(); pending = !displayed
+            // Swap the glyph instantly on finger-lift (no crossfade) — disabling
+            // animations here keeps it out of the release spring transaction, so
+            // it flips play↔pause hard while the scale still springs back.
+            var txn = Transaction(); txn.disablesAnimations = true
+            withTransaction(txn) { pending = !displayed }
             Task { await store.sendPlayback(.playpause, for: group) }
         } label: {
-            TablerIcon(glyph: displayed ? .pause : .play, size: 20)
+            MediaGlyph(displayed ? "MediaPause" : "MediaPlay", size: 20)
                 .foregroundStyle(tint)
-                .frame(width: 24, height: 24)
-                .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MediaButtonStyle(tint: tint))
         .accessibilityLabel(displayed ? "Pause" : "Play")
         .onChange(of: store.playback(for: group)?.updatedAt) { _, _ in pending = nil }
     }
 }
 
 private struct TransportButton: View {
-    let glyph: TablerIcon.Glyph
+    let asset: String
     let label: String
     var tint: Color = FX.text2
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            TablerIcon(glyph: glyph, size: 16)
+            MediaGlyph(asset, size: 16)
                 .foregroundStyle(tint)
-                .frame(width: 24, height: 24)
-                .contentShape(Circle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MediaButtonStyle(tint: tint))
         .accessibilityLabel(label)
     }
 }
@@ -751,10 +972,17 @@ private struct TransportButton: View {
 /// A compact, self-sizing popover for switching the group's source — a single
 /// tap, no full-height sheet. Dismisses on selection or on a tap outside (the
 /// system popover behavior), so there's no explicit "Done" affordance.
+private struct PopoverHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct SourcePickerPopover: View {
     @EnvironmentObject private var store: FauxnosStore
     @Environment(\.dismiss) private var dismiss
     let group: SpeakerGroup
+
+    @State private var measuredHeight: CGFloat = 0
 
     private var sources: [Source] { store.availableSources(for: group) }
     private var isMulti: Bool { group.clients.count > 1 }
@@ -798,7 +1026,17 @@ struct SourcePickerPopover: View {
             }
         }
         .padding(.vertical, Space.sm)
-        .frame(minWidth: 240, maxWidth: 280, alignment: .leading)
+        // FIXED width (not a min/max range): the system popover reads its
+        // `preferredContentSize` from this content, and a flexible width let the
+        // multi-line caption re-wrap between the measure pass and the final
+        // layout, under-sizing the popover and clipping the bottom. A fixed width
+        // + an explicitly measured height pins the size deterministically.
+        .frame(width: 260, alignment: .leading)
+        .background(GeometryReader { proxy in
+            Color.clear.preference(key: PopoverHeightKey.self, value: proxy.size.height)
+        })
+        .onPreferenceChange(PopoverHeightKey.self) { measuredHeight = $0 }
+        .frame(height: measuredHeight == 0 ? nil : measuredHeight)
         .presentationBackground(FX.surface1)
     }
 }
