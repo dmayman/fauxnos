@@ -2264,6 +2264,16 @@ class FauxnosAPIServer:
         has_adc, external_switch APIs — lives in server_config.json).
         """
         try:
+            # Self-heal orphaned stream assignments before reporting state.
+            # A client left alone in a group still pointed at another client's
+            # stream (the "return host home" slip) would otherwise derive the
+            # wrong home_client_id and surface the wrong client's sources, with
+            # no way back until a server reboot ran reconcile_startup. Idempotent
+            # — fires only on a real mismatch. The main GetStatus below is read
+            # after the heal, so the response reflects the corrected state.
+            from .group_manager import SnapcastGroupManager
+            SnapcastGroupManager(config_manager=self.config_manager).reconcile_stream_assignments()
+
             rpc = self._snapcast_rpc("Server.GetStatus")
             if not rpc or "result" not in rpc:
                 return jsonify({"groups": [], "error": "Snapcast unavailable"}), 503

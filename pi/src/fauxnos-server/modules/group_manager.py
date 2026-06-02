@@ -212,6 +212,50 @@ class SnapcastGroupManager:
         print(f"✅ {client_id} returned home → {new_group.get('id')[:8]} @ {home_source}")
         return True
 
+    # ── Reconcile ─────────────────────────────────────────────────────────
+
+    def reconcile_stream_assignments(self, groups: Optional[List[Dict[str, Any]]] = None) -> bool:
+        """Retune any single-connected-client group whose stream_id doesn't
+        match that client's home_source. Returns True if anything changed.
+
+        This is the self-heal for the "orphaned stream" slip: a joined client
+        left alone in a group that is still pointed at another client's stream
+        — e.g. after the host is returned home, which evicts the host into a
+        fresh group but never retunes the group it left behind. The lone
+        survivor keeps playing the host's stream, so handle_get_groups derives
+        the wrong home_client_id and the UI shows the wrong client's sources.
+
+        Idempotent — fires only on a real mismatch — so it is safe to run on
+        every /api/groups read as well as at boot. Recovers equally from
+        snapcast's prune-and-recreate cycle where a fresh group inherits a
+        default/wrong stream.
+
+        `groups` may be passed by a caller that already fetched
+        Server.GetStatus, to skip a redundant round-trip; otherwise it is
+        fetched here. Never moves connected clients between groups.
+        """
+        if not self.config_manager:
+            return False
+        if groups is None:
+            groups = self.get_groups()
+
+        changed = False
+        for group in groups:
+            connected = [c for c in group.get("clients", []) if c.get("connected")]
+            if len(connected) != 1:
+                continue
+            sole_id = connected[0].get("id")
+            home_source = self._client_home_source(sole_id)
+            if not home_source:
+                continue
+            if group.get("stream_id") == home_source:
+                continue
+            group_id = group.get("id")
+            print(f"🔧 Reconcile: setting group {group_id[:8]}'s stream → {home_source} (sole client {sole_id})")
+            if self.set_group_source(group_id, home_source):
+                changed = True
+        return changed
+
     # ── Startup reconcile ─────────────────────────────────────────────────
 
     def reconcile_startup(self) -> None:
@@ -224,10 +268,8 @@ class SnapcastGroupManager:
              from a legacy install path). These collide with the real
              client's lookup (same `host.name`) and pollute snapcast's
              state. Server.DeleteClient is the only way to remove them.
-          2. For each group with a single connected client, if the group's
-             stream_id differs from that client's home_source, set the
-             stream. Recovers from snapcast's prune-and-recreate cycle
-             where a fresh group inherits a default/wrong stream.
+          2. Retune mismatched streams via reconcile_stream_assignments
+             (now also run live on every /api/groups read).
 
         Never moves connected clients between groups.
         """
@@ -252,16 +294,4 @@ class SnapcastGroupManager:
                 self.send_snapcast_command("Server.DeleteClient", {"id": cid})
 
         # Pass 2: retune mismatched streams.
-        for group in self.get_groups():
-            connected = [c for c in group.get("clients", []) if c.get("connected")]
-            if len(connected) != 1:
-                continue
-            sole_id = connected[0].get("id")
-            home_source = self._client_home_source(sole_id)
-            if not home_source:
-                continue
-            if group.get("stream_id") == home_source:
-                continue
-            group_id = group.get("id")
-            print(f"🔧 Reconcile: setting group {group_id[:8]}'s stream → {home_source} (sole client {sole_id})")
-            self.set_group_source(group_id, home_source)
+        self.reconcile_stream_assignments()
