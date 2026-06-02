@@ -98,20 +98,55 @@ import CoreText
 /// of falling back. The webfonts carry PostScript glyph names matching Tabler's
 /// slugs; we build a name→codepoint map once per family by walking the font's
 /// own character set, then cache it.
-enum TablerIconCatalog {
-    private static var maps: [String: [String: UInt32]] = [:]
-    private static let lock = NSLock()
+///
+/// Building that map walks the font's whole character set (~6k glyphs, two
+/// CoreText calls each) — far too heavy to run synchronously on the main thread
+/// inside a SwiftUI `body`, which is exactly what caused the first-source-picker-
+/// open hitch (FX-76: the first custom-icon render blocked the main thread for
+/// the full walk; every later open hit the cache and felt instant). So the build
+/// now runs once OFF the main thread — warmed at launch — and `codepoint` is a
+/// pure, non-blocking cache read: it returns nil until the map is ready (callers
+/// render the semantic fallback) and `ready` publishes so observers re-render and
+/// swap in the real glyph the moment the warm-up lands.
+@MainActor
+final class TablerIconCatalog: ObservableObject {
+    static let shared = TablerIconCatalog()
+
+    /// Flips true once both families' maps are built off-main. `@Published` so an
+    /// observing `SourceIcon` re-renders and trades its fallback for the real glyph.
+    @Published private(set) var ready = false
+
+    private var maps: [String: [String: UInt32]] = [:]
+    private var warming = false
 
     /// Codepoint for `base` (a bare slug like "device-tv") in the given family,
-    /// or nil if the font doesn't carry it (e.g. a first-party "custom:" icon).
-    static func codepoint(base: String, filled: Bool) -> UInt32? {
-        let family = filled ? "tabler-icons-filled" : "tabler-icons"
-        lock.lock(); defer { lock.unlock() }
-        if maps[family] == nil { maps[family] = build(family) }
-        return maps[family]?[base]
+    /// or nil if the map isn't built yet (caller shows a semantic fallback) or
+    /// the font doesn't carry the slug (e.g. a first-party "custom:" icon). Never
+    /// builds — a pure cache read, safe to call from a SwiftUI `body`.
+    func codepoint(base: String, filled: Bool) -> UInt32? {
+        maps[filled ? "tabler-icons-filled" : "tabler-icons"]?[base]
     }
 
-    private static func build(_ family: String) -> [String: UInt32] {
+    /// Build both families' name→codepoint maps once, off the main thread, then
+    /// publish `ready`. Idempotent — safe to call from launch and lazily from any
+    /// `SourceIcon` that appears before the warm-up was kicked.
+    func warm() {
+        guard !ready, !warming else { return }
+        warming = true
+        Task.detached(priority: .utility) {
+            let outline = TablerIconCatalog.build("tabler-icons")
+            let filled = TablerIconCatalog.build("tabler-icons-filled")
+            await MainActor.run {
+                let c = TablerIconCatalog.shared
+                c.maps["tabler-icons"] = outline
+                c.maps["tabler-icons-filled"] = filled
+                c.warming = false
+                c.ready = true
+            }
+        }
+    }
+
+    private nonisolated static func build(_ family: String) -> [String: UInt32] {
         let ctFont = CTFontCreateWithName(family as CFString, 16, nil)
         let cgFont = CTFontCopyGraphicsFont(ctFont, nil)
         let charset = CTFontCopyCharacterSet(ctFont) as CharacterSet
@@ -162,15 +197,23 @@ struct SourceIcon: View {
     var sourceId: String?
     var size: CGFloat = 20
 
+    // Observe the catalog so this icon re-renders (swapping the fallback for the
+    // real custom glyph) the instant the off-main warm-up publishes `ready`.
+    @ObservedObject private var catalog = TablerIconCatalog.shared
+
     var body: some View {
         if let parsed = Self.parse(icon),
-           let cp = TablerIconCatalog.codepoint(base: parsed.base, filled: parsed.filled),
+           let cp = catalog.codepoint(base: parsed.base, filled: parsed.filled),
            let scalar = UnicodeScalar(cp) {
             Text(String(scalar))
                 .font(.custom(parsed.filled ? "tabler-icons-filled" : "tabler-icons", size: size))
                 .fixedSize()
         } else {
+            // Map not ready (or font lacks the slug) → semantic fallback. Kick the
+            // warm-up as a safety net in case it wasn't started at launch; it's
+            // idempotent and never blocks the main thread.
             TablerIcon(glyph: sourceTablerGlyph(sourceId), size: size)
+                .onAppear { catalog.warm() }
         }
     }
 

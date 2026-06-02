@@ -18,6 +18,10 @@ struct FauxnosApp: App {
             GroupsListView()
                 .environmentObject(store)
                 .task { store.start() }
+                // Build the Tabler custom-icon map off-main at launch so the
+                // first source-picker open is instant rather than blocking the
+                // main thread on the font-charset walk (FX-76).
+                .task { TablerIconCatalog.shared.warm() }
         }
     }
 }

@@ -86,16 +86,19 @@ final class FauxnosStore: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
+            // All three fire in parallel so display names land alongside the
+            // group list on cold launch rather than a round-trip after it (FX-76).
             async let groupsResult = api.fetchGroups()
             async let statusResult = api.fetchStatus()
+            async let clientsResult = api.fetchClients()
             let (g, s) = try await (groupsResult, statusResult)
             groups = g.groups
             status = s
             apiError = nil
             lastUpdated = Date()
             // Display names are best-effort — a failure here must not blank the
-            // group list, so it's fetched outside the required groups/status set.
-            if let cs = try? await api.fetchClients() {
+            // group list, so it's awaited outside the required groups/status set.
+            if let cs = try? await clientsResult {
                 clientNames = Dictionary(
                     uniqueKeysWithValues: cs.compactMap { c in
                         guard let n = c.name, !n.isEmpty else { return nil }
