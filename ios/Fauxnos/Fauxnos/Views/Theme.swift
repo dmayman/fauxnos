@@ -30,14 +30,16 @@ enum FX {
     static let surface2  = dynamic(dark: 0x1C1C1C, light: 0xF5F5F5)
     static let surface3  = dynamic(dark: 0x262626, light: 0xEAEAEA)
 
-    // Hairlines (alpha over the surface)
-    static let line       = dynamicAlpha(dark: (0xFFFFFF, 0.07), light: (0x000000, 0.09))
-    static let lineStrong = dynamicAlpha(dark: (0xFFFFFF, 0.14), light: (0x000000, 0.16))
+    // Hairlines (alpha over the surface) — web --fx-line / --fx-line-strong
+    static let line       = dynamicAlpha(dark: (0xFFFFFF, 0.06), light: (0x000000, 0.08))
+    static let lineStrong = dynamicAlpha(dark: (0xFFFFFF, 0.12), light: (0x000000, 0.16))
 
-    // Text ramp
-    static let text  = dynamic(dark: 0xF2F2F2, light: 0x1F1F1F)
-    static let text2 = dynamic(dark: 0xA0A0A0, light: 0x6E6E6E)
-    static let text3 = dynamic(dark: 0x6A6A6A, light: 0x9A9A9A)
+    // Text ramp — web --fx-text / --fx-text-2 / --fx-text-3. Light-mode primary
+    // is #4A4A4A (a soft near-black), NOT a hard #1F1F1F: the web deliberately
+    // keeps the lightest text gentle so the neutral surface doesn't feel harsh.
+    static let text  = dynamic(dark: 0xF2F2F2, light: 0x4A4A4A)
+    static let text2 = dynamic(dark: 0xA0A0A0, light: 0x7A7A7A)
+    static let text3 = dynamic(dark: 0x6A6A6A, light: 0xA0A0A0)
 
     // Status
     static let ok   = dynamic(dark: 0x7BB186, light: 0x3E7A4D)
@@ -94,7 +96,7 @@ enum FxFont {
             }
         }
     }
-    static let titleTrack = fustat(24, .bold)        // web 28 — track title
+    static let titleTrack = fustat(21, .bold)        // web 28 — track title
     static let metaTrack  = fustat(17, .semibold)    // web 20 — artist · album
     static let nameDevice = fustat(19, .bold)        // web 20 — device-row name
     static let timeTrack  = fustat(13, .medium)      // web 14 — progress timecode

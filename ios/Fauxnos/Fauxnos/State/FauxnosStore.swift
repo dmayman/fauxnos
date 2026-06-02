@@ -404,6 +404,35 @@ final class FauxnosStore: ObservableObject {
         }
         await refresh()
     }
+
+    /// The whole fleet — every connected client across all groups, de-duped and
+    /// sorted by display name. Backs the device-menu membership editor, which
+    /// shows all devices (web `AddDevicesPopover` `devices`), not just one group.
+    var allClients: [SnapClient] {
+        var seen = Set<String>()
+        var out: [SnapClient] = []
+        for g in groups {
+            for c in g.clients where seen.insert(c.id).inserted { out.append(c) }
+        }
+        return out.sorted {
+            displayName(for: $0).localizedCaseInsensitiveCompare(displayName(for: $1)) == .orderedAscending
+        }
+    }
+
+    /// Reconcile a group's membership against a desired set of device IDs — the
+    /// commit path for the device menu (web `handleAddDevices`). Diffs desired vs
+    /// the home group's live members, then joins the additions and returns the
+    /// removals home. The home device always stays. Reuses the tested
+    /// `joinGroup` / `returnHome` (each optimistic + refreshing).
+    func setGroupMembership(desiredIds: Set<String>, homeClientId home: String) async {
+        var desired = desiredIds
+        desired.insert(home)  // home never leaves its own group
+        let currentIds = Set(groups.first { homeClientId(of: $0) == home }?.clients.map(\.id) ?? [])
+        let toAdd = desired.subtracting(currentIds)
+        let toRemove = currentIds.subtracting(desired)
+        for id in toAdd where id != home { await joinGroup(clientId: id, targetHomeClientId: home) }
+        for id in toRemove where id != home { await returnHome(clientId: id) }
+    }
 }
 
 #if DEBUG

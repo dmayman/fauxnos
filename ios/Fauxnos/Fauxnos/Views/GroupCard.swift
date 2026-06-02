@@ -30,6 +30,7 @@ struct GroupCard: View {
     let group: SpeakerGroup
 
     @State private var showSourcePicker = false
+    @State private var showDeviceMenu = false
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
 
@@ -105,6 +106,12 @@ struct GroupCard: View {
         .animation(.fxEase, value: isDropTarget)
         .animation(.fxEase, value: palette)
         .task(id: track?.artUrl) { artStore.ensure(track?.artUrl) }
+        // The device menu (group-membership editor) opens from any row's name
+        // chevron + the "All" chevron — a bottom sheet rather than the popover
+        // the source picker uses, since composing a group is a heavier task.
+        .sheet(isPresented: $showDeviceMenu) {
+            DeviceMenuSheet(group: group)
+        }
     }
 
     @ViewBuilder
@@ -117,19 +124,25 @@ struct GroupCard: View {
     // MARK: Media region (V1/V3)
 
     private var mediaRegion: some View {
-        VStack(alignment: .leading, spacing: Space.lg) {
+        // Figma 2495-4019 lockup: album art + a text column (title, subtitle, then
+        // the prev/play/next transport row left-aligned beneath), with the full-
+        // width seek bar + flanking timestamps as a separate block 24pt below.
+        VStack(alignment: .leading, spacing: Space.xl) {
             HStack(alignment: .center, spacing: Space.lg) {
                 albumArt
-                VStack(alignment: .leading, spacing: Space.xs) {
-                    Text(track?.title ?? "—")
-                        .font(FxFont.titleTrack).foregroundStyle(FX.text).lineLimit(1)
-                    if let sub = trackSubtitle {
-                        Text(sub).font(FxFont.metaTrack).foregroundStyle(palette.accent).lineLimit(1)
+                VStack(alignment: .leading, spacing: Space.sm) {
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(track?.title ?? "—")
+                            .font(FxFont.titleTrack).foregroundStyle(FX.text).lineLimit(1)
+                        if let sub = trackSubtitle {
+                            Text(sub).font(FxFont.metaTrack).foregroundStyle(palette.accent).lineLimit(1)
+                        }
                     }
+                    if hasControls { transportActions }
                 }
                 Spacer(minLength: 0)
             }
-            if hasControls { progressAndTransport }
+            if hasControls { progressBar }
         }
         .padding(Space.xl)
     }
@@ -177,42 +190,43 @@ struct GroupCard: View {
 
     // MARK: Progress + inline transport (web .fx-group-progress)
 
-    // Phone media layout (FX-58): mirrors the web mweb `.fx-group-progress`
-    // (flex-direction: column) — the seek bar runs edge-to-edge with the start
-    // / end times flanking it, and the transport row centers beneath, rather
-    // than the desktop one-line "time–bar–time–prev/play/next" cram.
+    // Figma lockup: a full-width seek bar with the start / end times flanking it
+    // BELOW the bar (start left, end right), 4pt under the track. The transport
+    // row no longer lives here — it sits in the text column above.
     @ViewBuilder
-    private var progressAndTransport: some View {
+    private var progressBar: some View {
         let duration = Double(track?.durationMs ?? 0)
         if duration > 0 {
             TimelineView(.periodic(from: .now, by: 0.5)) { context in
                 let live = interpolatedPosition(at: context.date, duration: duration)
                 let pos = scrubbing ? scrubValue : live
-                VStack(spacing: Space.sm) {
-                    HStack(spacing: Space.md) {
+                VStack(spacing: Space.xs) {
+                    ScrubBar(value: pos, duration: duration, accent: palette.accent, track: palette.trackTint) {
+                        scrubbing = true; scrubValue = live
+                        dragController.controlsEngaged = true   // claim the touch; don't let the card lift
+                    } onScrub: { scrubValue = $0 } onCommit: { v in
+                        Haptics.tap(); Task { await store.seek(Int(v), for: group) }
+                        scrubbing = false; dragController.controlsEngaged = false
+                    }
+                    HStack(spacing: 0) {
                         Text(fmtTime(pos)).font(FxFont.timeTrack).monospacedDigit().foregroundStyle(FX.text2)
-                        ScrubBar(value: pos, duration: duration, accent: palette.accent, track: palette.trackTint) {
-                            scrubbing = true; scrubValue = live
-                            dragController.controlsEngaged = true   // claim the touch; don't let the card lift
-                        } onScrub: { scrubValue = $0 } onCommit: { v in
-                            Haptics.tap(); Task { await store.seek(Int(v), for: group) }
-                            scrubbing = false; dragController.controlsEngaged = false
-                        }
+                        Spacer(minLength: Space.sm)
                         Text(fmtTime(duration)).font(FxFont.timeTrack).monospacedDigit().foregroundStyle(FX.text2)
                     }
-                    transportActions   // centered beneath (web .fx-group-progress-actions align-self: center)
                 }
             }
         }
     }
 
+    // Left-aligned prev/play/next (Figma: 24pt tap targets, 8pt apart, prev/next
+    // 16pt + play 20pt, all in the album accent), sitting under the subtitle.
     private var transportActions: some View {
-        HStack(spacing: Space.xs) {
-            TransportButton(glyph: .trackPrev, label: "Previous") {
+        HStack(spacing: Space.sm) {
+            TransportButton(glyph: .trackPrev, label: "Previous", tint: palette.accent) {
                 Haptics.tap(); Task { await store.sendPlayback(.prev, for: group) }
             }
-            PlayPauseButton(group: group)
-            TransportButton(glyph: .trackNext, label: "Next") {
+            PlayPauseButton(group: group, tint: palette.accent)
+            TransportButton(glyph: .trackNext, label: "Next", tint: palette.accent) {
                 Haptics.tap(); Task { await store.sendPlayback(.next, for: group) }
             }
         }
@@ -236,22 +250,43 @@ struct GroupCard: View {
     private var rowsSection: some View {
         VStack(spacing: Space.lg) {
             if isMulti {
-                AllRow(clients: clients, accent: palette.accent,
-                       sourceTrigger: AnyView(sourceTrigger), homeId: homeId)
+                // Multi-device cards stay NEUTRAL: the rows never adopt the
+                // album-art tint (web `.fx-volume.card-v2` is fx-text / fx-line-
+                // strong, not the accent), and the "All" master shares the exact
+                // same colors as its member rows below — they're set apart by a
+                // hairline rule, not a color shift.
+                AllRow(clients: clients, accent: FX.text, track: FX.lineStrong,
+                       sourceTrigger: AnyView(sourceTrigger),
+                       onOpenMenu: { showDeviceMenu = true })
+                // Edge-to-edge separator between the "All" master and the member
+                // rows (web `.is-all::after` 1px fx-line hairline).
+                Rectangle().fill(FX.line).frame(height: 1)
             }
             ForEach(clients) { client in
+                let isHomeDevice = client.id == homeId
                 DeviceRow(
                     client: client,
-                    isHome: client.id == homeId,
+                    isHome: isHomeDevice,
                     groupId: group.id,
                     // Multi-device members lift out by row (the home stays put —
                     // pull it out of its own group makes no sense). Single cards
                     // lift at the card level, so their row isn't draggable.
-                    draggable: isMulti && client.id != homeId,
-                    nameColor: isMulti ? FX.text2 : FX.text,
-                    accent: hasMedia ? palette.accent : FX.text,
-                    track: hasMedia ? palette.trackTint : FX.surface3,
-                    sourceTrigger: (!isMulti && client.id == homeId) ? AnyView(sourceTrigger) : nil
+                    draggable: isMulti && !isHomeDevice,
+                    nameColor: FX.text,
+                    // Multi rows are always neutral (matching the "All" row above);
+                    // only single + media cards carry the album accent.
+                    accent: isMulti ? FX.text : (hasMedia ? palette.accent : FX.text),
+                    track: isMulti ? FX.lineStrong : (hasMedia ? palette.trackTint : FX.surface3),
+                    sourceTrigger: (!isMulti && isHomeDevice) ? AnyView(sourceTrigger) : nil,
+                    // Single-device cards keep the name chevron → device menu; on a
+                    // multi card the rows have no dropdown (the "All" row owns it).
+                    onOpenMenu: isMulti ? nil : { showDeviceMenu = true },
+                    // On a multi card the home device shows an inline home marker;
+                    // every other member gets a trailing unlink (ungroup) button.
+                    showHomeIcon: isMulti && isHomeDevice,
+                    onUnlink: (isMulti && !isHomeDevice)
+                        ? { Haptics.tap(); Task { await store.returnHome(clientId: client.id) } }
+                        : nil
                 )
             }
         }
@@ -314,9 +349,13 @@ struct GroupCard: View {
         } label: {
             HStack(spacing: Space.xs) {
                 TablerIcon(glyph: sourceTablerGlyph(source), size: 22)
+                    .foregroundStyle(FX.text)
+                // The disclosure chevron is the gray token (FX.text3) — the same
+                // gray the name chevrons + old unlink icon use — so every
+                // dropdown affordance reads consistently against its primary icon.
                 TablerIcon(glyph: .chevronDown, size: 14)
+                    .foregroundStyle(FX.text3)
             }
-            .foregroundStyle(FX.text)
             .frame(height: 40)
             .padding(.horizontal, Space.sm)
             .contentShape(Rectangle())
@@ -340,6 +379,30 @@ struct GroupCard: View {
     }
 }
 
+// MARK: - Device-name trigger (web .fx-group-row-name chevron)
+
+/// A row/group title rendered as a tappable disclosure — the label plus a small
+/// chevron — that opens the device menu (group-membership editor). Mirrors the
+/// web `RowName` chevron; here the whole label + chevron is the tap target. Used
+/// by both the "All" master row and each device row.
+private struct DeviceNameTrigger: View {
+    let label: String
+    var color: Color = FX.text
+    let action: () -> Void
+
+    var body: some View {
+        Button { Haptics.tap(); action() } label: {
+            HStack(spacing: Space.xs) {
+                Text(label).font(FxFont.nameDevice).foregroundStyle(color).lineLimit(1)
+                TablerIcon(glyph: .chevronDown, size: 16).foregroundStyle(FX.text3)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(label). Edit group.")
+    }
+}
+
 // MARK: - Device row (web .fx-group-row-v2)
 
 struct DeviceRow: View {
@@ -353,6 +416,11 @@ struct DeviceRow: View {
     var accent: Color = FX.text
     var track: Color = FX.surface3
     var sourceTrigger: AnyView? = nil
+    var onOpenMenu: (() -> Void)? = nil
+    /// Multi-device home member: shows an inline home glyph after the name.
+    var showHomeIcon: Bool = false
+    /// Multi-device non-home member: shows a trailing unlink (ungroup) button.
+    var onUnlink: (() -> Void)? = nil
 
     @State private var editing = false
     @State private var dragValue: Double = 0
@@ -367,9 +435,28 @@ struct DeviceRow: View {
         // on top, the volume row below — sitting close beneath the name.
         VStack(alignment: .leading, spacing: Space.xs) {
             HStack(spacing: Space.md) {
-                name
+                HStack(spacing: Space.xs) {
+                    name
+                    if showHomeIcon {
+                        Image("TinyHome")
+                            .renderingMode(.template)
+                            .resizable().scaledToFit()
+                            .frame(width: 10, height: 10)
+                            .foregroundStyle(FX.text3)
+                    }
+                }
                 Spacer(minLength: 0)
-                if let sourceTrigger { sourceTrigger }
+                if let onUnlink {
+                    Button { Haptics.tap(); onUnlink() } label: {
+                        TablerIcon(glyph: .unlink, size: 18).foregroundStyle(FX.text3)
+                            .frame(width: 32, height: 32)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Remove \(deviceName) from group")
+                } else if let sourceTrigger {
+                    sourceTrigger
+                }
             }
             volume
         }
@@ -383,8 +470,12 @@ struct DeviceRow: View {
 
     @ViewBuilder
     private var name: some View {
-        Text(deviceName)
-            .font(FxFont.nameDevice).foregroundStyle(nameColor).lineLimit(1)
+        if let onOpenMenu {
+            DeviceNameTrigger(label: deviceName, color: nameColor, action: onOpenMenu)
+        } else {
+            Text(deviceName)
+                .font(FxFont.nameDevice).foregroundStyle(nameColor).lineLimit(1)
+        }
     }
 
     @ViewBuilder
@@ -437,8 +528,9 @@ struct AllRow: View {
     @EnvironmentObject private var dragController: CardDragController
     let clients: [SnapClient]
     var accent: Color = FX.text
+    var track: Color = FX.lineStrong
     var sourceTrigger: AnyView
-    var homeId: String?
+    var onOpenMenu: () -> Void
 
     @State private var editing = false
     @State private var dragAvg: Double = 0
@@ -455,15 +547,7 @@ struct AllRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Space.xs) {
             HStack(spacing: 6) {
-                Text("All").font(FxFont.nameDevice).foregroundStyle(accent)
-                Button {
-                    Haptics.tap()
-                    for c in clients where c.id != homeId { Task { await store.returnHome(clientId: c.id) } }
-                } label: {
-                    TablerIcon(glyph: .unlink, size: 15).foregroundStyle(FX.text3)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Ungroup all")
+                DeviceNameTrigger(label: "All", color: accent, action: onOpenMenu)
                 Spacer(minLength: 0)
                 sourceTrigger
             }
@@ -473,7 +557,7 @@ struct AllRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(displayAvg == 0 ? "Unmute all" : "Mute all")
-                FxSlider(value: binding, fill: accent, track: accent.opacity(0.18)) { isEditing in
+                FxSlider(value: binding, fill: accent, track: track) { isEditing in
                     editing = isEditing
                     dragController.controlsEngaged = isEditing   // claim the touch; don't let the card lift
                     if isEditing {
@@ -622,6 +706,7 @@ private struct ScrubBar: View {
 private struct PlayPauseButton: View {
     @EnvironmentObject private var store: FauxnosStore
     let group: SpeakerGroup
+    var tint: Color = FX.text
     @State private var pending: Bool?
 
     private var actualPlaying: Bool { store.playback(for: group)?.isPlaying == true }
@@ -633,8 +718,8 @@ private struct PlayPauseButton: View {
             Task { await store.sendPlayback(.playpause, for: group) }
         } label: {
             TablerIcon(glyph: displayed ? .pause : .play, size: 20)
-                .foregroundStyle(FX.text)
-                .frame(width: 32, height: 32)
+                .foregroundStyle(tint)
+                .frame(width: 24, height: 24)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -646,13 +731,14 @@ private struct PlayPauseButton: View {
 private struct TransportButton: View {
     let glyph: TablerIcon.Glyph
     let label: String
+    var tint: Color = FX.text2
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            TablerIcon(glyph: glyph, size: 17)
-                .foregroundStyle(FX.text2)
-                .frame(width: 32, height: 32)
+            TablerIcon(glyph: glyph, size: 16)
+                .foregroundStyle(tint)
+                .frame(width: 24, height: 24)
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
@@ -714,6 +800,173 @@ struct SourcePickerPopover: View {
         .padding(.vertical, Space.sm)
         .frame(minWidth: 240, maxWidth: 280, alignment: .leading)
         .presentationBackground(FX.surface1)
+    }
+}
+
+// MARK: - Device menu (group-membership editor; web AddDevicesPopover)
+
+/// Bottom-sheet editor for composing / editing a group's membership, opened from
+/// any row's name chevron or the "All" chevron. Shows the WHOLE fleet; the home
+/// (master) device is pinned checked + locked (it can't leave its own group).
+/// Current members come pre-checked and can be toggled off to remove them. The
+/// commit button reconciles the chosen set against live state (joins + return-
+/// homes). Styled to match the app — FX surfaces, Fustat, Tabler — rather than a
+/// stock system list, so it reads like the rest of the UI (web AddDevicesPopover).
+struct DeviceMenuSheet: View {
+    @EnvironmentObject private var store: FauxnosStore
+    @Environment(\.dismiss) private var dismiss
+    let group: SpeakerGroup
+
+    @State private var selected: Set<String> = []
+
+    private var home: String? { store.homeClientId(of: group) }
+    private var devices: [SnapClient] { store.allClients }
+    private var memberIds: Set<String> { Set(group.clients.map(\.id)) }
+    private var isGroup: Bool { group.clients.count > 1 }
+
+    /// Home pinned to the top; the rest keep `allClients` name order.
+    private var ordered: [SnapClient] {
+        guard let home else { return devices }
+        return devices.filter { $0.id == home } + devices.filter { $0.id != home }
+    }
+
+    private var allSelected: Bool { !devices.isEmpty && selected.count == devices.count }
+
+    /// Dirty = the chosen membership differs from what's live. While still a
+    /// single device, also require 1+ pick beyond the home (a one-device "group"
+    /// isn't a group).
+    private var isDirty: Bool {
+        selected != memberIds && (isGroup || selected.count > 1)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            ScrollView { deviceList }
+            footer
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationBackground(FX.surface1)
+        .onAppear {
+            var initial = memberIds
+            if let home { initial.insert(home) }
+            selected = initial
+        }
+    }
+
+    private var header: some View {
+        HStack {
+            Text("Audio group").font(FxFont.fustat(20, .bold)).foregroundStyle(FX.text)
+            Spacer(minLength: Space.lg)
+            Button {
+                Haptics.tap()
+                selected = allSelected ? (home.map { [$0] } ?? []) : Set(devices.map(\.id))
+            } label: {
+                Text(allSelected ? "Select none" : "Select all")
+                    .font(FxFont.fustat(15, .semibold)).foregroundStyle(FX.text2)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, Space.xl)
+        .padding(.top, Space.xl).padding(.bottom, Space.lg)
+    }
+
+    private var deviceList: some View {
+        VStack(spacing: 0) {
+            ForEach(ordered) { d in
+                let checked = selected.contains(d.id)
+                let locked = d.id == home
+                Button {
+                    guard !locked else { return }
+                    Haptics.select()
+                    if checked { selected.remove(d.id) } else { selected.insert(d.id) }
+                } label: {
+                    HStack(spacing: Space.sm) {
+                        // Device name matches the source dropdown's type treatment
+                        // — same 17pt size, bold weight, primary text color. The
+                        // home reads normal (not dimmed); a small light house glyph
+                        // to its right marks it as the group's anchor.
+                        Text(store.displayName(for: d))
+                            .font(FxFont.fustat(17, .bold))
+                            .foregroundStyle(FX.text)
+                            .lineLimit(1)
+                        if locked {
+                            TablerIcon(glyph: .home, size: 15)
+                                .foregroundStyle(FX.text2)
+                        }
+                        Spacer(minLength: Space.lg)
+                        // Locked (home) checkbox is just a checked box at 60%
+                        // opacity — same shape, dimmed — rather than a distinct
+                        // locked treatment.
+                        checkBox(on: locked ? true : checked, dimmed: locked)
+                    }
+                    .padding(.horizontal, Space.xl).padding(.vertical, Space.md)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                // NB: no `.disabled(locked)` — that dims the whole row (lightening
+                // the name + house and compounding with the checkbox opacity). The
+                // home is non-toggleable via the action's early return instead, so
+                // its name reads full-strength and only its checkbox sits at 60%.
+                .allowsHitTesting(!locked)
+            }
+        }
+        .padding(.bottom, Space.sm)
+    }
+
+    private func checkBox(on: Bool, dimmed: Bool) -> some View {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(on ? FX.text : .clear)
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(on ? .clear : FX.lineStrong, lineWidth: 1.5))
+            .frame(width: 24, height: 24)
+            .overlay {
+                if on {
+                    Image(systemName: "checkmark").font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(FX.surface1)
+                }
+            }
+            .opacity(dimmed ? 0.6 : 1)
+    }
+
+    @ViewBuilder
+    private var footer: some View {
+        Divider().overlay(FX.line)
+        Group {
+            if isGroup && !isDirty {
+                // Existing group, untouched: the only action is to disband it —
+                // confirming with just the home returns every member home.
+                Button { if let home { confirm([home]) } } label: {
+                    HStack(spacing: Space.sm) {
+                        TablerIcon(glyph: .unlink, size: 18)
+                        Text("Break group").font(FxFont.fustat(17, .semibold))
+                    }
+                    .foregroundStyle(FX.text)
+                    .frame(maxWidth: .infinity).frame(height: 50)
+                    .overlay(Capsule().strokeBorder(FX.lineStrong, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            } else {
+                Button { confirm(selected) } label: {
+                    Text(isGroup ? "Update group" : "Create group")
+                        .font(FxFont.fustat(17, .bold))
+                        .foregroundStyle(isDirty ? FX.surface1 : FX.text3)
+                        .frame(maxWidth: .infinity).frame(height: 50)
+                        .background(Capsule().fill(isDirty ? FX.text : FX.surface2))
+                }
+                .buttonStyle(.plain)
+                .disabled(!isDirty)
+            }
+        }
+        .padding(.horizontal, Space.xl).padding(.vertical, Space.lg)
+    }
+
+    private func confirm(_ ids: Set<String>) {
+        guard let home else { return }
+        Haptics.tap()
+        Task { await store.setGroupMembership(desiredIds: ids, homeClientId: home) }
+        dismiss()
     }
 }
 

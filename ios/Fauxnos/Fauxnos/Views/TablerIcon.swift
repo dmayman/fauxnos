@@ -22,7 +22,7 @@ struct TablerIcon: View {
     enum Glyph {
         // Filled (tabler-icons-filled)
         case brandSpotify, play, pause, trackPrev, trackNext
-        case chevronDown, microphone, broadcastTower, externalLink, headphones, x
+        case chevronDown, microphone, broadcastTower, externalLink, headphones, x, home
         // Outline (tabler-icons)
         case volumeHigh, volumeLow, volumeOff, unlink
 
@@ -39,6 +39,7 @@ struct TablerIcon: View {
             case .externalLink:   return 0x101da
             case .headphones:     return 0xfa3c
             case .x:              return 0x101c6
+            case .home:           return 0xfe2b
             case .volumeHigh:     return 0xeb51   // volume (2 waves)
             case .volumeLow:      return 0xeb4f   // volume-2 (1 wave)
             case .volumeOff:      return 0xf1c3   // volume-off
