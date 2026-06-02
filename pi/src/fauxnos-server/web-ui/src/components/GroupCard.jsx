@@ -29,6 +29,7 @@ function DragBarsIcon({ size = 10 }) {
 
 import VolumeSlider, { VolumeIcon } from './VolumeSlider'
 import SourcePopover from './SourcePopover'
+import CustomIcon from './CustomIcon'
 import AddDevicesPopover from './AddDevicesPopover'
 import useAlbumArtColor from '../hooks/useAlbumArtColor'
 import { useTuning } from '../hooks/useTuning'
@@ -51,7 +52,11 @@ function volIconState(v) {
  * Spotify gets the brand mark; everything else uses semantically-close Tabler
  * solid glyphs until vendor SVGs land in Phase 6.
  * ────────────────────────────────────────────────────────────────────────── */
-function SourceIcon({ sourceId, size = 24 }) {
+function SourceIcon({ sourceId, icon, size = 24 }) {
+  // A custom per-source icon (set in the source editor) wins over the semantic
+  // per-id fallback glyph, so a renamed source (e.g. analog → "Turntable")
+  // shows its chosen icon on the card, matching the source picker. FX-69.
+  if (icon) return <CustomIcon name={icon} size={size} />
   const Icon =
     sourceId === 'spotify' ? IconBrandSpotifyFilled :
     sourceId === 'airplay' ? IconBuildingBroadcastTowerFilled :
@@ -233,6 +238,10 @@ function useInterpolatedPosition(playback) {
 function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientId, onSwitchSource, onUngroupAll, onConfigure, anchored = false }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef(null)
+  // Active source object so the trigger glyph + a11y label reflect a custom
+  // icon/label (e.g. a renamed analog), not just the raw id. FX-69.
+  const activeSource = (sources || []).find(s => s.id === currentSourceId)
+  const activeLabel = activeSource?.label || currentSourceId
 
   const handleSelect = async (sourceId) => {
     // On a multi-device card, picking any source dissolves the group first
@@ -262,10 +271,10 @@ function SourceTrigger({ sources, currentSourceId, isMulti, groupId, homeClientI
         onClick={() => setOpen(o => !o)}
         aria-haspopup="menu"
         aria-expanded={open}
-        aria-label={currentSourceId ? `Source: ${currentSourceId}` : 'Select source'}
-        title={currentSourceId || 'Select source'}
+        aria-label={activeLabel ? `Source: ${activeLabel}` : 'Select source'}
+        title={activeLabel || 'Select source'}
       >
-        <SourceIcon sourceId={currentSourceId} size={24} />
+        <SourceIcon sourceId={currentSourceId} icon={activeSource?.icon} size={24} />
         <IconChevronDownFilled size={24} aria-hidden />
       </button>
       {open && (
@@ -431,7 +440,7 @@ function EditGroupButton({ addDevices }) {
  * Renders for V1/V3 (anywhere a track is present). Falls back to a source
  * glyph in the art slot when no metadata is available.
  * ────────────────────────────────────────────────────────────────────────── */
-function MediaCard({ clientId, sourceId, track, playback, empty = false, groupName }) {
+function MediaCard({ clientId, sourceId, source, track, playback, empty = false, groupName }) {
   if (empty) {
     return (
       <div className="fx-group-media-card is-empty">
@@ -477,7 +486,9 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
   }
 
   const hasControls = sourceId === 'spotify' && hasMeta
-  const titleText = hasMeta ? track.title : (sourceId || '—')
+  // No track metadata (non-Spotify source): show the source's custom label
+  // (e.g. "Turntable") rather than the raw id. FX-69.
+  const titleText = hasMeta ? track.title : (source?.label || sourceId || '—')
   const subText = hasMeta ? [track.artist, track.album].filter(Boolean).join(' · ') : ''
   const progressHover = useSliderHover()
 
@@ -486,7 +497,7 @@ function MediaCard({ clientId, sourceId, track, playback, empty = false, groupNa
       <div className="fx-group-media-art">
         {hasMeta && track.art_url
           ? <img src={track.art_url} alt="" loading="lazy" draggable={false} />
-          : <SourceIcon sourceId={sourceId} size={56} />}
+          : <SourceIcon sourceId={sourceId} icon={source?.icon} size={56} />}
       </div>
       {/* Desktop keeps the body wrapper (art | body[text, progress]) exactly as
           before. On mweb (≤600px) index.css sets the body to display:contents so
@@ -856,6 +867,7 @@ export default function GroupCard({
     mediaPropsRef.current = {
       clientId: homeClientId,
       sourceId: currentSourceId,
+      source: (group.sources || []).find(s => s.id === currentSourceId),
       track,
       playback,
       empty: isEmptyMedia,
