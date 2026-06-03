@@ -55,6 +55,16 @@ struct GroupsListView: View {
                         // Tints when a grouped device is dragged over empty space,
                         // marking the "drop to remove from group" zone.
                         FX.text.opacity(dragController.hoverBackground ? 0.07 : 0)
+                        // FX-83: the same drop-target stroke a hovered card gets,
+                        // drawn around the very edge of the screen — so "drop on
+                        // the background to ungroup" reads as a real target rather
+                        // than invisible dead space.
+                        if dragController.hoverBackground {
+                            RoundedRectangle(cornerRadius: 55, style: .continuous)
+                                .strokeBorder(DropIndicator.color, lineWidth: DropIndicator.lineWidth)
+                                .padding(2)
+                                .transition(.opacity)
+                        }
                     }
                     .ignoresSafeArea()
                     .animation(.fxEase, value: dragController.hoverBackground)
@@ -92,11 +102,26 @@ struct GroupsListView: View {
                         StaggeredAppear(index: index) {
                             GroupCard(group: group)
                         }
+                        // FX-83: when the finger hovers the space just below THIS
+                        // (source) card while one of its devices is airborne, open
+                        // an empty gap so the cards below slide down — just making
+                        // room to drop on the background. Pure space: no stroke, no
+                        // placeholder, not its own drop zone (the window-edge
+                        // background treatment is the indicator, and the drop routes
+                        // through the normal background/ungroup path).
+                        if dragController.gapOpen
+                            && dragController.sourceGroupId == group.id {
+                            Color.clear
+                                .frame(height: CardDragController.gapHeight)
+                                .transition(.opacity)
+                        }
                     }
                 }
                 .padding(.horizontal, Space.lg)
                 .padding(.top, Space.sm)
                 .padding(.bottom, Space.xl)
+                // Open / close the make-room gap (and slide the cards below).
+                .animation(.fxEase, value: dragController.gapOpen)
                 // Shared geometry for lift-to-regroup: cards report their frames
                 // here, and the lifted device's floating preview rides above them.
                 .coordinateSpace(name: kCardSpace)
