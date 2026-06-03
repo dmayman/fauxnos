@@ -52,7 +52,12 @@ struct GroupsListView: View {
                     }
                     .ignoresSafeArea()
                     .animation(.fxEase, value: dragController.hoverBackground)
-                    .animation(.fxEase, value: backdropArtURL)
+                    // FX-79: crossfade one blurred backdrop into the next on a
+                    // track change — a smooth, slightly longer dissolve (the
+                    // BlurArtBackdrop is `.id(url)` + `.transition(.opacity)`)
+                    // rather than the spring snap, so the whole-screen wash melts
+                    // over rather than popping.
+                    .animation(.easeInOut(duration: 0.6), value: backdropArtURL)
                 }
                 .navigationTitle("Fauxnos")
                 .toolbar {

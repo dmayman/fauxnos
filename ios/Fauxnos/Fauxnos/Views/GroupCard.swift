@@ -49,6 +49,15 @@ struct GroupCard: View {
     private var playback: Playback? { store.playback(for: group) }
     private var source: String? { store.currentSource(of: group) }
 
+    /// FX-79: stable identity of the playing track. The title/artist lockup
+    /// cross-fades when THIS changes (once per genuine track change), not on
+    /// every poll/MQTT refresh that re-delivers the same track. The cover flip
+    /// keys on the art URL itself (inside `FlippingAlbumArt`).
+    private var trackKey: String {
+        guard hasMedia, let t = track else { return "—" }
+        return t.uri ?? [t.title, t.artist, t.album].compactMap { $0 }.joined(separator: "|")
+    }
+
     private var isMulti: Bool { group.clients.count > 1 }
     // Spotify is the only source with a media player — other sources (AirPlay,
     // Vinyl, Alexa, …) are local-per-device and carry no track metadata, so they
@@ -133,7 +142,12 @@ struct GroupCard: View {
         .liftToRegroup(client: (!isMulti && !showMediaCard) ? clients.first : nil,
                        groupId: group.id, inPlace: true)
         .animation(.fxEase, value: isDropTarget)
-        .animation(.fxEase, value: palette)
+        // FX-79: melt the album-derived colors (card tint, accent, slider/track
+        // tints) from old to new — a smooth fade rather than a spring snap, so
+        // the whole card's color shifts gracefully when the cover changes. The
+        // palette updates a beat after the flip (it waits on async color
+        // extraction of the new cover), so the tint settles in just behind it.
+        .animation(.easeInOut(duration: 0.5), value: palette)
         .task(id: track?.artUrl) { artStore.ensure(track?.artUrl) }
         // The device menu (group-membership editor) opens from any row's name
         // chevron + the "All" chevron — a bottom sheet rather than the popover
@@ -163,10 +177,19 @@ struct GroupCard: View {
             HStack(alignment: .center, spacing: Space.lg) {
                 albumArt
                 VStack(alignment: .leading, spacing: Space.sm) {
+                    // FX-79: the title + artist cross-fade on a track change (keyed
+                    // on `trackKey`, once per real change). Both lines travel the
+                    // same way — top-to-bottom — and cascade: the title leads, the
+                    // artist follows a beat later. Each line is its own id'd copy so
+                    // it gets a clean MarqueeText restart per track.
                     VStack(alignment: .leading, spacing: 0) {
-                        MarqueeText(text: track?.title ?? "—", font: FxFont.titleTrack, color: FX.text)
+                        cascadeLine(delay: 0.08) {
+                            MarqueeText(text: track?.title ?? "—", font: FxFont.titleTrack, color: FX.text)
+                        }
                         if let sub = trackSubtitle {
-                            MarqueeText(text: sub, font: FxFont.metaTrack, color: palette.accent)
+                            cascadeLine(delay: 0.16) {
+                                MarqueeText(text: sub, font: FxFont.metaTrack, color: palette.accent)
+                            }
                         }
                     }
                     if hasControls { transportActions }
@@ -191,28 +214,41 @@ struct GroupCard: View {
         .padding(Space.xl)
     }
 
+    /// FX-79: wraps one now-playing text line so it cross-fades + slides
+    /// top-to-bottom on a track change. New text enters from just above and
+    /// settles downward; old text continues downward as it fades — both lines
+    /// move the same direction. `delay` staggers the lines into a slight cascade.
+    @ViewBuilder
+    private func cascadeLine<Content: View>(delay: Double, @ViewBuilder _ content: () -> Content) -> some View {
+        ZStack(alignment: .topLeading) {
+            content()
+                .id(trackKey)
+                .transition(.asymmetric(
+                    insertion: .opacity.combined(with: .offset(y: -10)),
+                    removal: .opacity.combined(with: .offset(y: 10))
+                ))
+        }
+        .animation(.smooth(duration: 0.42).delay(delay), value: trackKey)
+    }
+
     private var trackSubtitle: String? {
         let parts = [track?.artist, track?.album].compactMap { $0 }.filter { !$0.isEmpty }
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
-    /// 100pt cover — the web mweb `.fx-group-media-art` (desktop 150, ≤600px 100).
+    /// 100pt cover — the web `.fx-group-media-art` (desktop 150, ≤600px 100).
+    /// FX-79: a `FlippingAlbumArt` that 3D-flips to the incoming cover on a track
+    /// change (keyed internally on the art URL), revealing the new art on its
+    /// back face. The source glyph is the no-cover fallback, exactly as before.
     private var albumArt: some View {
-        let url = hasMedia ? track?.artUrl.flatMap(URL.init(string:)) : nil
-        return RoundedRectangle(cornerRadius: Radius.art, style: .continuous)
-            .fill(FX.surface2)
-            .frame(width: 100, height: 100)
-            .overlay {
-                if let url {
-                    AsyncImage(url: url) { phase in
-                        if case .success(let image) = phase { image.resizable().scaledToFill() }
-                        else { sourceGlyph }
-                    }
-                } else { sourceGlyph }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: Radius.art, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.art, style: .continuous).strokeBorder(FX.line, lineWidth: 1))
-            .shadow(color: .black.opacity(colorScheme == .dark ? 0.45 : 0.12), radius: 10, y: 4)
+        FlippingAlbumArt(
+            artURL: hasMedia ? track?.artUrl : nil,
+            size: 100,
+            cornerRadius: Radius.art,
+            borderColor: FX.line,
+            shadow: (.black.opacity(colorScheme == .dark ? 0.45 : 0.12), 10, 4),
+            placeholder: AnyView(sourceGlyph)
+        )
     }
 
     private var sourceGlyph: some View {

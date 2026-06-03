@@ -27,6 +27,10 @@ struct BlurArtBackdrop: View {
 
     var body: some View {
         let fadeStart = dev.f("backdrop.fadeStart.\(m)", 0.0)
+        // FX-79: horizontal parallax on the crossfade — the outgoing cover slides
+        // off to the left while the incoming one enters from further right and
+        // glides left into place (paired with the opacity dissolve below).
+        let slide = dev.f("backdrop.slide.\(m)", 60)
         return GeometryReader { geo in
             ZStack {
                 AsyncImage(url: url) { phase in
@@ -56,10 +60,14 @@ struct BlurArtBackdrop: View {
                 Color.black.opacity(dev.d("backdrop.scrim.\(m)", 0.0))
             }
         }
-        // Fade between covers when the playing track (or the dev album chooser)
-        // changes, so the backdrop crossfades rather than hard-cutting.
+        // Crossfade + horizontal parallax between covers when the playing track
+        // (or the dev album chooser) changes: incoming enters from the right and
+        // slides left, outgoing slides further left as it fades.
         .id(url)
-        .transition(.opacity)
+        .transition(.asymmetric(
+            insertion: .opacity.combined(with: .offset(x: slide)),
+            removal: .opacity.combined(with: .offset(x: -slide))
+        ))
         .allowsHitTesting(false)
     }
 }
