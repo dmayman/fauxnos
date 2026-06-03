@@ -217,15 +217,15 @@ struct LiftToRegroup: ViewModifier {
             }
     }
 
-    /// The "what was here" slot left behind while the device floats: an adaptive
-    /// translucent neutral (`Color(.label).opacity(0.15)` — black in light, white
-    /// in dark) so the slot reads cleanly over any album-art backdrop without
-    /// clashing. No border, no shadow. A single card leaves a card-radius rounded
-    /// rect; a multi-card row leaves a full pill (web `border-radius: 999px`) so
-    /// the gap reads as a device slot.
+    /// The "what was here" slot left behind while the device floats: a barely-there
+    /// adaptive translucent neutral (`Color(.label).opacity(0.07)` — black in light,
+    /// white in dark) that just whispers the slot over the card tint showing through,
+    /// without clashing against any album-art backdrop. No border, no shadow. A
+    /// single card leaves a card-radius rounded rect; a multi-card row leaves a full
+    /// pill (web `border-radius: 999px`) so the gap reads as a device slot.
     @ViewBuilder
     private var placeholder: some View {
-        let fill = Color(.label).opacity(0.15)
+        let fill = Color(.label).opacity(0.07)
         if inPlace {
             RoundedRectangle(cornerRadius: Radius.card, style: .circular).fill(fill)
         } else {
