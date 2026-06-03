@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fauxnos · Dev Control</title>
+<!--
+  Fauxnos dev-control surface (FX-77).
+
+  A standalone Mac tuning page that drives the iOS app's `DevControl` bus live.
+  It connects to the same mosquitto websocket listener the app uses
+  (ws://<host>:9001) and PUBLISHES a retained snapshot to `dev/control/state` on
+  every change:
+
+      { "numbers": { "backdrop.blur": 60, ... }, "strings": { "demo.art": "…" } }
+
+  The app subscribes to that topic in DEBUG only (see DevControl.swift +
+  FauxnosStore), merges the values, and re-renders the backdrop / card tint
+  live on your device. Release builds never see this traffic — every knob falls
+  back to its baked default, so nothing here ships.
+
+  Retained publish means a freshly-launched (or reconnected) app immediately
+  picks up the current state without you touching a slider.
+
+  USAGE: open this file in a browser on your Mac (File ▸ Open, or `open
+  ios/devtools/dev-control.html`). Your Mac and your iOS device must be on the
+  same LAN as the Fauxnos server. Drag a slider → watch the phone update.
+
+  EXTENDING IT: this is a general dev-control surface, not backdrop-specific.
+  Add a knob by appending to SCHEMA below and reading the same dotted key in a
+  SwiftUI view via `DevControl.shared.d("your.key", fallback)`. No app plumbing
+  changes needed.
+-->
+<style>
+  :root {
+    --bg: #0b0b0c; --panel: #161618; --line: #2a2a2e; --text: #ececf0;
+    --muted: #9a9aa2; --accent: #6ea8fe;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 20px; max-width: 720px; margin: 0 auto;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 16px; font-size: 12px; }
+  .bar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 10px 12px; margin-bottom: 16px; position: sticky; top: 8px; z-index: 5;
+  }
+  .bar input[type=text] {
+    background: #0e0e10; border: 1px solid var(--line); color: var(--text);
+    border-radius: 8px; padding: 6px 8px; width: 170px;
+  }
+  button {
+    background: #232327; color: var(--text); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 13px;
+  }
+  button:hover { background: #2c2c31; }
+  button.primary { background: var(--accent); color: #0b0b0c; border-color: var(--accent); font-weight: 600; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #d4736b; display: inline-block; }
+  .dot.ok { background: #7bb186; }
+  section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 12px 14px; margin-bottom: 14px;
+  }
+  section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  .row { display: grid; grid-template-columns: 130px 1fr 56px; gap: 10px; align-items: center; margin: 7px 0; }
+  .row label { font-size: 13px; }
+  .row input[type=range] { width: 100%; accent-color: var(--accent); }
+  .row .val { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); }
+  .row .toggle { justify-self: start; }
+  .grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; max-height: 280px; overflow: auto; }
+  .grid button { padding: 0; border-radius: 8px; overflow: hidden; aspect-ratio: 1; border: 2px solid transparent; }
+  .grid button.active { border-color: var(--accent); }
+  .grid img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .chooser-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .chooser-head input { flex: 1; background: #0e0e10; border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 6px 8px; }
+  textarea { width: 100%; background: #0e0e10; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: 12px/1.4 ui-monospace, monospace; }
+</style>
+</head>
+<body>
+  <h1>Fauxnos · Dev Control</h1>
+  <p class="sub">Live tuning for the album-art backdrop (FX-77). Publishes to <code>dev/control/state</code>; the app applies it in DEBUG.</p>
+
+  <div class="bar">
+    <span id="dot" class="dot"></span>
+    <span id="status">connecting…</span>
+    <input id="host" type="text" value="fauxnos.local" title="Broker host" />
+    <button id="reconnect">Reconnect</button>
+    <span style="flex:1"></span>
+    <button id="copy">Copy JSON</button>
+    <button id="reset">Reset defaults</button>
+  </div>
+
+  <div id="sections"></div>
+
+  <section>
+    <h2>Album chooser — backdrop + card tint</h2>
+    <div class="chooser-head">
+      <input id="search" type="text" placeholder="Search albums (e.g. 'jazz', artist, title)…" />
+      <button id="searchBtn">Search</button>
+      <button id="clearArt">Use live cover</button>
+    </div>
+    <div id="grid" class="grid"></div>
+  </section>
+
+  <section>
+    <h2>Current snapshot</h2>
+    <textarea id="json" rows="10" readonly></textarea>
+  </section>
+
+<script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+<script>
+// ── Schema ───────────────────────────────────────────────────────────────────
+// Each knob: dotted key, label, [min, max, step], default. `toggle:true` renders
+// a 0/1 switch. Grouped into sections. Add a row here + read the key in SwiftUI.
+const SCHEMA = [
+  { title: "Backdrop — blurred album art", knobs: [
+    { key: "backdrop.enabled",   label: "Show backdrop", toggle: true, def: 1 },
+    { key: "backdrop.blur",      label: "Blur radius",   range: [0, 120, 1],     def: 60 },
+    { key: "backdrop.scale",     label: "Scale",         range: [1, 2, 0.01],    def: 1.3 },
+    { key: "backdrop.opacity",   label: "Art opacity",   range: [0, 1, 0.01],    def: 0.85 },
+    { key: "backdrop.scrim",     label: "Dark scrim",    range: [0, 0.9, 0.01],  def: 0 },
+    { key: "backdrop.fadeStart", label: "Fade start",    range: [0, 0.9, 0.01],  def: 0 },
+    { key: "backdrop.fadeEnd",   label: "Fade end",      range: [0.1, 1, 0.01],  def: 0.7 },
+  ]},
+  { title: "Cards over the backdrop (transparency)", knobs: [
+    { key: "card.media.opacity",  label: "Media card α",  range: [0, 1, 0.01],   def: 1 },
+    { key: "card.device.opacity", label: "Device card α", range: [0, 1, 0.01],   def: 1 },
+  ]},
+  { title: "Card tint (album-derived, dark mode)", knobs: [
+    { key: "card.tint.lightness",   label: "Media tint L",  range: [0.05, 0.5, 0.005], def: 0.33 },
+    { key: "card.device.lightness", label: "Device tint L", range: [0.05, 0.5, 0.005], def: 0.19 },
+    { key: "tint.chroma",           label: "Tint chroma",   range: [0, 0.2, 0.005],    def: 0.035 },
+  ]},
+  { title: "Accent (text · play · slider fill)", knobs: [
+    { key: "accent.lightness", label: "Accent L",     range: [0.4, 0.95, 0.01], def: 0.80 },
+    { key: "accent.chroma",    label: "Accent chroma", range: [0, 0.3, 0.005],  def: 0.11 },
+    { key: "track.alpha",      label: "Track α",      range: [0, 0.4, 0.005],   def: 0.12 },
+  ]},
+];
+
+const DEFAULTS = {};
+SCHEMA.forEach(s => s.knobs.forEach(k => DEFAULTS[k.key] = k.def));
+
+// ── State ──────────────────────────────────────────────────────────────────
+const state = { numbers: { ...DEFAULTS }, strings: {} };
+
+// ── MQTT ─────────────────────────────────────────────────────────────────────
+let client = null;
+function connect() {
+  if (client) { try { client.end(true); } catch {} }
+  const host = document.getElementById("host").value.trim() || "fauxnos.local";
+  setStatus(false, "connecting…");
+  client = mqtt.connect(`ws://${host}:9001`, { reconnectPeriod: 2000, connectTimeout: 4000 });
+  client.on("connect", () => { setStatus(true, `connected · ${host}`); publish(); });
+  client.on("reconnect", () => setStatus(false, "reconnecting…"));
+  client.on("error", (e) => setStatus(false, "error: " + (e && e.message || e)));
+  client.on("close", () => setStatus(false, "disconnected"));
+}
+function setStatus(ok, text) {
+  document.getElementById("dot").className = "dot" + (ok ? " ok" : "");
+  document.getElementById("status").textContent = text;
+}
+function publish() {
+  const payload = JSON.stringify({ numbers: state.numbers, strings: state.strings });
+  document.getElementById("json").value = JSON.stringify(state, null, 2);
+  if (client && client.connected) {
+    // Retain so a freshly-launched app picks up the current look immediately.
+    client.publish("dev/control/state", payload, { retain: true });
+  }
+}
+
+// ── Render sliders ───────────────────────────────────────────────────────────
+function render() {
+  const root = document.getElementById("sections");
+  root.innerHTML = "";
+  for (const sec of SCHEMA) {
+    const el = document.createElement("section");
+    el.innerHTML = `<h2>${sec.title}</h2>`;
+    for (const k of sec.knobs) {
+      const row = document.createElement("div");
+      row.className = "row";
+      if (k.toggle) {
+        row.innerHTML = `<label>${k.label}</label>
+          <input class="toggle" type="checkbox" ${state.numbers[k.key] ? "checked" : ""}/>
+          <span class="val"></span>`;
+        const cb = row.querySelector("input");
+        cb.addEventListener("change", () => { state.numbers[k.key] = cb.checked ? 1 : 0; publish(); });
+      } else {
+        const [min, max, step] = k.range;
+        row.innerHTML = `<label>${k.label}</label>
+          <input type="range" min="${min}" max="${max}" step="${step}" value="${state.numbers[k.key]}"/>
+          <span class="val">${(+state.numbers[k.key]).toFixed(step < 0.1 ? 3 : 2)}</span>`;
+        const rng = row.querySelector("input");
+        const val = row.querySelector(".val");
+        rng.addEventListener("input", () => {
+          state.numbers[k.key] = parseFloat(rng.value);
+          val.textContent = (+rng.value).toFixed(step < 0.1 ? 3 : 2);
+          publish();
+        });
+      }
+      el.appendChild(row);
+    }
+    root.appendChild(el);
+  }
+}
+
+// ── Album chooser (iTunes Search API — no auth, 600px covers) ─────────────────
+async function searchAlbums(term) {
+  const grid = document.getElementById("grid");
+  grid.innerHTML = "<span style='color:var(--muted)'>searching…</span>";
+  try {
+    const r = await fetch(`https://itunes.apple.com/search?term=${encodeURIComponent(term)}&entity=album&limit=30`);
+    const { results } = await r.json();
+    grid.innerHTML = "";
+    results.forEach(it => {
+      if (!it.artworkUrl100) return;
+      const art = it.artworkUrl100.replace("100x100bb", "600x600bb");
+      const b = document.createElement("button");
+      b.title = `${it.collectionName} — ${it.artistName}`;
+      b.innerHTML = `<img src="${it.artworkUrl100.replace("100x100bb","200x200bb")}" loading="lazy"/>`;
+      b.addEventListener("click", () => {
+        document.querySelectorAll("#grid button").forEach(x => x.classList.remove("active"));
+        b.classList.add("active");
+        state.strings["demo.art"] = art;
+        state.strings["demo.title"] = it.collectionName || "";
+        state.strings["demo.artist"] = it.artistName || "";
+        publish();
+      });
+      grid.appendChild(b);
+    });
+  } catch (e) {
+    grid.innerHTML = "<span style='color:var(--muted)'>search failed: " + e.message + "</span>";
+  }
+}
+
+// ── Wire up ──────────────────────────────────────────────────────────────────
+document.getElementById("reconnect").addEventListener("click", connect);
+document.getElementById("searchBtn").addEventListener("click", () => searchAlbums(document.getElementById("search").value || "jazz"));
+document.getElementById("search").addEventListener("keydown", e => { if (e.key === "Enter") searchAlbums(e.target.value || "jazz"); });
+document.getElementById("clearArt").addEventListener("click", () => {
+  // Empty string clears the key on the app side → back to the live cover.
+  state.strings["demo.art"] = ""; state.strings["demo.title"] = ""; state.strings["demo.artist"] = "";
+  document.querySelectorAll("#grid button").forEach(x => x.classList.remove("active"));
+  publish();
+});
+document.getElementById("reset").addEventListener("click", () => {
+  state.numbers = { ...DEFAULTS }; state.strings = {};
+  render(); publish();
+});
+document.getElementById("copy").addEventListener("click", () => {
+  navigator.clipboard.writeText(JSON.stringify(state, null, 2));
+});
+
+render();
+connect();
+searchAlbums("indie");
+</script>
+</body>
+</html>

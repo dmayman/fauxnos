@@ -54,14 +54,21 @@ final class FauxnosStore: ObservableObject {
 
     /// Topics mirror the set the web `useMqtt` hook subscribes to. The 5-part
     /// calibration topic carries `source_id` in its tail.
-    private let subscriptions = [
-        "status/clients/+/hello",
-        "status/clients/+/mode",
-        "status/clients/+/volume",
-        "status/clients/+/track",
-        "status/clients/+/playback",
-        "status/clients/+/calibration/+",
-    ]
+    private var subscriptions: [String] {
+        var topics = [
+            "status/clients/+/hello",
+            "status/clients/+/mode",
+            "status/clients/+/volume",
+            "status/clients/+/track",
+            "status/clients/+/playback",
+            "status/clients/+/calibration/+",
+        ]
+        #if DEBUG
+        // FX-77 dev control bus: a Mac tuning page publishes here; never shipped.
+        topics.append("dev/control/state")
+        #endif
+        return topics
+    }
 
     private static let decoder: JSONDecoder = {
         let d = JSONDecoder()
@@ -144,6 +151,22 @@ final class FauxnosStore: ObservableObject {
     /// is `status/clients/<deviceId>/<action>[/<sourceId>]`.
     private func handle(topic: String, payload: Data) {
         let parts = topic.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        #if DEBUG
+        // FX-77 dev control bus (`dev/control/state`) — merge the Mac tuning
+        // snapshot, and apply a chosen demo album to the playing card so its
+        // tint tracks too (the backdrop reads `demo.art` directly regardless).
+        if parts.first == "dev" {
+            if parts.count >= 3, parts[1] == "control", parts[2] == "state" {
+                DevControlPayload.apply(payload, to: DevControl.shared)
+                if let art = DevControl.shared.s("demo.art") {
+                    applyDemoCover(art,
+                                   title: DevControl.shared.s("demo.title"),
+                                   artist: DevControl.shared.s("demo.artist"))
+                }
+            }
+            return
+        }
+        #endif
         guard parts.count >= 4 else { return }
         let deviceId = parts[2]
         let action = parts[3]
@@ -507,6 +530,26 @@ extension FauxnosStore {
         store.mqttConnected = connected
         store.lastUpdated = Date()
         return store
+    }
+
+    /// FX-77 album chooser: swap the playing group's cover art so the backdrop +
+    /// card tint can be judged against any artwork without live Spotify. Same-file
+    /// because `tracks` is `private(set)`. No-op when nothing is playing — the
+    /// backdrop still renders the chosen URL directly (GroupsListView's `demo.art`
+    /// override), so backdrop tuning works regardless; only the card tint needs a
+    /// live playing card to track along. Driven from the Mac dev-control page.
+    func applyDemoCover(_ urlString: String, title: String? = nil, artist: String? = nil) {
+        guard let g = groups.first(where: { currentSource(of: $0) == "spotify" }),
+              let home = homeClientId(of: g) else { return }
+        AlbumArtColorStore.shared.ensure(urlString)
+        let t = tracks[home]
+        tracks[home] = Track(source: "spotify",
+                             title: title ?? t?.title ?? "Now Playing",
+                             artist: artist ?? t?.artist ?? "Demo Artist",
+                             album: t?.album,
+                             artUrl: urlString,
+                             durationMs: t?.durationMs ?? 240_000,
+                             uri: nil)
     }
 }
 #endif

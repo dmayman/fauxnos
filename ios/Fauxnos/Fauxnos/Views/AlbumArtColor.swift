@@ -107,18 +107,30 @@ private func clamp(_ lo: Double, _ v: Double, _ hi: Double) -> Double { max(lo, 
 
 /// Project a raw extracted OKLCH color onto a card-ready palette, applying the
 /// mode-specific legibility clamps. Mirrors `buildArtTokens`.
+///
+/// FX-77: the dark-mode branch reads its knobs from `DevControl` so a Mac
+/// tuning page can dial them live (release falls back to the baked constants).
+/// Per the user's note that the OKLCH min/max bands weren't useful, each former
+/// clamp pair collapses to a SINGLE value: lightness becomes a fixed target,
+/// chroma becomes a single ceiling (`min(source, cap)`) so saturated covers are
+/// capped while neutral covers still read muted. Light mode keeps the original
+/// clamp math untouched — the backdrop tuning targets the (primary) dark look.
 func buildArtPalette(from raw: OKLCH, dark: Bool) -> ArtPalette {
     if dark {
-        let accentL = clamp(Tune.accentLminDark, raw.l, Tune.accentLmaxDark)
-        let accentC = clamp(Tune.accentCmin, raw.c, Tune.accentCmax)
-        let tintC = clamp(Tune.cardTintCminDark, raw.c, Tune.cardTintCmaxDark)
+        let dev = DevControl.shared
+        let accentL = dev.d("accent.lightness", 0.80)            // was clamp(0.77…0.85)
+        let accentC = min(raw.c, dev.d("accent.chroma", 0.11))   // was clamp(0.075…0.11)
+        let tintC   = min(raw.c, dev.d("tint.chroma", 0.035))    // was clamp(0.005…0.035)
+        let cardL   = dev.d("card.tint.lightness", Tune.cardTintLDark)
+        let innerL  = dev.d("card.device.lightness", Tune.innerSurfaceLDark)
+        let trackA  = dev.d("track.alpha", Tune.trackAlphaDark)
         let accent = OKLCH(l: accentL, c: accentC, h: raw.h)
         return ArtPalette(
             accent: oklchToColor(accent),
             accentSoft: oklchToColor(accent, alpha: 0.18),
-            cardTint: oklchToColor(OKLCH(l: Tune.cardTintLDark, c: tintC, h: raw.h)),
-            innerSurface: oklchToColor(OKLCH(l: Tune.innerSurfaceLDark, c: tintC, h: raw.h)),
-            trackTint: oklchToColor(accent, alpha: Tune.trackAlphaDark),
+            cardTint: oklchToColor(OKLCH(l: cardL, c: tintC, h: raw.h)),
+            innerSurface: oklchToColor(OKLCH(l: innerL, c: tintC, h: raw.h)),
+            trackTint: oklchToColor(accent, alpha: trackA),
             placeholderTint: oklchToColor(OKLCH(l: Tune.placeholderLDark, c: tintC, h: raw.h))
         )
     }

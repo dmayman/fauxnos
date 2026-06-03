@@ -17,20 +17,42 @@ import SwiftUI
 struct GroupsListView: View {
     @EnvironmentObject private var store: FauxnosStore
     @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject private var dev = DevControl.shared   // FX-77 backdrop tuning
     @StateObject private var dragController = CardDragController()
+
+    /// FX-77: the cover of the top playing group, rendered full-bleed behind the
+    /// whole list as a blurred backdrop the translucent cards float over. nil when
+    /// nothing is playing (or the backdrop is toggled off). In DEBUG, the Mac
+    /// album chooser (`demo.art`) overrides the live cover so the look can be
+    /// tuned against any artwork without live Spotify.
+    private var backdropArtURL: URL? {
+        guard dev.b("backdrop.enabled", true) else { return nil }
+        #if DEBUG
+        if let demo = dev.s("demo.art"), let url = URL(string: demo) { return url }
+        #endif
+        for g in store.displayGroups where store.currentSource(of: g) == "spotify" {
+            if let t = store.track(for: g), t.hasMeta,
+               let s = t.artUrl, let url = URL(string: s) { return url }
+        }
+        return nil
+    }
 
     var body: some View {
         NavigationStack {
             content
-                // Background tints when a grouped device is dragged over empty
-                // space, marking it as the "drop to remove from group" zone.
+                // FX-77 full-bleed blurred album-art backdrop, beneath the
+                // drag-hover tint. The translucent cards above float over it.
                 .background {
                     ZStack {
                         FX.bg
+                        if let url = backdropArtURL { BlurArtBackdrop(url: url) }
+                        // Tints when a grouped device is dragged over empty space,
+                        // marking the "drop to remove from group" zone.
                         FX.text.opacity(dragController.hoverBackground ? 0.07 : 0)
                     }
                     .ignoresSafeArea()
                     .animation(.fxEase, value: dragController.hoverBackground)
+                    .animation(.fxEase, value: backdropArtURL)
                 }
                 .navigationTitle("Fauxnos")
                 .toolbar {

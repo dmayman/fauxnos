@@ -26,6 +26,7 @@ struct GroupCard: View {
     @EnvironmentObject private var store: FauxnosStore
     @EnvironmentObject private var dragController: CardDragController
     @ObservedObject private var artStore = AlbumArtColorStore.shared
+    @ObservedObject private var dev = DevControl.shared   // FX-77 backdrop tuning
     @Environment(\.colorScheme) private var colorScheme
     let group: SpeakerGroup
 
@@ -141,7 +142,10 @@ struct GroupCard: View {
 
     @ViewBuilder
     private var outerBackground: some View {
-        if hasMedia { palette.cardTint }       // V1/V3
+        // FX-77: on a media card the tint goes translucent (default 1.0 = opaque,
+        // unchanged) so the blurred album backdrop behind the list shows through.
+        // Idle / empty cards stay solid — the backdrop only renders while playing.
+        if hasMedia { palette.cardTint.opacity(dev.d("card.media.opacity", 1.0)) }  // V1/V3
         else if isEmptyMedia { FX.surface2 }   // V4
         else { FX.surface1 }                   // V2
     }
@@ -339,8 +343,10 @@ struct GroupCard: View {
         // doubling the outer card border. V2 (no media) keeps a plain body.
         .background {
             if showMediaCard {
+                // FX-77: device sub-card fill also goes translucent (default 1.0)
+                // so the backdrop reads through it independently of the outer tint.
                 rowsPanelShape
-                    .fill(palette.innerSurface)
+                    .fill(palette.innerSurface.opacity(dev.d("card.device.opacity", 1.0)))
                     .shadow(color: .black.opacity(colorScheme == .dark ? 0.28 : 0.08), radius: 6, y: 4)
             }
         }
