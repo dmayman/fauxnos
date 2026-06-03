@@ -149,9 +149,6 @@ struct LiftToRegroup: ViewModifier {
     /// Single cards lift in place (the card is already a device card); rows lift
     /// centered under the finger (the preview is a synthesized device card).
     let inPlace: Bool
-    /// Fill tint for the slot placeholder (web `.is-drag-placeholder` is surface3;
-    /// a media card's device sub-panel passes its album tint instead).
-    let placeholderTint: Color
     /// True when the float is a pixel match for the lifted element (V2 whole card),
     /// so the return hard-swaps; false (media device-panel, multi row) crossfades.
     let matchesSource: Bool
@@ -220,16 +217,19 @@ struct LiftToRegroup: ViewModifier {
             }
     }
 
-    /// The "what was here" slot left behind while the device floats — the web
-    /// `.is-drag-placeholder`: a flat `surface3` fill, no border, no shadow.
-    /// A single card leaves a card-radius rounded rect; a multi-card row leaves a
-    /// full pill (web `border-radius: 999px`) so the gap reads as a device slot.
+    /// The "what was here" slot left behind while the device floats: an adaptive
+    /// translucent neutral (`Color(.label).opacity(0.15)` — black in light, white
+    /// in dark) so the slot reads cleanly over any album-art backdrop without
+    /// clashing. No border, no shadow. A single card leaves a card-radius rounded
+    /// rect; a multi-card row leaves a full pill (web `border-radius: 999px`) so
+    /// the gap reads as a device slot.
     @ViewBuilder
     private var placeholder: some View {
+        let fill = Color(.label).opacity(0.15)
         if inPlace {
-            RoundedRectangle(cornerRadius: Radius.card, style: .circular).fill(placeholderTint)
+            RoundedRectangle(cornerRadius: Radius.card, style: .circular).fill(fill)
         } else {
-            Capsule().fill(placeholderTint)
+            Capsule().fill(fill)
         }
     }
 
@@ -370,10 +370,10 @@ extension View {
     /// Passing a nil client is a no-op, so callers can gate inline.
     @ViewBuilder
     func liftToRegroup(client: SnapClient?, groupId: String, inPlace: Bool,
-                       placeholderTint: Color = FX.surface3, matchesSource: Bool = true) -> some View {
+                       matchesSource: Bool = true) -> some View {
         if let client {
             modifier(LiftToRegroup(client: client, groupId: groupId, inPlace: inPlace,
-                                   placeholderTint: placeholderTint, matchesSource: matchesSource))
+                                   matchesSource: matchesSource))
         } else {
             self
         }

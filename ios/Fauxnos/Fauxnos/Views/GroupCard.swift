@@ -372,12 +372,12 @@ struct GroupCard: View {
         }
         // On a single + media card (V3) the device sub-panel is its own draggable
         // entity, with the same lift behaviors as a standalone device card — the
-        // media region above is not a grab target. The slot placeholder is tinted
-        // with the album color; the float is a synthesized single-device card so
-        // the return crossfades (matchesSource: false) rather than hard-swapping.
+        // media region above is not a grab target. The slot placeholder is an
+        // adaptive translucent neutral (see CardDrag.placeholder); the float is a
+        // synthesized single-device card so the return crossfades
+        // (matchesSource: false) rather than hard-swapping.
         .liftToRegroup(client: (!isMulti && showMediaCard) ? clients.first : nil,
-                       groupId: group.id, inPlace: true,
-                       placeholderTint: palette.placeholderTint, matchesSource: false)
+                       groupId: group.id, inPlace: true, matchesSource: false)
     }
 
     /// The floating rows panel outline — rounded top corners only; the bottom

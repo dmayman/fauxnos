@@ -38,7 +38,6 @@ struct ArtPalette: Equatable {
     var cardTint: Color        // outer card background tint (web --art-card-tint)
     var innerSurface: Color    // floating rows sub-card bg (web --art-inner-surface)
     var trackTint: Color
-    var placeholderTint: Color // drag-slot well: a darker shade of the card tint
 
     /// Neutral palette for idle / no-art / extraction-failed cards.
     static let neutral = ArtPalette(
@@ -46,8 +45,7 @@ struct ArtPalette: Equatable {
         accentSoft: FX.surface3,
         cardTint: FX.surface1,
         innerSurface: FX.surface1,
-        trackTint: FX.surface3,
-        placeholderTint: FX.surface3
+        trackTint: FX.surface3
     )
 }
 
@@ -98,9 +96,6 @@ private enum Tune {
     static let accentCmin = 0.075, accentCmax = 0.11
     static let trackAlphaDark = 0.12, trackAlphaLight = 0.19
     static let innerSurfaceLDark = 0.19
-    // Drag-slot placeholder: a darker shade of the card tint (cardTint L is
-    // 0.33 dark / 0.95 light) so the empty slot reads as a recessed well.
-    static let placeholderLDark = 0.24, placeholderLLight = 0.88
 }
 
 /// Project a raw extracted OKLCH color onto a card-ready palette.
@@ -133,14 +128,12 @@ func buildArtPalette(from raw: OKLCH, dark: Bool) -> ArtPalette {
     let deviceC = min(raw.c, k("device.chroma", 0.0))          // neutral gray both modes
 
     let accent = OKLCH(l: accentL, c: accentC, h: raw.h)
-    let placeholderL = dark ? Tune.placeholderLDark : Tune.placeholderLLight
     return ArtPalette(
         accent: oklchToColor(accent),
         accentSoft: oklchToColor(accent, alpha: dark ? 0.18 : 0.10),
         cardTint: oklchToColor(OKLCH(l: mediaL, c: mediaC, h: raw.h)),
         innerSurface: oklchToColor(OKLCH(l: deviceL, c: deviceC, h: raw.h)),
-        trackTint: oklchToColor(accent, alpha: trackA),
-        placeholderTint: oklchToColor(OKLCH(l: placeholderL, c: mediaC, h: raw.h))
+        trackTint: oklchToColor(accent, alpha: trackA)
     )
 }
 
