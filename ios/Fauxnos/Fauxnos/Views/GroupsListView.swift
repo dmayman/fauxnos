@@ -26,7 +26,7 @@ struct GroupsListView: View {
     /// album chooser (`demo.art`) overrides the live cover so the look can be
     /// tuned against any artwork without live Spotify.
     private var backdropArtURL: URL? {
-        guard dev.b("backdrop.enabled", true) else { return nil }
+        guard dev.b("backdrop.enabled.\(colorScheme == .dark ? "dark" : "light")", true) else { return nil }
         #if DEBUG
         if let demo = dev.s("demo.art"), let url = URL(string: demo) { return url }
         #endif

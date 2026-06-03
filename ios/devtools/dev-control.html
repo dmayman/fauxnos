@@ -12,24 +12,26 @@
   (ws://<host>:9001) and PUBLISHES a retained snapshot to `dev/control/state` on
   every change:
 
-      { "numbers": { "backdrop.blur": 60, ... }, "strings": { "demo.art": "…" } }
+      { "numbers": { "backdrop.blur.dark": 52, ... }, "strings": { "demo.art": "…" } }
 
-  The app subscribes to that topic in DEBUG only (see DevControl.swift +
-  FauxnosStore), merges the values, and re-renders the backdrop / card tint
-  live on your device. Release builds never see this traffic — every knob falls
-  back to its baked default, so nothing here ships.
+  Every numeric knob is MODE-SCOPED — its key is `<base>.<mode>` (dark / light) —
+  so dark and light tune independently. The Dark/Light toggle picks which mode
+  the sliders edit; the published snapshot always carries BOTH modes, so the app
+  reacts immediately when you flip your device's appearance.
 
-  Retained publish means a freshly-launched (or reconnected) app immediately
-  picks up the current state without you touching a slider.
+  The app subscribes to that topic in DEBUG only (DevControl.swift + FauxnosStore),
+  merges the values, and re-renders the backdrop / card tint live. Release builds
+  never see this traffic — every knob falls back to its baked default, so nothing
+  here ships. Retained publish means a freshly-launched app picks up the current
+  look immediately.
 
-  USAGE: open this file in a browser on your Mac (File ▸ Open, or `open
-  ios/devtools/dev-control.html`). Your Mac and your iOS device must be on the
-  same LAN as the Fauxnos server. Drag a slider → watch the phone update.
+  USAGE: open this file in a browser on your Mac (`open ios/devtools/dev-control.html`).
+  Mac + iOS device must share the LAN with the Fauxnos server. Drag a slider →
+  the phone updates.
 
-  EXTENDING IT: this is a general dev-control surface, not backdrop-specific.
-  Add a knob by appending to SCHEMA below and reading the same dotted key in a
-  SwiftUI view via `DevControl.shared.d("your.key", fallback)`. No app plumbing
-  changes needed.
+  EXTENDING IT: general dev-control surface, not backdrop-specific. Add a knob by
+  appending to SCHEMA (with per-mode defaults) and reading `<base>.<mode>` in a
+  SwiftUI view via `DevControl.shared.d("your.key.\(mode)", fallback)`.
 -->
 <style>
   :root {
@@ -51,14 +53,16 @@
   }
   .bar input[type=text] {
     background: #0e0e10; border: 1px solid var(--line); color: var(--text);
-    border-radius: 8px; padding: 6px 8px; width: 170px;
+    border-radius: 8px; padding: 6px 8px; width: 150px;
   }
   button {
     background: #232327; color: var(--text); border: 1px solid var(--line);
     border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 13px;
   }
   button:hover { background: #2c2c31; }
-  button.primary { background: var(--accent); color: #0b0b0c; border-color: var(--accent); font-weight: 600; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; }
+  .seg button.active { background: var(--accent); color: #0b0b0c; font-weight: 600; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: #d4736b; display: inline-block; }
   .dot.ok { background: #7bb186; }
   section {
@@ -66,11 +70,17 @@
     padding: 12px 14px; margin-bottom: 14px;
   }
   section h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
-  .row { display: grid; grid-template-columns: 130px 1fr 56px; gap: 10px; align-items: center; margin: 7px 0; }
+  .row { display: grid; grid-template-columns: 130px 1fr 52px 24px; gap: 10px; align-items: center; margin: 7px 0; }
   .row label { font-size: 13px; }
   .row input[type=range] { width: 100%; accent-color: var(--accent); }
   .row .val { font-variant-numeric: tabular-nums; text-align: right; color: var(--muted); }
   .row .toggle { justify-self: start; }
+  .row .reset {
+    padding: 2px 0; width: 24px; text-align: center; line-height: 1;
+    color: var(--muted); font-size: 13px; background: transparent; border-color: transparent;
+  }
+  .row .reset:hover { background: #2c2c31; color: var(--text); border-color: var(--line); }
+  .row .reset:disabled { opacity: .25; cursor: default; background: transparent; }
   .grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; max-height: 280px; overflow: auto; }
   .grid button { padding: 0; border-radius: 8px; overflow: hidden; aspect-ratio: 1; border: 2px solid transparent; }
   .grid button.active { border-color: var(--accent); }
@@ -78,11 +88,12 @@
   .chooser-head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
   .chooser-head input { flex: 1; background: #0e0e10; border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 6px 8px; }
   textarea { width: 100%; background: #0e0e10; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 8px; font: 12px/1.4 ui-monospace, monospace; }
+  .hint { color: var(--muted); font-size: 11px; margin: -4px 0 8px; }
 </style>
 </head>
 <body>
   <h1>Fauxnos · Dev Control</h1>
-  <p class="sub">Live tuning for the album-art backdrop (FX-77). Publishes to <code>dev/control/state</code>; the app applies it in DEBUG.</p>
+  <p class="sub">Live tuning for the album-art backdrop (FX-77). Per-mode knobs publish to <code>dev/control/state</code>; the app applies them in DEBUG.</p>
 
   <div class="bar">
     <span id="dot" class="dot"></span>
@@ -90,9 +101,14 @@
     <input id="host" type="text" value="fauxnos.local" title="Broker host" />
     <button id="reconnect">Reconnect</button>
     <span style="flex:1"></span>
+    <span class="seg" id="modeSeg">
+      <button data-mode="dark" class="active">Dark</button>
+      <button data-mode="light">Light</button>
+    </span>
     <button id="copy">Copy JSON</button>
-    <button id="reset">Reset defaults</button>
+    <button id="reset">Reset</button>
   </div>
+  <p class="hint">Editing the <b id="modeLabel">dark</b>-mode knobs. Match your device's appearance to see these live. Both modes are always published.</p>
 
   <div id="sections"></div>
 
@@ -114,39 +130,50 @@
 <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
 <script>
 // ── Schema ───────────────────────────────────────────────────────────────────
-// Each knob: dotted key, label, [min, max, step], default. `toggle:true` renders
-// a 0/1 switch. Grouped into sections. Add a row here + read the key in SwiftUI.
+// Each knob: dotted BASE key (mode suffix added at publish time), label,
+// [min,max,step], and per-mode defaults (dark = dialed-in 2026-06-03, light =
+// prior look). `toggle:true` renders a 0/1 switch. Grouped into sections. Add a
+// row here + read `<base>.<mode>` in SwiftUI.
 const SCHEMA = [
   { title: "Backdrop — blurred album art", knobs: [
-    { key: "backdrop.enabled",   label: "Show backdrop", toggle: true, def: 1 },
-    { key: "backdrop.blur",      label: "Blur radius",   range: [0, 120, 1],     def: 60 },
-    { key: "backdrop.scale",     label: "Scale",         range: [1, 2, 0.01],    def: 1.3 },
-    { key: "backdrop.opacity",   label: "Art opacity",   range: [0, 1, 0.01],    def: 0.85 },
-    { key: "backdrop.scrim",     label: "Dark scrim",    range: [0, 0.9, 0.01],  def: 0 },
-    { key: "backdrop.fadeStart", label: "Fade start",    range: [0, 0.9, 0.01],  def: 0 },
-    { key: "backdrop.fadeEnd",   label: "Fade end",      range: [0.1, 1, 0.01],  def: 0.7 },
+    { key: "backdrop.enabled",   label: "Show backdrop", toggle: true, dark: 1, light: 1 },
+    { key: "backdrop.blur",      label: "Blur radius",   range: [0, 120, 1],    dark: 52,   light: 52 },
+    { key: "backdrop.scale",     label: "Scale",         range: [1, 2, 0.01],   dark: 1.25, light: 1.25 },
+    { key: "backdrop.opacity",   label: "Art opacity",   range: [0, 1, 0.01],   dark: 0.79, light: 0.74 },
+    { key: "backdrop.scrim",     label: "Dark scrim",    range: [0, 0.9, 0.01], dark: 0,    light: 0 },
+    { key: "backdrop.fadeStart", label: "Fade start",    range: [0, 0.9, 0.01], dark: 0,    light: 0 },
+    { key: "backdrop.fadeEnd",   label: "Fade end",      range: [0.1, 1, 0.01], dark: 0.6,  light: 0.79 },
   ]},
-  { title: "Cards over the backdrop (transparency)", knobs: [
-    { key: "card.media.opacity",  label: "Media card α",  range: [0, 1, 0.01],   def: 1 },
-    { key: "card.device.opacity", label: "Device card α", range: [0, 1, 0.01],   def: 1 },
+  { title: "Media card — over the backdrop", knobs: [
+    { key: "media.opacity",   label: "Fill α (transparency)", range: [0, 1, 0.01],     dark: 0.4,   light: 0.66 },
+    { key: "media.lightness", label: "Tint lightness",        range: [0.05, 1, 0.005], dark: 0.315, light: 1 },
+    { key: "media.chroma",    label: "Tint chroma",           range: [0, 0.2, 0.005],  dark: 0.03,  light: 0.025 },
   ]},
-  { title: "Card tint (album-derived, dark mode)", knobs: [
-    { key: "card.tint.lightness",   label: "Media tint L",  range: [0.05, 0.5, 0.005], def: 0.33 },
-    { key: "card.device.lightness", label: "Device tint L", range: [0.05, 0.5, 0.005], def: 0.19 },
-    { key: "tint.chroma",           label: "Tint chroma",   range: [0, 0.2, 0.005],    def: 0.035 },
+  { title: "Device sub-card — independent (chroma 0 = neutral gray)", knobs: [
+    { key: "device.opacity",   label: "Fill α (transparency)", range: [0, 1, 0.01],     dark: 0.29, light: 1 },
+    { key: "device.lightness", label: "Tint lightness",        range: [0.05, 1, 0.005], dark: 0.21, light: 1 },
+    { key: "device.chroma",    label: "Tint chroma",           range: [0, 0.2, 0.005],  dark: 0,    light: 0 },
   ]},
   { title: "Accent (text · play · slider fill)", knobs: [
-    { key: "accent.lightness", label: "Accent L",     range: [0.4, 0.95, 0.01], def: 0.80 },
-    { key: "accent.chroma",    label: "Accent chroma", range: [0, 0.3, 0.005],  def: 0.11 },
-    { key: "track.alpha",      label: "Track α",      range: [0, 0.4, 0.005],   def: 0.12 },
+    { key: "accent.lightness", label: "Accent L",      range: [0.4, 0.95, 0.01], dark: 0.81, light: 0.64 },
+    { key: "accent.chroma",    label: "Accent chroma", range: [0, 0.3, 0.005],   dark: 0.13, light: 0.105 },
+    { key: "track.alpha",      label: "Track α",       range: [0, 0.4, 0.005],   dark: 0.125, light: 0.19 },
   ]},
 ];
 
-const DEFAULTS = {};
-SCHEMA.forEach(s => s.knobs.forEach(k => DEFAULTS[k.key] = k.def));
+// Build the full mode-scoped defaults map: "<base>.dark" / "<base>.light".
+function buildDefaults() {
+  const d = {};
+  SCHEMA.forEach(s => s.knobs.forEach(k => {
+    d[`${k.key}.dark`]  = k.dark;
+    d[`${k.key}.light`] = k.light;
+  }));
+  return d;
+}
 
 // ── State ──────────────────────────────────────────────────────────────────
-const state = { numbers: { ...DEFAULTS }, strings: {} };
+let mode = "dark";
+const state = { numbers: buildDefaults(), strings: {} };
 
 // ── MQTT ─────────────────────────────────────────────────────────────────────
 let client = null;
@@ -173,35 +200,54 @@ function publish() {
   }
 }
 
-// ── Render sliders ───────────────────────────────────────────────────────────
+// ── Render sliders for the active mode ─────────────────────────────────────
+function fmt(step, v) { return (+v).toFixed(step < 0.1 ? 3 : 2); }
 function render() {
+  document.getElementById("modeLabel").textContent = mode;
   const root = document.getElementById("sections");
   root.innerHTML = "";
   for (const sec of SCHEMA) {
     const el = document.createElement("section");
     el.innerHTML = `<h2>${sec.title}</h2>`;
     for (const k of sec.knobs) {
+      const fullKey = `${k.key}.${mode}`;
+      const def = k[mode];                       // this knob's default for the active mode
       const row = document.createElement("div");
       row.className = "row";
+      const resetBtn = `<button class="reset" title="Reset to default (${def})">↺</button>`;
+      // syncReset() greys the button out when the value is already at default.
+      let syncReset = () => {};
       if (k.toggle) {
         row.innerHTML = `<label>${k.label}</label>
-          <input class="toggle" type="checkbox" ${state.numbers[k.key] ? "checked" : ""}/>
-          <span class="val"></span>`;
+          <input class="toggle" type="checkbox" ${state.numbers[fullKey] ? "checked" : ""}/>
+          <span class="val"></span>${resetBtn}`;
         const cb = row.querySelector("input");
-        cb.addEventListener("change", () => { state.numbers[k.key] = cb.checked ? 1 : 0; publish(); });
+        const reset = row.querySelector(".reset");
+        syncReset = () => { reset.disabled = (state.numbers[fullKey] ? 1 : 0) === (def ? 1 : 0); };
+        cb.addEventListener("change", () => { state.numbers[fullKey] = cb.checked ? 1 : 0; syncReset(); publish(); });
+        reset.addEventListener("click", () => {
+          state.numbers[fullKey] = def; cb.checked = !!def; syncReset(); publish();
+        });
       } else {
         const [min, max, step] = k.range;
         row.innerHTML = `<label>${k.label}</label>
-          <input type="range" min="${min}" max="${max}" step="${step}" value="${state.numbers[k.key]}"/>
-          <span class="val">${(+state.numbers[k.key]).toFixed(step < 0.1 ? 3 : 2)}</span>`;
+          <input type="range" min="${min}" max="${max}" step="${step}" value="${state.numbers[fullKey]}"/>
+          <span class="val">${fmt(step, state.numbers[fullKey])}</span>${resetBtn}`;
         const rng = row.querySelector("input");
         const val = row.querySelector(".val");
+        const reset = row.querySelector(".reset");
+        syncReset = () => { reset.disabled = parseFloat(rng.value) === def; };
         rng.addEventListener("input", () => {
-          state.numbers[k.key] = parseFloat(rng.value);
-          val.textContent = (+rng.value).toFixed(step < 0.1 ? 3 : 2);
-          publish();
+          state.numbers[fullKey] = parseFloat(rng.value);
+          val.textContent = fmt(step, rng.value);
+          syncReset(); publish();
+        });
+        reset.addEventListener("click", () => {
+          state.numbers[fullKey] = def; rng.value = def; val.textContent = fmt(step, def);
+          syncReset(); publish();
         });
       }
+      syncReset();
       el.appendChild(row);
     }
     root.appendChild(el);
@@ -238,6 +284,13 @@ async function searchAlbums(term) {
 }
 
 // ── Wire up ──────────────────────────────────────────────────────────────────
+document.querySelectorAll("#modeSeg button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    mode = btn.dataset.mode;
+    document.querySelectorAll("#modeSeg button").forEach(b => b.classList.toggle("active", b === btn));
+    render();
+  });
+});
 document.getElementById("reconnect").addEventListener("click", connect);
 document.getElementById("searchBtn").addEventListener("click", () => searchAlbums(document.getElementById("search").value || "jazz"));
 document.getElementById("search").addEventListener("keydown", e => { if (e.key === "Enter") searchAlbums(e.target.value || "jazz"); });
@@ -248,7 +301,7 @@ document.getElementById("clearArt").addEventListener("click", () => {
   publish();
 });
 document.getElementById("reset").addEventListener("click", () => {
-  state.numbers = { ...DEFAULTS }; state.strings = {};
+  state.numbers = buildDefaults(); state.strings = {};
   render(); publish();
 });
 document.getElementById("copy").addEventListener("click", () => {

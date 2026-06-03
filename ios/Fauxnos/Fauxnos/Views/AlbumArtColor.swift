@@ -103,48 +103,44 @@ private enum Tune {
     static let placeholderLDark = 0.24, placeholderLLight = 0.88
 }
 
-private func clamp(_ lo: Double, _ v: Double, _ hi: Double) -> Double { max(lo, min(hi, v)) }
-
-/// Project a raw extracted OKLCH color onto a card-ready palette, applying the
-/// mode-specific legibility clamps. Mirrors `buildArtTokens`.
+/// Project a raw extracted OKLCH color onto a card-ready palette.
 ///
-/// FX-77: the dark-mode branch reads its knobs from `DevControl` so a Mac
-/// tuning page can dial them live (release falls back to the baked constants).
-/// Per the user's note that the OKLCH min/max bands weren't useful, each former
-/// clamp pair collapses to a SINGLE value: lightness becomes a fixed target,
-/// chroma becomes a single ceiling (`min(source, cap)`) so saturated covers are
-/// capped while neutral covers still read muted. Light mode keeps the original
-/// clamp math untouched — the backdrop tuning targets the (primary) dark look.
+/// FX-77: every knob reads from `DevControl` with a MODE-SCOPED key
+/// (`<base>.dark` / `<base>.light`), so a Mac tuning page can dial dark and
+/// light independently and live; release falls back to the baked defaults
+/// below (dark = the values the user dialed in 2026-06-03, light = the prior
+/// look). The former OKLCH min/max clamp bands collapse to single values:
+/// lightness is a fixed target, chroma a single ceiling (`min(source, cap)`)
+/// so saturated covers cap while neutral covers stay muted.
+///
+/// The media tint and the device sub-card tint are INDEPENDENT — each its own
+/// lightness + chroma — so the device portion can read differently from the
+/// outer card. chroma 0 yields a neutral gray (tint via lightness + the card's
+/// fill transparency only); chroma > 0 an actual album tint. Light mode
+/// defaults to a white device sub-card.
 func buildArtPalette(from raw: OKLCH, dark: Bool) -> ArtPalette {
-    if dark {
-        let dev = DevControl.shared
-        let accentL = dev.d("accent.lightness", 0.80)            // was clamp(0.77…0.85)
-        let accentC = min(raw.c, dev.d("accent.chroma", 0.11))   // was clamp(0.075…0.11)
-        let tintC   = min(raw.c, dev.d("tint.chroma", 0.035))    // was clamp(0.005…0.035)
-        let cardL   = dev.d("card.tint.lightness", Tune.cardTintLDark)
-        let innerL  = dev.d("card.device.lightness", Tune.innerSurfaceLDark)
-        let trackA  = dev.d("track.alpha", Tune.trackAlphaDark)
-        let accent = OKLCH(l: accentL, c: accentC, h: raw.h)
-        return ArtPalette(
-            accent: oklchToColor(accent),
-            accentSoft: oklchToColor(accent, alpha: 0.18),
-            cardTint: oklchToColor(OKLCH(l: cardL, c: tintC, h: raw.h)),
-            innerSurface: oklchToColor(OKLCH(l: innerL, c: tintC, h: raw.h)),
-            trackTint: oklchToColor(accent, alpha: trackA),
-            placeholderTint: oklchToColor(OKLCH(l: Tune.placeholderLDark, c: tintC, h: raw.h))
-        )
-    }
-    let accentL = clamp(Tune.accentLminLight, raw.l, Tune.accentLmaxLight)
-    let accentC = clamp(Tune.accentCmin, raw.c, Tune.accentCmax)
-    let tintC = clamp(Tune.cardTintCminLight, raw.c, Tune.cardTintCmaxLight)
+    let dev = DevControl.shared
+    let m = dark ? "dark" : "light"
+    func k(_ base: String, _ fallback: Double) -> Double { dev.d("\(base).\(m)", fallback) }
+
+    let accentL = k("accent.lightness", dark ? 0.81 : 0.64)
+    let accentC = min(raw.c, k("accent.chroma", dark ? 0.13 : 0.105))
+    let trackA  = k("track.alpha", dark ? 0.125 : 0.19)
+
+    let mediaL  = k("media.lightness", dark ? 0.315 : 1.0)
+    let mediaC  = min(raw.c, k("media.chroma", dark ? 0.03 : 0.025))
+    let deviceL = k("device.lightness", dark ? 0.21 : 1.0)     // light: white
+    let deviceC = min(raw.c, k("device.chroma", 0.0))          // neutral gray both modes
+
     let accent = OKLCH(l: accentL, c: accentC, h: raw.h)
+    let placeholderL = dark ? Tune.placeholderLDark : Tune.placeholderLLight
     return ArtPalette(
         accent: oklchToColor(accent),
-        accentSoft: oklchToColor(accent, alpha: 0.10),
-        cardTint: oklchToColor(OKLCH(l: Tune.cardTintLLight, c: tintC, h: raw.h)),
-        innerSurface: FX.surface1,   // light mode: rows sub-card stays white
-        trackTint: oklchToColor(accent, alpha: Tune.trackAlphaLight),
-        placeholderTint: oklchToColor(OKLCH(l: Tune.placeholderLLight, c: tintC, h: raw.h))
+        accentSoft: oklchToColor(accent, alpha: dark ? 0.18 : 0.10),
+        cardTint: oklchToColor(OKLCH(l: mediaL, c: mediaC, h: raw.h)),
+        innerSurface: oklchToColor(OKLCH(l: deviceL, c: deviceC, h: raw.h)),
+        trackTint: oklchToColor(accent, alpha: trackA),
+        placeholderTint: oklchToColor(OKLCH(l: placeholderL, c: mediaC, h: raw.h))
     )
 }
 

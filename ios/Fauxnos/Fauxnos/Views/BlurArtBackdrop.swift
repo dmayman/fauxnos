@@ -18,9 +18,16 @@ import SwiftUI
 struct BlurArtBackdrop: View {
     let url: URL
     @ObservedObject private var dev = DevControl.shared
+    @Environment(\.colorScheme) private var colorScheme
+
+    // FX-77: backdrop knobs are mode-scoped (`<base>.dark` / `<base>.light`).
+    // Dark defaults are the values dialed in 2026-06-03; light mirrors them
+    // until tuned separately.
+    private var m: String { colorScheme == .dark ? "dark" : "light" }
 
     var body: some View {
-        GeometryReader { geo in
+        let fadeStart = dev.f("backdrop.fadeStart.\(m)", 0.0)
+        return GeometryReader { geo in
             ZStack {
                 AsyncImage(url: url) { phase in
                     if case .success(let image) = phase {
@@ -28,9 +35,9 @@ struct BlurArtBackdrop: View {
                             .resizable()
                             .scaledToFill()
                             .frame(width: geo.size.width, height: geo.size.height)
-                            .scaleEffect(dev.f("backdrop.scale", 1.3))
-                            .blur(radius: dev.f("backdrop.blur", 60))
-                            .opacity(dev.d("backdrop.opacity", 0.85))
+                            .scaleEffect(dev.f("backdrop.scale.\(m)", 1.25))
+                            .blur(radius: dev.f("backdrop.blur.\(m)", 52))
+                            .opacity(dev.d("backdrop.opacity.\(m)", colorScheme == .dark ? 0.79 : 0.74))
                     }
                 }
                 .frame(width: geo.size.width, height: geo.size.height)
@@ -38,16 +45,15 @@ struct BlurArtBackdrop: View {
                 .mask(
                     LinearGradient(
                         stops: [
-                            .init(color: .black, location: dev.f("backdrop.fadeStart", 0.0)),
+                            .init(color: .black, location: fadeStart),
                             .init(color: .clear,
-                                  location: max(dev.f("backdrop.fadeEnd", 0.7),
-                                                dev.f("backdrop.fadeStart", 0.0) + 0.01)),
+                                  location: max(dev.f("backdrop.fadeEnd.\(m)", colorScheme == .dark ? 0.6 : 0.79), fadeStart + 0.01)),
                         ],
                         startPoint: .top, endPoint: .bottom
                     )
                 )
                 // Optional dark scrim over the art for extra card legibility.
-                Color.black.opacity(dev.d("backdrop.scrim", 0.0))
+                Color.black.opacity(dev.d("backdrop.scrim.\(m)", 0.0))
             }
         }
         // Fade between covers when the playing track (or the dev album chooser)
