@@ -49,15 +49,6 @@ struct GroupCard: View {
     private var playback: Playback? { store.playback(for: group) }
     private var source: String? { store.currentSource(of: group) }
 
-    /// FX-79: stable identity of the playing track. The title/artist lockup
-    /// cross-fades when THIS changes (once per genuine track change), not on
-    /// every poll/MQTT refresh that re-delivers the same track. The cover flip
-    /// keys on the art URL itself (inside `FlippingAlbumArt`).
-    private var trackKey: String {
-        guard hasMedia, let t = track else { return "—" }
-        return t.uri ?? [t.title, t.artist, t.album].compactMap { $0 }.joined(separator: "|")
-    }
-
     private var isMulti: Bool { group.clients.count > 1 }
     // Spotify is the only source with a media player — other sources (AirPlay,
     // Vinyl, Alexa, …) are local-per-device and carry no track metadata, so they
@@ -177,19 +168,14 @@ struct GroupCard: View {
             HStack(alignment: .center, spacing: Space.lg) {
                 albumArt
                 VStack(alignment: .leading, spacing: Space.sm) {
-                    // FX-79: the title + artist cross-fade on a track change (keyed
-                    // on `trackKey`, once per real change). Both lines travel the
-                    // same way — top-to-bottom — and cascade: the title leads, the
-                    // artist follows a beat later. Each line is its own id'd copy so
-                    // it gets a clean MarqueeText restart per track.
+                    // FX-79: title + artist cross-fade and slide top-to-bottom on a
+                    // track change, cascaded (title leads, artist follows a beat
+                    // later). Each line keys on its own text, so it transitions once
+                    // per genuine change and not on poll refreshes.
                     VStack(alignment: .leading, spacing: 0) {
-                        cascadeLine(delay: 0.08) {
-                            MarqueeText(text: track?.title ?? "—", font: FxFont.titleTrack, color: FX.text)
-                        }
+                        NowPlayingText(text: track?.title ?? "—", font: FxFont.titleTrack, color: FX.text)
                         if let sub = trackSubtitle {
-                            cascadeLine(delay: 0.16) {
-                                MarqueeText(text: sub, font: FxFont.metaTrack, color: palette.accent)
-                            }
+                            NowPlayingText(text: sub, font: FxFont.metaTrack, color: palette.accent, delay: 0.08)
                         }
                     }
                     if hasControls { transportActions }
@@ -212,23 +198,6 @@ struct GroupCard: View {
             Spacer(minLength: 0)
         }
         .padding(Space.xl)
-    }
-
-    /// FX-79: wraps one now-playing text line so it cross-fades + slides
-    /// top-to-bottom on a track change. New text enters from just above and
-    /// settles downward; old text continues downward as it fades — both lines
-    /// move the same direction. `delay` staggers the lines into a slight cascade.
-    @ViewBuilder
-    private func cascadeLine<Content: View>(delay: Double, @ViewBuilder _ content: () -> Content) -> some View {
-        ZStack(alignment: .topLeading) {
-            content()
-                .id(trackKey)
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .offset(y: -10)),
-                    removal: .opacity.combined(with: .offset(y: 10))
-                ))
-        }
-        .animation(.smooth(duration: 0.42).delay(delay), value: trackKey)
     }
 
     private var trackSubtitle: String? {
@@ -843,6 +812,11 @@ extension View {
 /// than the available width it scrolls continuously (a second copy trails behind
 /// a gap for a seamless loop) under a soft left/right fade. Used for the media
 /// title + subtitle so long names read in full rather than truncating.
+///
+/// This view owns ONLY its horizontal scroll. It never needs to react to its own
+/// `text` changing because `NowPlayingText` keys each title with `.id`, so a new
+/// track yields a brand-new `MarqueeText` instance — the scroll always (re)starts
+/// cleanly from `onAppear`, never from a fragile in-place reset.
 private struct MarqueeText: View {
     let text: String
     var font: Font
@@ -881,6 +855,10 @@ private struct MarqueeText: View {
     @ViewBuilder
     private var content: some View {
         if overflow {
+            // Two copies a `gap` apart; scrolling left by exactly one copy+gap and
+            // looping forever reads as a seamless wrap. The HStack carries its OWN
+            // explicit `.animation` keyed on `animate`, so this linear loop is fully
+            // insulated from any ancestor transaction (e.g. the track-change slide).
             HStack(spacing: gap) {
                 label
                 label
@@ -890,12 +868,9 @@ private struct MarqueeText: View {
                 .linear(duration: max(4, Double(textWidth + gap) / pointsPerSecond)).repeatForever(autoreverses: false),
                 value: animate
             )
+            // Fires exactly when the row first overflows (the HStack only exists
+            // then), so the loop starts reliably for every fresh instance.
             .onAppear { animate = true }
-            // Restart the loop cleanly when the track changes width.
-            .onChange(of: text) { _, _ in
-                animate = false
-                DispatchQueue.main.async { animate = true }
-            }
             .fixedSize()
         } else {
             label
@@ -925,6 +900,34 @@ private struct MarqueeText: View {
             LinearGradient(colors: [.black, .clear], startPoint: .leading, endPoint: .trailing)
                 .frame(width: fadeWidth)
         }
+    }
+}
+
+// MARK: - Now-playing text line (FX-79 track-change transition)
+
+/// One now-playing line (title or artist) that cross-fades when its text changes
+/// — no motion, the two titles simply dissolve on top of each other.
+///
+/// Keying the `MarqueeText` with `.id(text)` makes each distinct title a distinct
+/// view, so a track change is a removal (old) + insertion (new) that the framework
+/// fades with the `.opacity` transition. SwiftUI manages any number of overlapping
+/// in-flight transitions natively, so rapid changes just queue clean fades — none
+/// of the stale-state races a hand-rolled swap suffered. The marquee's own scroll
+/// is insulated: it carries its own explicit `.animation`, and the wrapper's
+/// `.animation(value: text)` only opens a transaction when `text` changes.
+private struct NowPlayingText: View {
+    let text: String
+    var font: Font
+    var color: Color
+    var delay: Double = 0
+
+    var body: some View {
+        ZStack(alignment: .leading) {
+            MarqueeText(text: text, font: font, color: color)
+                .id(text)
+                .transition(.opacity)
+        }
+        .animation(.easeInOut(duration: 0.3).delay(delay), value: text)
     }
 }
 

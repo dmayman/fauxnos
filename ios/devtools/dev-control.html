@@ -134,6 +134,11 @@
 // [min,max,step], and per-mode defaults (dark = dialed-in 2026-06-03, light =
 // prior look). `toggle:true` renders a 0/1 switch. Grouped into sections. Add a
 // row here + read `<base>.<mode>` in SwiftUI.
+//
+// A section/knob marked `global:true` is NOT mode-scoped: it publishes a single
+// bare key (`<base>`, no .dark/.light) with one `def` default, and reads the same
+// in both modes. Used for things that don't vary by appearance — e.g. the album-
+// flip MOTION, read in SwiftUI as `DevControl.shared.d("<base>", fallback)`.
 const SCHEMA = [
   { title: "Backdrop — blurred album art", knobs: [
     { key: "backdrop.enabled",   label: "Show backdrop", toggle: true, dark: 1, light: 1 },
@@ -159,14 +164,29 @@ const SCHEMA = [
     { key: "accent.chroma",    label: "Accent chroma", range: [0, 0.3, 0.005],   dark: 0.13, light: 0.105 },
     { key: "track.alpha",      label: "Track α",       range: [0, 0.4, 0.005],   dark: 0.125, light: 0.19 },
   ]},
+  { title: "Album flip (FX-79) — 3D cover flip on track change · global, not mode-scoped", global: true, knobs: [
+    { key: "flip.windUpAngle",    label: "Wind-up angle °", range: [-40, 0, 1],     def: -16 },
+    { key: "flip.windUpDuration", label: "Wind-up dur",     range: [0, 0.4, 0.01],  def: 0.19 },
+    { key: "flip.flipResponse",   label: "Spring response", range: [0.1, 1.5, 0.01],def: 0.76 },
+    { key: "flip.flipDamping",    label: "Spring damping",  range: [0.2, 1.2, 0.01],def: 0.56 },
+    { key: "flip.scaleBump",      label: "Scale bump",      range: [0, 0.6, 0.01],  def: 0.16 },
+    { key: "flip.perspective",    label: "Perspective",     range: [0.05, 1, 0.01], def: 0.55 },
+    { key: "flip.loadTimeout",    label: "Load timeout",    range: [0, 1.5, 0.05],  def: 0.45 },
+  ]},
 ];
 
-// Build the full mode-scoped defaults map: "<base>.dark" / "<base>.light".
+// Build the defaults map. Mode-scoped knobs get "<base>.dark" / "<base>.light";
+// global knobs (section or knob `global:true`) get a single bare "<base>".
+function isGlobal(sec, k) { return !!(sec.global || k.global); }
 function buildDefaults() {
   const d = {};
   SCHEMA.forEach(s => s.knobs.forEach(k => {
-    d[`${k.key}.dark`]  = k.dark;
-    d[`${k.key}.light`] = k.light;
+    if (isGlobal(s, k)) {
+      d[k.key] = k.def;
+    } else {
+      d[`${k.key}.dark`]  = k.dark;
+      d[`${k.key}.light`] = k.light;
+    }
   }));
   return d;
 }
@@ -210,8 +230,9 @@ function render() {
     const el = document.createElement("section");
     el.innerHTML = `<h2>${sec.title}</h2>`;
     for (const k of sec.knobs) {
-      const fullKey = `${k.key}.${mode}`;
-      const def = k[mode];                       // this knob's default for the active mode
+      const global = isGlobal(sec, k);
+      const fullKey = global ? k.key : `${k.key}.${mode}`;
+      const def = global ? k.def : k[mode];      // this knob's default (global, or for the active mode)
       const row = document.createElement("div");
       row.className = "row";
       const resetBtn = `<button class="reset" title="Reset to default (${def})">↺</button>`;

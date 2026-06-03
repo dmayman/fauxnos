@@ -78,16 +78,21 @@ struct FlippingAlbumArt: View {
     /// Shown when there's no decoded cover (the source-glyph lockup).
     let placeholder: AnyView
 
-    // ── Motion knobs (open for tuning with the user) ──
+    // ── Motion knobs (baked defaults; live-tunable via DevControl in DEBUG) ──
+    // Each is read through `dev.d("flip.<name>", <default>)`, so the Mac dev page
+    // (ios/devtools/dev-control.html, "Album flip" section) overrides them live in
+    // DEBUG while release builds always use the baked constant below. These are
+    // global (not mode-scoped) — motion doesn't differ between dark/light.
     private static let windUpAngle: Double = -16        // anticipation counter-rotation, °
-    private static let windUpDuration: Double = 0.13
-    private static let flipResponse: Double = 0.62      // spring response of the throw
-    private static let flipDamping: Double = 0.55       // < 1 → overshoot + settle
+    private static let windUpDuration: Double = 0.19
+    private static let flipResponse: Double = 0.76      // spring response of the throw
+    private static let flipDamping: Double = 0.56       // < 1 → overshoot + settle
     private static let scaleBump: Double = 0.16         // added scale, peaks edge-on
-    private static let perspective: CGFloat = 0.42      // lower = deeper 3D
+    private static let perspective: CGFloat = 0.55      // lower = deeper 3D
     private static let loadTimeout: Double = 0.45       // max wait for the incoming cover
 
     private let store = AlbumArtImageStore.shared
+    @ObservedObject private var dev = DevControl.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var frontImage: UIImage?
@@ -102,7 +107,7 @@ struct FlippingAlbumArt: View {
 
     /// Scale derived from the rotation: 1 at rest / 180°, peaking edge-on (90°),
     /// dipping slightly during the wind-up — one driver keeps it perfectly synced.
-    private var scale: Double { 1 + Self.scaleBump * sin(angle * .pi / 180) }
+    private var scale: Double { 1 + dev.d("flip.scaleBump", Self.scaleBump) * sin(angle * .pi / 180) }
 
     var body: some View {
         ZStack {
@@ -113,7 +118,7 @@ struct FlippingAlbumArt: View {
                 .opacity(angle >= 90 ? 1 : 0)
         }
         .frame(width: size, height: size)
-        .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), perspective: Self.perspective)
+        .rotation3DEffect(.degrees(angle), axis: (x: 0, y: 1, z: 0), perspective: dev.f("flip.perspective", Self.perspective))
         .scaleEffect(scale)
         .shadow(color: shadow.color, radius: shadow.radius, y: shadow.y)
         .onAppear { sync(to: artURL, animated: false) }
@@ -172,7 +177,7 @@ struct FlippingAlbumArt: View {
         return await withTaskGroup(of: UIImage?.self) { group in
             group.addTask { await store.image(for: url) }
             group.addTask {
-                try? await Task.sleep(nanoseconds: UInt64(Self.loadTimeout * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(dev.d("flip.loadTimeout", Self.loadTimeout) * 1_000_000_000))
                 return nil
             }
             let first = await group.next() ?? nil
@@ -197,9 +202,11 @@ struct FlippingAlbumArt: View {
             }
         }
 
-        withAnimation(.easeOut(duration: Self.windUpDuration)) { angle = Self.windUpAngle }
-        withAnimation(.spring(response: Self.flipResponse, dampingFraction: Self.flipDamping)
-                        .delay(Self.windUpDuration)) {
+        let windUp = dev.d("flip.windUpDuration", Self.windUpDuration)
+        withAnimation(.easeOut(duration: windUp)) { angle = dev.d("flip.windUpAngle", Self.windUpAngle) }
+        withAnimation(.spring(response: dev.d("flip.flipResponse", Self.flipResponse),
+                              dampingFraction: dev.d("flip.flipDamping", Self.flipDamping))
+                        .delay(windUp)) {
             angle = 180
         } completion: {
             guard gen == flipGen else { return }   // a newer flip took over

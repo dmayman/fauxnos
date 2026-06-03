@@ -45,19 +45,20 @@ struct GroupsListView: View {
                 .background {
                     ZStack {
                         FX.bg
-                        if let url = backdropArtURL { BlurArtBackdrop(url: url) }
+                        // FX-79: cover→cover crossfade (slide + staggered fade) is
+                        // handled INSIDE BlurArtBackdrop; this `.transition` only
+                        // fades the whole backdrop in/out when playback starts or
+                        // stops (the art URL appears / disappears).
+                        if let url = backdropArtURL {
+                            BlurArtBackdrop(url: url).transition(.opacity)
+                        }
                         // Tints when a grouped device is dragged over empty space,
                         // marking the "drop to remove from group" zone.
                         FX.text.opacity(dragController.hoverBackground ? 0.07 : 0)
                     }
                     .ignoresSafeArea()
                     .animation(.fxEase, value: dragController.hoverBackground)
-                    // FX-79: crossfade one blurred backdrop into the next on a
-                    // track change — a smooth, slightly longer dissolve (the
-                    // BlurArtBackdrop is `.id(url)` + `.transition(.opacity)`)
-                    // rather than the spring snap, so the whole-screen wash melts
-                    // over rather than popping.
-                    .animation(.easeInOut(duration: 0.6), value: backdropArtURL)
+                    .animation(.easeInOut(duration: 0.5), value: backdropArtURL != nil)
                 }
                 .navigationTitle("Fauxnos")
                 .toolbar {
