@@ -52,6 +52,21 @@ struct GroupsListView: View {
 
     private var backdropArtURL: URL? { backdropArtSource.flatMap { URL(string: $0) } }
 
+    private var backdropEnabled: Bool {
+        dev.b("backdrop.enabled.\(colorScheme == .dark ? "dark" : "light")", true)
+    }
+
+    /// FX-87: what the full-bleed backdrop renders. A real cover when something's
+    /// playing, otherwise a generated time-of-day (PST) cover so the null state
+    /// is a blurred field rather than the bare ground. nil only when the backdrop
+    /// is toggled off entirely. `BlurArtBackdrop` crossfades between the two.
+    private var backdropSource: BlurArtBackdrop.Source? {
+        guard backdropEnabled else { return nil }
+        if let url = backdropArtURL { return .art(url) }
+        let art = TimeOfDayArt.current(dark: colorScheme == .dark)
+        return .generated(art.image, key: art.key)
+    }
+
     /// FX-80: the "fauxnos" wordmark adapts to whatever sits behind the bar.
     /// Over a dark backdrop it's translucent white, linear-added so it glows off
     /// the art; over a light backdrop it flips to a dark, `.plusDarker` mark so it
@@ -61,16 +76,29 @@ struct GroupsListView: View {
     /// (it renders full-strength at the top, fading downward).
     private var wordmarkStyle: WordmarkStyle {
         guard backdropArtURL != nil, let src = backdropArtSource else {
-            return WordmarkStyle(color: FX.text2, blend: .normal)
+            // No cover. FX-87: if the generated time-of-day ground is showing,
+            // adapt to its luma exactly as we would art; if the backdrop is
+            // toggled off entirely, plain mode-adaptive gray on the solid ground.
+            guard dev.b("backdrop.enabled.\(colorScheme == .dark ? "dark" : "light")", true) else {
+                return WordmarkStyle(color: FX.text2, blend: .normal)
+            }
+            return wordmarkStyle(forLuma: TimeOfDayPalette.current().topLuma)
         }
         artColors.ensure(src)
         guard let artLuma = artColors.luma(for: src) else {
             return WordmarkStyle(color: .white.opacity(0.5), blend: .plusLighter)  // loading → assume art
         }
+        return wordmarkStyle(forLuma: artLuma)
+    }
+
+    /// Pick the wordmark's light/dark treatment from the average luma of whatever
+    /// sits behind the bar (a cover, or the FX-87 generated ground). The backdrop
+    /// renders full-strength at the top over `FX.bg`, so the bar sees that blend.
+    private func wordmarkStyle(forLuma luma: Double) -> WordmarkStyle {
         let dark = colorScheme == .dark
         let topOpacity = dark ? 0.79 : 0.74              // BlurArtBackdrop baseOpacity default
         let groundLuma = dark ? 0.024 : 0.976            // FX.bg luma (#060606 / #F9F9F9)
-        let behindBar = topOpacity * artLuma + (1 - topOpacity) * groundLuma
+        let behindBar = topOpacity * luma + (1 - topOpacity) * groundLuma
         return behindBar > 0.55
             ? WordmarkStyle(color: .black.opacity(0.5), blend: .plusDarker)        // light backdrop → darkened
             : WordmarkStyle(color: .white.opacity(0.5), blend: .plusLighter)       // dark backdrop  → illuminated
@@ -94,8 +122,12 @@ struct GroupsListView: View {
                         // handled INSIDE BlurArtBackdrop; this `.transition` only
                         // fades the whole backdrop in/out when playback starts or
                         // stops (the art URL appears / disappears).
-                        if let url = backdropArtURL {
-                            BlurArtBackdrop(url: url).transition(.opacity)
+                        // FX-87: one backdrop, fed either the live cover or the
+                        // generated time-of-day cover. It crossfades between them
+                        // internally (FX-79), so playback starting "overtakes"
+                        // the null state exactly like a track change.
+                        if let source = backdropSource {
+                            BlurArtBackdrop(source: source).transition(.opacity)
                         }
                         // Tints when a grouped device is dragged over empty space,
                         // marking the "drop to remove from group" zone.
