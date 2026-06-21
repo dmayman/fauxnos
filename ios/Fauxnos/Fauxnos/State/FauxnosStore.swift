@@ -52,6 +52,17 @@ final class FauxnosStore: ObservableObject {
     private var volumeThrottleTask: [String: Task<Void, Never>] = [:]
     private var volumePending: [String: Int] = [:]
 
+    #if DEBUG
+    // FX-85 — the FX-77 dev-control bus is now gated behind a shake-menu toggle
+    // (DebugSettings.devControlEnabled, default off). We cache the latest raw
+    // `dev/control/state` snapshot so flipping the toggle re-applies it live
+    // without waiting for the Mac page to republish; `demoInjectedClientId`
+    // tracks the card we overlaid so we can drop it cleanly when toggled off.
+    private var lastDevControlPayload: Data?
+    private var demoInjectedClientId: String?
+    private var debugCancellable: AnyCancellable?
+    #endif
+
     /// Topics mirror the set the web `useMqtt` hook subscribes to. The 5-part
     /// calibration topic carries `source_id` in its tail.
     private var subscriptions: [String] {
@@ -79,6 +90,18 @@ final class FauxnosStore: ObservableObject {
     init(config: ServerConfig = .load()) {
         self.config = config
         self.api = APIClient(config: config)
+        #if DEBUG
+        // Make the shake-menu toggle feel live: re-apply the cached dev-control
+        // snapshot when enabled, tear the overlay down when disabled. dropFirst
+        // skips the initial published value (the persisted launch state, which
+        // the inbound-message path already honors directly).
+        debugCancellable = DebugSettings.shared.$devControlEnabled
+            .dropFirst()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                MainActor.assumeIsolated { self?.onDevControlEnabledChanged(enabled) }
+            }
+        #endif
     }
 
     // MARK: - Lifecycle
@@ -152,16 +175,15 @@ final class FauxnosStore: ObservableObject {
     private func handle(topic: String, payload: Data) {
         let parts = topic.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         #if DEBUG
-        // FX-77 dev control bus (`dev/control/state`) — merge the Mac tuning
-        // snapshot, and apply a chosen demo album to the playing card so its
-        // tint tracks too (the backdrop reads `demo.art` directly regardless).
+        // FX-77 dev control bus (`dev/control/state`). Cache the snapshot always,
+        // but only APPLY it while the debug toggle is on (shake → Debug menu).
+        // Default off, so a freshly-flashed build ignores a stale retained tuning
+        // snapshot instead of overlaying a fake "now playing" card (FX-85).
         if parts.first == "dev" {
             if parts.count >= 3, parts[1] == "control", parts[2] == "state" {
-                DevControlPayload.apply(payload, to: DevControl.shared)
-                if let art = DevControl.shared.s("demo.art") {
-                    applyDemoCover(art,
-                                   title: DevControl.shared.s("demo.title"),
-                                   artist: DevControl.shared.s("demo.artist"))
+                lastDevControlPayload = payload
+                if DebugSettings.shared.devControlEnabled {
+                    applyDevControl(payload)
                 }
             }
             return
@@ -550,6 +572,40 @@ extension FauxnosStore {
                              artUrl: urlString,
                              durationMs: t?.durationMs ?? 240_000,
                              uri: nil)
+        demoInjectedClientId = home
+    }
+
+    /// Apply a raw `dev/control/state` snapshot: merge tuning values and, when a
+    /// demo album is set, overlay it on the playing card. Extracted so the
+    /// shake-menu toggle can re-run it against the cached payload (FX-85).
+    func applyDevControl(_ payload: Data) {
+        DevControlPayload.apply(payload, to: DevControl.shared)
+        if let art = DevControl.shared.s("demo.art") {
+            applyDemoCover(art,
+                           title: DevControl.shared.s("demo.title"),
+                           artist: DevControl.shared.s("demo.artist"))
+        }
+    }
+
+    /// React to the debug toggle flipping at runtime so it feels live: re-apply
+    /// the cached snapshot on enable, tear the overlay down on disable (FX-85).
+    func onDevControlEnabledChanged(_ enabled: Bool) {
+        if enabled {
+            if let payload = lastDevControlPayload { applyDevControl(payload) }
+        } else {
+            clearDevControlOverlay()
+        }
+    }
+
+    /// Undo everything the dev-control bus applied — tuning values and the demo
+    /// card overlay. Real MQTT-sourced tracks are left untouched; only the card
+    /// we injected is dropped.
+    func clearDevControlOverlay() {
+        DevControl.shared.clearAll()
+        if let home = demoInjectedClientId {
+            tracks.removeValue(forKey: home)
+            demoInjectedClientId = nil
+        }
     }
 }
 #endif

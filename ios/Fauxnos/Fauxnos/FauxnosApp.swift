@@ -22,6 +22,8 @@ struct FauxnosApp: App {
                 // first source-picker open is instant rather than blocking the
                 // main thread on the font-charset walk (FX-76).
                 .task { TablerIconCatalog.shared.warm() }
+                // Shake to reveal the debug menu (FX-85). No-op in Release.
+                .shakeDebugMenu()
         }
     }
 }

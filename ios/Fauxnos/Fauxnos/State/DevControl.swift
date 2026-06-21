@@ -63,6 +63,13 @@ final class DevControl: ObservableObject {
             if v.isEmpty { strings.removeValue(forKey: k) } else { strings[k] = v }
         }
     }
+
+    /// Drop every tuned value, reverting all keyed reads to their baked
+    /// fallbacks. Used when the FX-85 debug toggle disables the bus.
+    func clearAll() {
+        numbers = [:]
+        strings = [:]
+    }
     #endif
 }
 
