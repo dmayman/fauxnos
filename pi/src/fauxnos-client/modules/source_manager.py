@@ -252,6 +252,51 @@ class SourceManager:
         else:
             return self._switch_to_internal_source(source)
 
+    def ensure_source_routed(self, source_id: str) -> bool:
+        """
+        Make sure source_id is the live, correctly-routed active source —
+        re-asserting the actual PA/snapcast routing even when we already
+        believe we're on it.
+
+        Why this exists: switch_source() early-returns True the moment
+        self.current_source already equals the target, on the assumption
+        that cached state matches reality. It often doesn't — current_source
+        is restored from disk on boot and can also drift when a sink gets
+        muted out from under us (e.g. another source's switch mutes every
+        sibling sink). The symptom is silent audio while the UI correctly
+        shows the source as already selected; re-selecting it by hand fixes
+        it precisely because that re-runs the routing this method now runs.
+
+        Behaviour:
+          * Not currently on source_id → ordinary switch_source (which runs
+            the outgoing source's pause / on_leave hooks).
+          * Already on source_id → re-run ONLY the routing assertion
+            (mute siblings + re-apply this source's volume, which re-pins
+            the sink and re-sets snapcast attenuation). We deliberately do
+            NOT run the leave/pause path here: pausing the very source we
+            want audible would be wrong.
+
+        Returns True on success.
+        """
+        source = self.config_manager.get_source(source_id)
+        if not source:
+            self.logger.error(f"Source not found: {source_id}")
+            return False
+
+        if self.current_source != source_id:
+            # Coming from a different source — let switch_source own the
+            # leave hooks and the pause of the outgoing go_librespot stream.
+            return self.switch_source(source_id)
+
+        # Already the active source on paper — re-assert the live route.
+        self.logger.info(
+            f"Re-asserting route for current source: {source.label} ({source_id})"
+        )
+        if source.type == 'external':
+            return self._switch_to_external_source(source)
+        else:
+            return self._switch_to_internal_source(source)
+
     def _switch_to_internal_source(self, source: SourceConfig) -> bool:
         """
         Switch to internal source (PulseAudio-based)

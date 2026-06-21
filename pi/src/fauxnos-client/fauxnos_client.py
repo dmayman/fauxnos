@@ -192,47 +192,62 @@ class FauxnosClient:
 
     def _on_spotify_active(self):
         """
-        Spotify Connect session became active on go-librespot. Re-push
-        our stored volume so the audio (and the phone's slider, which
-        go-librespot will sync to whatever value it's at) matches
-        what the user last set in fauxnos. Without this, the phone
-        slider snaps to go-librespot's `initial_volume: 50` regardless
-        of what fauxnos says it should be.
+        Spotify Connect session became active on go-librespot, i.e. the
+        user selected this device in the Spotify app. We do two things:
 
-        Note: source-switching is deliberately NOT here — `active`
-        fires when the user merely SELECTS the device in the Spotify
-        app (browsing devices), not necessarily when they want audio.
-        The `playing` event below is the audio-start signal.
+        1. Re-push our stored volume so the audio (and the phone's
+           slider, which go-librespot will sync to whatever value it's
+           at) matches what the user last set in fauxnos. Without this
+           the phone slider snaps to go-librespot's `initial_volume: 50`
+           regardless of what fauxnos says it should be.
+        2. Auto-switch the device's source to Spotify. Selecting a
+           device in the Spotify app is itself enough intent to claim
+           it for Spotify — we no longer wait for the `playing` event
+           (FX-84). The `playing` handler still fires the same switch
+           so resume-after-pause from another source also works.
         """
         self.source_manager.resync_go_librespot_volume()
+        self._auto_switch_to_spotify("Spotify Connect active")
 
     def _on_spotify_playing(self):
         """
-        Spotify audio started playing on go-librespot. If fauxnos
-        isn't already on the spotify source, auto-switch — the user's
-        intent is unambiguous: they pressed play on the Spotify mobile
-        app, so they want audio from this device.
+        Spotify audio started playing on go-librespot. The user's intent
+        is unambiguous: they pressed play (or resumed) on the Spotify
+        mobile app, so they want audio from this device — auto-switch.
+        """
+        self._auto_switch_to_spotify("Spotify playing detected")
 
-        This also fires on resume after a pause, which is the same
-        intent ("play this here now") so the same switch is correct.
+    def _auto_switch_to_spotify(self, reason: str):
+        """
+        Ensure the device's active source is its go-librespot (Spotify)
+        source. Shared by the `active` (device selected in the Spotify app)
+        and `playing` (audio started) go-librespot events.
 
-        If the auto-switch happens, we go through MQTTClient.update_mode
-        so the web UI tracks the change just like a manual switch.
+        Crucially this does NOT skip when fauxnos already believes it's on
+        spotify. The cached current_source can disagree with the real PA
+        routing — restored stale from disk on boot, or left muted by a
+        sibling source's switch — which produced the "UI shows Spotify but
+        no audio until I re-pick it" bug. ensure_source_routed re-asserts
+        the live route in that case (idempotent: mutes siblings + re-applies
+        volume, no audible glitch) instead of trusting state and no-op'ing.
+
+        Goes through MQTTClient.update_mode so the web UI tracks the change
+        just like a manual switch, and republishes the per-source volume
+        (matching the path an MQTT mode command takes, see mqtt_client.py
+        phase 4) so the UI shows the right source's level. Both are
+        idempotent and only fire on these (low-frequency) session events,
+        so re-publishing when nothing changed is harmless.
         """
         spotify_source_id = self._go_librespot_source_id()
         if spotify_source_id is None:
             return
-        if self.source_manager.get_current_source() == spotify_source_id:
-            return  # Already on spotify — nothing to do.
+        already = self.source_manager.get_current_source() == spotify_source_id
         self.logger.info(
-            f"Spotify playing detected — auto-switching to {spotify_source_id}"
+            f"{reason} — ensuring source is {spotify_source_id} "
+            f"({'re-assert' if already else 'switch'})"
         )
-        if self.source_manager.switch_source(spotify_source_id):
+        if self.source_manager.ensure_source_routed(spotify_source_id):
             self.mqtt_client.update_mode(spotify_source_id)
-            # Per-source volume republish, matching the path an MQTT
-            # mode command takes (see mqtt_client.py phase 4). Without
-            # this the UI keeps showing whatever the previous source
-            # was at.
             new_vol = self.source_manager.get_source_volume(spotify_source_id)
             if new_vol is not None:
                 self.mqtt_client.update_volume(new_vol)
