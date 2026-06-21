@@ -25,12 +25,16 @@ import SwiftUI
 struct GroupCard: View {
     @EnvironmentObject private var store: FauxnosStore
     @EnvironmentObject private var dragController: CardDragController
+    @EnvironmentObject private var sourceMenu: SourceMenuController
     @ObservedObject private var artStore = AlbumArtColorStore.shared
     @ObservedObject private var dev = DevControl.shared   // FX-77 backdrop tuning
     @Environment(\.colorScheme) private var colorScheme
     let group: SpeakerGroup
 
-    @State private var showSourcePicker = false
+    /// The source trigger's frame in global space, kept fresh so the menu — which
+    /// renders at the list's top level (so it floats unclipped over other cards) —
+    /// can anchor itself just under this card's trigger.
+    @State private var sourceTriggerFrame: CGRect = .zero
     @State private var showDeviceMenu = false
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
@@ -426,7 +430,8 @@ struct GroupCard: View {
 
     private var sourceTrigger: some View {
         Button {
-            Haptics.tap(); showSourcePicker = true
+            Haptics.tap()
+            sourceMenu.toggle(group.id, at: sourceTriggerFrame)
         } label: {
             HStack(spacing: Space.xs) {
                 SourceIcon(icon: currentSourceObject?.icon, sourceId: source, size: 22)
@@ -443,13 +448,12 @@ struct GroupCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Source: \(sourceLabel). Tap to change.")
-        // A real popover anchored to the trigger — on a compact iPhone width
-        // SwiftUI would auto-adapt `.popover` into a sheet, so we opt back out
-        // with `.presentationCompactAdaptation(.popover)`. Picking a source is a
-        // single tap; a full-height bottom sheet was too heavy a gesture.
-        .popover(isPresented: $showSourcePicker, arrowEdge: .top) {
-            SourcePickerPopover(group: group)
-                .presentationCompactAdaptation(.popover)
+        // Track the trigger's global frame so the top-level menu layer can anchor
+        // under it (the menu can't live here — the card clips its content, and a
+        // dropdown must float over the cards below).
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: {
+            sourceTriggerFrame = $0
+            if sourceMenu.openGroupId == group.id { sourceMenu.triggerFrame = $0 }
         }
     }
 
@@ -762,18 +766,24 @@ private struct ScrubBar: View {
         GeometryReader { geo in
             let w = geo.size.width
             let pct = duration > 0 ? min(max(value / duration, 0), 1) : 0
+            // Track grows 6 → 12pt while scrubbing (FX-88 parity), centered in the
+            // fixed 22pt frame below so the media card height never changes.
+            let trackH: CGFloat = dragging ? 12 : 6
             ZStack(alignment: .leading) {
-                Capsule().fill(track).frame(height: 6)
-                Capsule().fill(accent).frame(width: max(0, w * pct), height: 6)
+                Capsule().fill(track).frame(height: trackH)
+                Capsule().fill(accent).frame(width: max(0, w * pct), height: trackH)
                 // Touch-reveal scrub thumb (FX-60): hidden at rest (web
                 // `.fx-group-progress-thumb { opacity: 0 }`), fades + grows in
-                // while scrubbing. Fixed 16pt frame so the offset math is stable;
-                // reveal is driven by scale + opacity. Hit target stays full-width.
-                Circle().fill(accent).frame(width: 16, height: 16)
+                // while scrubbing. FX-89: match the volume slider's drag state —
+                // the thumb scales 2x. `.scaleEffect` MUST precede `.offset` (FX-88):
+                // scaling after the offset multiplies the thumb's position by the
+                // scale and drifts it ahead of the fill bar; scaling first locks its
+                // center to `w * pct`. Fixed 16pt geometry keeps the offset stable.
+                Circle().fill(accent).frame(width: 14, height: 14)
                     .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
-                    .offset(x: min(max(0, w * pct - 8), w - 16))
-                    .scaleEffect(dragging ? 1 : 0.5)
+                    .scaleEffect(dragging ? 2.0 : 0.5)
                     .opacity(dragging ? 1 : 0)
+                    .offset(x: min(max(0, w * pct - 7), w - 14))
             }
             .frame(height: 22)
             .contentShape(Rectangle())
@@ -784,7 +794,7 @@ private struct ScrubBar: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { g in
                         if !dragging {
-                            let thumbX = min(max(w * pct, 8), w - 8)
+                            let thumbX = min(max(w * pct, 7), w - 7)
                             guard abs(g.startLocation.x - thumbX) <= 22 else { return }
                             dragging = true
                             grabOffset = g.startLocation.x - thumbX
@@ -1047,26 +1057,59 @@ private struct TransportButton: View {
     }
 }
 
-// MARK: - Source picker popover (FX-19)
+// MARK: - Source picker (FX-19, reworked FX-89)
 
-/// A compact, self-sizing popover for switching the group's source — a single
-/// tap, no full-height sheet. Dismisses on selection or on a tap outside (the
-/// system popover behavior), so there's no explicit "Done" affordance.
-private struct PopoverHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+/// Which group's source menu is open, and where its trigger sits (global coords),
+/// so `GroupsListView` can float the glass menu under that trigger above all the
+/// cards. One menu open at a time. Mirrors the `CardDragController` pattern: a
+/// shared object injected once at the list root, written by the tapped card.
+@MainActor final class SourceMenuController: ObservableObject {
+    /// Non-nil while a menu is mounted (stays set through the close animation so
+    /// the card can animate OUT before it unmounts).
+    @Published var openGroupId: String?
+    /// Drives the menu's scale+opacity. Animated open/closed explicitly (a real
+    /// `scaleEffect`, not a `.transition` — a child appearing with its parent only
+    /// gets the parent's default fade, which is why the scale never showed).
+    @Published var shown = false
+    @Published var triggerFrame: CGRect = .zero
+
+    /// The pop spring — matches the old system-popover feel (scale up from the
+    /// trigger corner + fade), restored after the glass rework dropped it.
+    static let animation: Animation = .spring(response: 0.32, dampingFraction: 0.74)
+    /// Closing fades to 0 before the open spring's overshoot settles, so its
+    /// bounce reads as flat. A quicker, looser spring puts the springiness back
+    /// into the out direction so it matches the in.
+    static let closeAnimation: Animation = .spring(response: 0.28, dampingFraction: 0.62)
+
+    func toggle(_ id: String, at frame: CGRect) {
+        if openGroupId == id { close(); return }
+        triggerFrame = frame
+        openGroupId = id
+        shown = false                                   // mount collapsed…
+        withAnimation(Self.animation) { shown = true }  // …then pop open
+    }
+
+    func close() {
+        withAnimation(Self.closeAnimation) { shown = false } completion: {
+            if !self.shown { self.openGroupId = nil }   // unmount once collapsed
+        }
+    }
 }
 
-struct SourcePickerPopover: View {
+/// The glass dropdown itself: a plain Liquid Glass card holding the source rows —
+/// no caret, no system popover chrome. Rendered at the list's top level (see
+/// `GroupsListView.sourceMenuLayer`) so it floats over the cards below, where
+/// `.glassEffect` has the live content behind it to actually read as glass.
+struct SourcePickerMenu: View {
     @EnvironmentObject private var store: FauxnosStore
-    @Environment(\.dismiss) private var dismiss
     let group: SpeakerGroup
-
-    @State private var measuredHeight: CGFloat = 0
+    let onClose: () -> Void
 
     private var sources: [Source] { store.availableSources(for: group) }
     private var isMulti: Bool { group.clients.count > 1 }
     private var active: String? { store.currentSource(of: group) }
+
+    private static let shape = RoundedRectangle(cornerRadius: 22, style: .continuous)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1087,7 +1130,7 @@ struct SourcePickerPopover: View {
                             await store.switchSource(s.id, in: group)
                         }
                     }
-                    dismiss()
+                    onClose()
                 } label: {
                     HStack(spacing: Space.md) {
                         SourceIcon(icon: s.icon, sourceId: s.id, size: 20)
@@ -1117,18 +1160,42 @@ struct SourcePickerPopover: View {
             }
         }
         .padding(.vertical, Space.sm)
-        // FIXED width (not a min/max range): the system popover reads its
-        // `preferredContentSize` from this content, and a flexible width let the
-        // multi-line caption re-wrap between the measure pass and the final
-        // layout, under-sizing the popover and clipping the bottom. A fixed width
-        // + an explicitly measured height pins the size deterministically.
+        // Fixed width, but height hugs exactly the rows present — no min height.
         .frame(width: 260, alignment: .leading)
-        .background(GeometryReader { proxy in
-            Color.clear.preference(key: PopoverHeightKey.self, value: proxy.size.height)
-        })
-        .onPreferenceChange(PopoverHeightKey.self) { measuredHeight = $0 }
-        .frame(height: measuredHeight == 0 ? nil : measuredHeight)
-        .presentationBackground(FX.surface1)
+        .fixedSize(horizontal: false, vertical: true)
+        .modifier(GlassCard(shape: Self.shape))
+    }
+}
+
+/// A self-contained Liquid Glass card background. iOS 26+ gets real `.glassEffect`
+/// (it refracts the cards behind the floating menu); earlier OSes (target 18.4)
+/// fall back to a `.thinMaterial` blur clipped to the same shape.
+private struct GlassCard: ViewModifier {
+    let shape: RoundedRectangle
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            content.background(.thinMaterial, in: shape)
+        }
+    }
+}
+
+/// The same glass texture for the bottom sheet (FX-89). iOS 26 lays a Liquid Glass
+/// layer behind the (filled) sheet content and clears the system platter so it
+/// shows; the sheet's own rounded top corners come from the system. Pre-26 keeps
+/// the opaque `FX.surface1` platter. Note: sheets dim the content beneath them, so
+/// the glass reads a touch more muted here than the dropdown floating over the
+/// live cards — that's inherent to a sheet presentation.
+private struct GlassSheetSurface: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content
+                .background { Color.clear.glassEffect(.regular, in: Rectangle()) }
+                .presentationBackground(.clear)
+        } else {
+            content.presentationBackground(FX.surface1)
+        }
     }
 }
 
@@ -1174,9 +1241,10 @@ struct DeviceMenuSheet: View {
             ScrollView { deviceList }
             footer
         }
+        .frame(maxHeight: .infinity)
+        .modifier(GlassSheetSurface())
         .presentationDetents([.medium, .large])
         .presentationDragIndicator(.visible)
-        .presentationBackground(FX.surface1)
         .onAppear {
             var initial = memberIds
             if let home { initial.insert(home) }
@@ -1186,7 +1254,6 @@ struct DeviceMenuSheet: View {
 
     private var header: some View {
         HStack {
-            Text("Audio group").font(FxFont.fustat(15, .bold)).foregroundStyle(FX.text)
             Spacer(minLength: Space.lg)
             Button {
                 Haptics.tap()
@@ -1314,6 +1381,7 @@ private struct CardPreview: View {
         .background(FX.bg.ignoresSafeArea())
         .environmentObject(FauxnosStore.preview(groups: [group]))
         .environmentObject(CardDragController())
+        .environmentObject(SourceMenuController())
     }
 }
 
@@ -1323,7 +1391,10 @@ private struct CardPreview: View {
 #Preview("V4 · multi, no media") { CardPreview(group: PreviewData.groupV4) }
 
 #Preview("Source picker") {
-    SourcePickerPopover(group: PreviewData.groupV1)
+    SourcePickerMenu(group: PreviewData.groupV1, onClose: {})
         .environmentObject(FauxnosStore.preview())
+        .padding(40)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(FX.bg)
 }
 #endif

@@ -26,6 +26,7 @@ struct GroupsListView: View {
     @ObservedObject private var dev = DevControl.shared   // FX-77 backdrop tuning
     @ObservedObject private var artColors = AlbumArtColorStore.shared  // FX-80 wordmark contrast
     @StateObject private var dragController = CardDragController()
+    @StateObject private var sourceMenu = SourceMenuController()
 
     /// FX-80: the wordmark fades out as the list scrolls up to it. 1 at rest, 0
     /// once the first cards have risen into the bar. Driven by scroll offset.
@@ -169,25 +170,65 @@ struct GroupsListView: View {
                     geo.contentOffset.y + geo.contentInsets.top
                 } action: { _, y in
                     wordmarkScrollOpacity = 1 - min(1, max(0, (y - 20) / 44))
+                    // The source menu floats at fixed global coords; scrolling
+                    // would strand it away from its trigger, so close it.
+                    if sourceMenu.openGroupId != nil { sourceMenu.close() }
                 }
                 .refreshable { await store.refresh() }
                 // FX-86: the transient offline toast, replacing the FX-80-removed
                 // ConnectionBadge. Sits just under the nav bar (content is already
                 // inset below it), floats over the cards, and is present only while
                 // the MQTT link isn't live — sliding away the moment it connects.
-                .overlay(alignment: .top) {
+                .overlay(alignment: .bottom) {
                     ZStack {
                         if store.connectionState != .connected {
                             ConnectionToast(state: store.connectionState)
-                                .transition(.move(edge: .top).combined(with: .opacity))
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                     }
-                    .padding(.top, Space.sm)
+                    .padding(.bottom, Space.xxl)
                     .animation(.fxEase, value: store.connectionState)
                 }
         }
+        // The source dropdown floats above everything (incl. the nav bar) anchored
+        // to its trigger's global frame — attached to the NavigationStack so its
+        // coordinate origin is the screen, matching the `.global` trigger frames.
+        .overlay { sourceMenuLayer }
         .tint(FX.text)
         .environmentObject(dragController)
+        .environmentObject(sourceMenu)
+    }
+
+    /// The floating glass source dropdown + a full-screen tap-catcher to dismiss
+    /// it. Positioned right-aligned just under the trigger that opened it. No
+    /// caret — it's simply a glass card of source rows (FX-89).
+    @ViewBuilder
+    private var sourceMenuLayer: some View {
+        if let id = sourceMenu.openGroupId,
+           let group = store.displayGroups.first(where: { $0.id == id }) {
+            let f = sourceMenu.triggerFrame
+            ZStack(alignment: .topLeading) {
+                // Invisible scrim: a tap anywhere outside the menu closes it.
+                Color.black.opacity(0.001)
+                    .contentShape(Rectangle())
+                    .onTapGesture { sourceMenu.close() }
+                SourcePickerMenu(group: group) { sourceMenu.close() }
+                    // Pop up from the trigger corner: scale + fade driven by
+                    // `shown` (an explicit scaleEffect, so the glass scales too).
+                    .scaleEffect(sourceMenu.shown ? 1 : 0.7, anchor: .topTrailing)
+                    .opacity(sourceMenu.shown ? 1 : 0)
+                    // Fixed 260-wide card: right edge under the trigger's right
+                    // edge, hugging just below it. `.offset` is render-only.
+                    .offset(x: max(Space.lg, f.maxX - 260), y: f.maxY + 2)
+            }
+            // Span the whole screen ignoring the safe area so this layer's origin is
+            // the true screen origin — matching the `.global` trigger frame the menu
+            // is offset by. (Attached to the safe-area-inset NavigationStack, the
+            // overlay would otherwise start below the nav bar and drop the menu ~a
+            // nav-bar-height too low.)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .ignoresSafeArea()
+        }
     }
 
     @ViewBuilder
@@ -401,9 +442,15 @@ private struct ConnectionToast: View {
 // MARK: - Loading skeleton
 
 /// Placeholder cards shown only before the first data arrives, so the screen
-/// reads as "loading" rather than "empty" (FX-28). A directional shimmer sweep
-/// (FX-61) keeps it feeling live without faking content.
+/// reads as "loading" rather than "empty" (FX-28). Each is a skeleton of the
+/// real single-device card (V2, no media): the same surface fill, hairline
+/// stroke and corner radius, with its name + source-trigger and volume row
+/// stubbed as bars. A directional shimmer sweep (FX-61) keeps it feeling live.
 private struct LoadingSkeleton: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    private static let shape = RoundedRectangle(cornerRadius: Radius.card, style: .circular)
+
     var body: some View {
         VStack(spacing: Space.lg) {
             ForEach(0..<3, id: \.self) { i in card(index: i) }
@@ -414,31 +461,33 @@ private struct LoadingSkeleton: View {
     }
 
     private func card(index: Int) -> some View {
-        VStack(alignment: .leading, spacing: Space.md) {
-            HStack(spacing: Space.sm) {
-                bar(width: 18, height: 18, radius: 5)
-                bar(width: 120, height: 14)
-                Spacer()
-                bar(width: 78, height: 28, radius: 14)
+        // Mirrors DeviceRow's two lines: name (+ source trigger) on top, the
+        // volume row (mute icon + slider track) below.
+        VStack(alignment: .leading, spacing: Space.xs) {
+            HStack(spacing: Space.md) {
+                bar(width: 120, height: 19, radius: 7)   // device name
+                Spacer(minLength: 0)
+                bar(width: 44, height: 24, radius: 12)   // source trigger (icon + chevron)
             }
             HStack(spacing: Space.md) {
-                bar(width: 64, height: 64, radius: Radius.art)
-                VStack(alignment: .leading, spacing: 8) {
-                    bar(width: 160, height: 16)
-                    bar(width: 110, height: 12)
-                }
-                Spacer()
+                bar(width: 22, height: 20, radius: 5)    // mute/speaker icon
+                fullBar(height: 6, radius: 3)            // volume slider track
             }
-            fullBar(height: 4, radius: 2)
         }
-        .padding(Space.lg)
-        .background(RoundedRectangle(cornerRadius: Radius.card, style: .continuous).fill(FX.surface2))
+        // Same content insets as the real V2 card (rowsSection, no media).
+        .padding(.horizontal, Space.xl)
+        .padding(.top, Space.lg)
+        .padding(.bottom, Space.lg)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // Same surface + stroke + radius as the real card: a no-art card uses the
+        // neutral palette (innerSurface == FX.surface1) at the device opacity.
+        .background(Self.shape.fill(FX.surface1.opacity(colorScheme == .dark ? 0.29 : 1.0)))
         // Directional shimmer (FX-61): a translucent highlight band slides L→R
-        // across each placeholder, staggered per card — the web
-        // `.fx-skeleton-card::after` translateX(-100% → 100%) sweep. Clipped to
-        // the card shape; reduce-motion leaves a static placeholder (no sweep).
+        // across each placeholder, staggered per card. Clipped to the card shape;
+        // reduce-motion leaves a static placeholder (no sweep).
         .overlay { ShimmerSweep(delay: Double(index) * 0.22) }
-        .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+        .clipShape(Self.shape)
+        .overlay { Self.shape.strokeBorder(FX.lineStrong, lineWidth: 1) }
     }
 
     private func bar(width: CGFloat, height: CGFloat, radius: CGFloat = 6) -> some View {
