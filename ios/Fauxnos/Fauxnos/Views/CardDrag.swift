@@ -45,6 +45,14 @@ struct CardFrameKey: PreferenceKey {
 
 extension CGRect { var center: CGPoint { CGPoint(x: midX, y: midY) } }
 
+/// The bright drop-target indicator stroke, shared between a hovered sibling card
+/// (`GroupCard`) and the window edge for a background/ungroup drop (FX-83) — so
+/// every drop target speaks one visual language.
+enum DropIndicator {
+    static let color: Color = FX.text
+    static let lineWidth: CGFloat = 2
+}
+
 // MARK: - Drag controller
 
 /// List-level state for an in-flight lift: which device is airborne, where the
@@ -55,6 +63,9 @@ final class CardDragController: ObservableObject {
     /// mapping and the animation agree on the exact same numbers.
     static let pressedScale: CGFloat = 0.98   // scale at the end of the press ramp
     static let draggingScale: CGFloat = 1.02  // resting scale while floating
+    /// Height of the "make room" gap opened below the source card (FX-83) — about
+    /// a single-device card tall, so the opened space reads as room for the card.
+    static let gapHeight: CGFloat = 80
 
     @Published var cardFrames: [String: CGRect] = [:]
     @Published var draggingClientId: String?
@@ -62,8 +73,16 @@ final class CardDragController: ObservableObject {
     @Published var hoverGroupId: String?
     /// Finger is over empty background (no card), which — for a device that's a
     /// member of a group — is the "remove from group" drop zone. Drives the
-    /// background drop-zone tint in `GroupsListView`.
+    /// background drop-zone tint + window-edge stroke in `GroupsListView`.
     @Published var hoverBackground = false
+    /// True while the finger hovers the space directly below the source card
+    /// (between it and the next card), for a device that can leave its group.
+    /// Opens an empty "make room" gap there (FX-83): the cards below slide down,
+    /// revealing more background to drop onto. It's pure space — not a drop zone
+    /// of its own — so the drop still routes through `hoverBackground` (always
+    /// true while `gapOpen` is), and the window-edge background treatment is the
+    /// only indicator. Drives the gap height in `GroupsListView`.
+    @Published var gapOpen = false
     @Published var preview: AnyView?
     @Published var previewWidth: CGFloat = 0
     @Published var previewScale: CGFloat = 1
@@ -111,7 +130,22 @@ final class CardDragController: ObservableObject {
             overAnyCard = true
             if gid != sourceGroupId { joinTarget = gid }
         }
+        // Empty background (not over any card) is the catch-all ungroup zone for
+        // a groupable device — drives the window-edge treatment.
         let background = joinTarget == nil && !overAnyCard && canLeaveGroup
+
+        // "Make room" gap: when that background hover is specifically in the space
+        // just below the source card — between it and the next card, stable band
+        // anchored to the source's bottom edge — open an empty gap there so the
+        // cards below slide down and there's clearly room to drop. The gap is just
+        // space (the drop still goes through `background`); the lower bound is the
+        // next card itself (`!overAnyCard`), so it can't flicker as the gap grows.
+        var gap = false
+        if background, let src = sourceGroupId.flatMap({ cardFrames[$0] }) {
+            gap = dragLocation.y >= src.maxY
+                && dragLocation.y <= src.maxY + Self.gapHeight + 60
+                && dragLocation.x >= src.minX && dragLocation.x <= src.maxX
+        }
 
         if joinTarget != hoverGroupId {
             if joinTarget != nil { Haptics.tap() }
@@ -121,6 +155,7 @@ final class CardDragController: ObservableObject {
             if background { Haptics.tap() }   // entered the remove zone
             hoverBackground = background
         }
+        if gap != gapOpen { gapOpen = gap }
     }
 
     func reset() {
@@ -129,6 +164,7 @@ final class CardDragController: ObservableObject {
         canLeaveGroup = false
         hoverGroupId = nil
         hoverBackground = false
+        gapOpen = false
         preview = nil
         previewWidth = 0
         previewScale = 1
@@ -316,8 +352,10 @@ struct LiftToRegroup: ViewModifier {
                 controller.reset()
             }
         } else if controller.hoverBackground {
-            // Dropped on empty background — leave the group, returning the device
-            // to its own. The list re-renders it as a standalone card.
+            // Dropped on empty background — including the opened "make room" gap
+            // below the source card, which is just more background — leave the
+            // group, returning the device to its own standalone card. The list
+            // re-renders it (the gap closes as the drag resets).
             Haptics.success()
             Task { await store.returnHome(clientId: client.id) }
             lifted = false
