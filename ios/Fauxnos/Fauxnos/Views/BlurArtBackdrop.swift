@@ -33,16 +33,37 @@ import SwiftUI
 import UIKit
 
 struct BlurArtBackdrop: View {
-    let url: URL
+    /// What the backdrop is showing. A real cover (`.art`) decodes via the image
+    /// store; the FX-87 null-state cover (`.generated`) is already a decoded
+    /// image. Either flows through the identical look + crossfade pipeline — so a
+    /// track starting (generated → art) crossfades exactly like a track change.
+    enum Source: Equatable {
+        case art(URL)
+        case generated(UIImage, key: String)
+
+        /// Stable identity used to detect a change and guard async races.
+        var key: String {
+            switch self {
+            case .art(let u):        return "art:" + u.absoluteString
+            case .generated(_, let k): return "gen:" + k
+            }
+        }
+        static func == (a: Source, b: Source) -> Bool { a.key == b.key }
+    }
+
+    let source: Source
     @ObservedObject private var dev = DevControl.shared
     @Environment(\.colorScheme) private var colorScheme
+
+    init(source: Source) { self.source = source }
+    init(url: URL) { self.source = .art(url) }
 
     private let store = AlbumArtImageStore.shared
 
     // The settled cover, and (only during a crossfade) the one sliding out — held
     // as decoded images so a role swap never triggers a reload flash.
     @State private var frontImage: UIImage?
-    @State private var frontURL: URL?
+    @State private var frontKey: String?
     @State private var outgoingImage: UIImage?
     /// Two independent 0→1 timelines so the slide can run slower / differently
     /// eased than the fade: `fadeT` drives the staggered opacity, `slideT` drives
@@ -51,7 +72,7 @@ struct BlurArtBackdrop: View {
     @State private var slideT: Double = 1
     /// The cover we're trying to land on; guards async races so a stale decode
     /// can't apply over a newer change.
-    @State private var desiredURL: URL?
+    @State private var desiredKey: String?
 
     // FX-77: backdrop knobs are mode-scoped (`<base>.dark` / `<base>.light`).
     private var m: String { colorScheme == .dark ? "dark" : "light" }
@@ -82,8 +103,8 @@ struct BlurArtBackdrop: View {
                 Color.black.opacity(dev.d("backdrop.scrim.\(m)", 0.0))
             }
         }
-        .onAppear { load(url, initial: true) }
-        .onChange(of: url) { _, newURL in load(newURL, initial: false) }
+        .onAppear { load(source, initial: true) }
+        .onChange(of: source) { _, newSource in load(newSource, initial: false) }
         .allowsHitTesting(false)
     }
 
@@ -113,7 +134,7 @@ struct BlurArtBackdrop: View {
                     stops: [
                         .init(color: .black, location: fadeStart),
                         .init(color: .clear,
-                              location: max(dev.f("backdrop.fadeEnd.\(m)", colorScheme == .dark ? 0.6 : 0.79), fadeStart + 0.01)),
+                              location: max(dev.f("backdrop.fadeEnd.\(m)", 0.82), fadeStart + 0.01)),
                     ],
                     startPoint: .top, endPoint: .bottom
                 )
@@ -123,27 +144,34 @@ struct BlurArtBackdrop: View {
 
     // MARK: Load + drive
 
-    private func load(_ url: URL, initial: Bool) {
-        guard url != frontURL else { return }
-        desiredURL = url
-        // Decode the incoming cover BEFORE touching the layers. Cached → instant;
-        // otherwise the old cover simply holds until the new is ready (no flash).
-        if let cached = store.cached(url.absoluteString) {
-            apply(cached, url: url, initial: initial)
-        } else {
-            Task {
-                let img = await store.image(for: url.absoluteString)
-                guard desiredURL == url, let img else { return }
-                apply(img, url: url, initial: initial)
+    private func load(_ source: Source, initial: Bool) {
+        let key = source.key
+        guard key != frontKey else { return }
+        desiredKey = key
+        switch source {
+        case .generated(let img, _):
+            // Already a decoded image — apply straight away.
+            apply(img, key: key, initial: initial)
+        case .art(let url):
+            // Decode the incoming cover BEFORE touching the layers. Cached →
+            // instant; otherwise the old cover holds until ready (no flash).
+            if let cached = store.cached(url.absoluteString) {
+                apply(cached, key: key, initial: initial)
+            } else {
+                Task {
+                    let img = await store.image(for: url.absoluteString)
+                    guard desiredKey == key, let img else { return }
+                    apply(img, key: key, initial: initial)
+                }
             }
         }
     }
 
-    private func apply(_ img: UIImage, url: URL, initial: Bool) {
+    private func apply(_ img: UIImage, key: String, initial: Bool) {
         // First cover (or appearing fresh): just show it, no crossfade.
         if initial || frontImage == nil {
             var t = Transaction(); t.disablesAnimations = true
-            withTransaction(t) { frontImage = img; frontURL = url; outgoingImage = nil; fadeT = 1; slideT = 1 }
+            withTransaction(t) { frontImage = img; frontKey = key; outgoingImage = nil; fadeT = 1; slideT = 1 }
             return
         }
         let fadeDur = dev.f("backdrop.xfade.\(m)", 0.6)
@@ -155,7 +183,7 @@ struct BlurArtBackdrop: View {
         withTransaction(reset) {
             outgoingImage = frontImage
             frontImage = img
-            frontURL = url
+            frontKey = key
             fadeT = 0
             slideT = 0
         }

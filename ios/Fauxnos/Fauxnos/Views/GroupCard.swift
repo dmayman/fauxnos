@@ -59,8 +59,15 @@ struct GroupCard: View {
     private var hasControls: Bool { source == "spotify" && hasMedia }
 
     private var palette: ArtPalette {
-        guard hasMedia, let raw = artStore.color(for: track?.artUrl) else { return .neutral }
-        return buildArtPalette(from: raw, dark: colorScheme == .dark)
+        if hasMedia, let raw = artStore.color(for: track?.artUrl) {
+            return buildArtPalette(from: raw, dark: colorScheme == .dark)
+        }
+        // FX-87: idle / no-art cards take the SAME translucent treatment as a
+        // playing card — just hueless. A neutral-chroma palette lands cardTint /
+        // innerSurface at the media card's exact lightness, so the blurred
+        // backdrop (the generated time-of-day field) glows through every card
+        // identically instead of being blocked by a solid surface.
+        return buildArtPalette(from: OKLCH(l: 0.5, c: 0, h: 0), dark: colorScheme == .dark)
     }
 
     /// FX-77: dev-tuning keys are mode-scoped (`<base>.dark` / `<base>.light`).
@@ -150,12 +157,19 @@ struct GroupCard: View {
 
     @ViewBuilder
     private var outerBackground: some View {
-        // FX-77: on a media card the tint goes translucent (default 1.0 = opaque,
-        // unchanged) so the blurred album backdrop behind the list shows through.
-        // Idle / empty cards stay solid — the backdrop only renders while playing.
-        if hasMedia { palette.cardTint.opacity(dev.d("media.opacity.\(modeKey)", colorScheme == .dark ? 0.4 : 0.66)) }  // V1/V3
-        else if isEmptyMedia { FX.surface2 }   // V4
-        else { FX.surface1 }                   // V2
+        // FX-77 + FX-87: translucent so the blurred backdrop (album art when
+        // playing, the generated time-of-day field when idle) glows through.
+        if showMediaCard {
+            // V1/V3/V4: the media-region tint; the floating rows panel below
+            // carries the device sub-card treatment.
+            palette.cardTint.opacity(dev.d("media.opacity.\(modeKey)", colorScheme == .dark ? 0.4 : 0.66))
+        } else {
+            // V2 (single, no media): the whole card IS a device, so it wears the
+            // EXACT device sub-card settings (innerSurface fill + device.opacity)
+            // — matching the floating rows panel of a playing card — rather than
+            // the outer media tint.
+            palette.innerSurface.opacity(dev.d("device.opacity.\(modeKey)", colorScheme == .dark ? 0.29 : 1.0))
+        }
     }
 
     // MARK: Media region (V1/V3)
@@ -318,11 +332,14 @@ struct GroupCard: View {
                     draggable: isMulti && !isHomeDevice,
                     nameColor: FX.text,
                     // Every card's slider is neutral now — no album accent on the
-                    // fill (matching the "All" row). Track is the translucent
-                    // line-strong on any media card (it sits on a tint), or the
-                    // solid neutral surface on a plain single-device card.
+                    // fill (matching the "All" row). FX-87: the track is the
+                    // translucent line-strong on EVERY card — a bare single-device
+                    // card now wears the same device sub-card treatment over the
+                    // backdrop, so its slider track matches a media card's rows
+                    // (the old solid FX.surface3 read as an opaque slab over the
+                    // translucent card).
                     accent: FX.text,
-                    track: showMediaCard ? FX.lineStrong : FX.surface3,
+                    track: FX.lineStrong,
                     iconTint: muted,
                     faintTint: faint,
                     additive: mediaAdditive,
