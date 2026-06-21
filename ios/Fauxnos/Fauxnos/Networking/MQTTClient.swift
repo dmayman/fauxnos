@@ -34,10 +34,24 @@
 
 import Foundation
 
+/// Coarse connection lifecycle surfaced to the UI (FX-86 offline toast).
+/// `.connecting` covers the initial dial and every reconnect attempt — the
+/// socket opening through CONNACK — and drives the toast's spinner. `.connected`
+/// is a live, CONNACK-accepted session (toast hidden). `.disconnected` is the
+/// gap between attempts (backoff wait) or a deliberate close — a static
+/// "Offline" with no spinner. Since the client reconnects forever with backoff,
+/// a down broker reads as `.connecting` during each attempt and `.disconnected`
+/// during the widening waits between them.
+enum MQTTConnectionState: Equatable {
+    case connecting
+    case connected
+    case disconnected
+}
+
 final class MQTTClient: NSObject {
     // MARK: Callbacks (always delivered on the main thread)
     var onMessage: ((_ topic: String, _ payload: Data) -> Void)?
-    var onConnectedChange: ((Bool) -> Void)?
+    var onStateChange: ((MQTTConnectionState) -> Void)?
 
     // MARK: Config
     private let url: URL
@@ -50,7 +64,8 @@ final class MQTTClient: NSObject {
     private let delegateQueue = OperationQueue()
     private var task: URLSessionWebSocketTask?
     private var rxBuffer = Data()
-    private var mqttConnected = false      // CONNACK accepted
+    private var mqttConnected = false      // CONNACK accepted (publish gate)
+    private var connectionState: MQTTConnectionState = .disconnected
     private var shouldRun = false          // user intends to stay connected
     private var reconnectAttempt = 0
     private var pingTimer: DispatchSourceTimer?
@@ -100,6 +115,7 @@ final class MQTTClient: NSObject {
     // MARK: - Socket management (delegateQueue only)
 
     private func openSocket() {
+        setState(.connecting)
         rxBuffer.removeAll(keepingCapacity: true)
         let task = session.webSocketTask(with: url, protocols: ["mqtt"])
         self.task = task
@@ -114,10 +130,11 @@ final class MQTTClient: NSObject {
         pingTimer = nil
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
-        if mqttConnected {
-            mqttConnected = false
-            if notify { emitConnected(false) }
-        }
+        mqttConnected = false
+        // We're between attempts now (the reconnect path schedules a delayed
+        // openSocket, which flips back to .connecting). A deliberate disconnect
+        // stays here. Either way the live socket is gone → .disconnected.
+        if notify { setState(.disconnected) }
     }
 
     private func scheduleReconnect() {
@@ -213,7 +230,7 @@ final class MQTTClient: NSObject {
         // delegate queue with a live connection, so call the encoder directly.
         sendPublish(topic: "get/clients/all/status", payload: Data())
         startPing()
-        emitConnected(true)
+        setState(.connected)
     }
 
     private func handlePublish(flags: UInt8, payload: [UInt8]) {
@@ -320,8 +337,13 @@ final class MQTTClient: NSObject {
 
     // MARK: - Main-thread callback dispatch
 
-    private func emitConnected(_ value: Bool) {
-        DispatchQueue.main.async { [weak self] in self?.onConnectedChange?(value) }
+    /// Update the lifecycle state and notify the UI, de-duping no-op transitions
+    /// (e.g. a teardown that's already `.disconnected`) so the toast doesn't
+    /// thrash. Runs on `delegateQueue`; the callback hops to main.
+    private func setState(_ state: MQTTConnectionState) {
+        guard connectionState != state else { return }
+        connectionState = state
+        DispatchQueue.main.async { [weak self] in self?.onStateChange?(state) }
     }
 
     private func emitMessage(topic: String, payload: Data) {

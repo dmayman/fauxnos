@@ -28,8 +28,13 @@ final class FauxnosStore: ObservableObject {
     // Friendly display names from /api/clients, keyed by client id (web nameMap).
     @Published private(set) var clientNames: [String: String] = [:]
 
-    // Connection
-    @Published private(set) var mqttConnected = false
+    // Connection. `connectionState` is the full lifecycle (drives the FX-86
+    // offline toast — spinner while connecting, "Offline" while disconnected,
+    // hidden when connected). Starts `.connecting` so the toast shows from cold
+    // launch until the first CONNACK. `mqttConnected` stays as a convenience for
+    // call sites that only care whether the link is live.
+    @Published private(set) var connectionState: MQTTConnectionState = .connecting
+    var mqttConnected: Bool { connectionState == .connected }
 
     // Live MQTT overlay, keyed by client id
     @Published private(set) var volumes: [String: Int] = [:]
@@ -158,10 +163,10 @@ final class FauxnosStore: ObservableObject {
 
     private func connectMQTT() {
         let client = MQTTClient(url: config.mqttWebSocketURL, topics: subscriptions)
-        client.onConnectedChange = { [weak self] connected in
+        client.onStateChange = { [weak self] state in
             // MQTTClient guarantees main-thread delivery, so we're already on
             // the MainActor and can touch published state directly.
-            MainActor.assumeIsolated { self?.mqttConnected = connected }
+            MainActor.assumeIsolated { self?.connectionState = state }
         }
         client.onMessage = { [weak self] topic, payload in
             MainActor.assumeIsolated { self?.handle(topic: topic, payload: payload) }
@@ -549,7 +554,7 @@ extension FauxnosStore {
         store.tracks = PreviewData.tracks
         store.playback = PreviewData.playback
         store.clientNames = PreviewData.names
-        store.mqttConnected = connected
+        store.connectionState = connected ? .connected : .disconnected
         store.lastUpdated = Date()
         return store
     }
