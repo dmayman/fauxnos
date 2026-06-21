@@ -674,33 +674,30 @@ struct FxSlider: View {
         GeometryReader { geo in
             let w = geo.size.width
             let pct = CGFloat(min(max(value, 0), 100)) / 100
+            // Track grows from 6 → 12pt while dragging (FX-88) so it's easier to
+            // see under the thumb. Stays centered in the fixed 28pt frame below,
+            // so the card/row height never changes.
+            let trackH: CGFloat = dragging ? 12 : 6
             ZStack(alignment: .leading) {
-                Capsule().fill(track).frame(height: 6)
-                Capsule().fill(fill).frame(width: max(6, w * pct), height: 6)
+                Capsule().fill(track).frame(height: trackH)
+                Capsule().fill(fill).frame(width: max(trackH, w * pct), height: trackH)
                 // Touch-reveal thumb (FX-60): hidden at rest so a resting card
                 // reads as a clean fill bar (web `.fx-volume.card-v2 .fx-volume-
                 // thumb { opacity: 0 }`); fades + grows in while dragging (the
                 // touch analog of the web's hover/active reveal). The contentShape
                 // Rectangle below keeps the full-height drag target regardless.
+                //
+                // FX-88: `.scaleEffect` MUST come before `.offset`. SwiftUI scales
+                // around the view's un-offset layout center, so scaling *after* the
+                // offset multiplies the dot's position by the scale factor — making
+                // it drift ahead of both the finger and the white fill bar. Scaling
+                // first (around the dot's own center) then offsetting locks the dot
+                // center to `w * pct`, exactly where the fill bar ends.
                 Circle().fill(fill).frame(width: 14, height: 14)
                     .shadow(color: .black.opacity(0.22), radius: 1.5, y: 1)
+                    .scaleEffect(dragging ? 2.0 : 0.5)
+                    .opacity(dragging ? 1 : 0)
                     .offset(x: min(max(0, w * pct - 7), w - 14))
-                    .scaleEffect(dragging ? 1.25 : 0.5)
-                    .opacity(dragging ? 1 : 0)
-                // Live % bubble (FX-60 nicety): floats above the thumb while
-                // dragging, fades out on release. Non-interactive so it never
-                // intercepts the drag. Center clamped to stay within the track.
-                Text("\(Int(value.rounded()))%")
-                    .font(.caption2.weight(.semibold)).monospacedDigit()
-                    .foregroundStyle(FX.text)
-                    .padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(.regularMaterial, in: Capsule())
-                    .shadow(color: .black.opacity(0.18), radius: 3, y: 1)
-                    .fixedSize()
-                    .position(x: min(max(w * pct, 7), w - 7), y: -16)
-                    .opacity(dragging ? 1 : 0)
-                    .scaleEffect(dragging ? 1 : 0.8, anchor: .bottom)
-                    .allowsHitTesting(false)
             }
             .frame(height: 28)
             .contentShape(Rectangle())
