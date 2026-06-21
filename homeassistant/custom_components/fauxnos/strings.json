@@ -1,0 +1,23 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Fauxnos",
+        "description": "Connect to your Fauxnos server. Fauxnos stays the source of truth — Home Assistant just mirrors each room as a media player over the existing MQTT bus.",
+        "data": {
+          "rest_url": "Fauxnos server URL",
+          "mqtt_host": "MQTT broker host",
+          "mqtt_port": "MQTT broker port",
+          "mqtt_username": "MQTT username (optional)",
+          "mqtt_password": "MQTT password (optional)"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Could not reach the Fauxnos server at that URL. Check the address and that fauxnos-server is running."
+    },
+    "abort": {
+      "already_configured": "This Fauxnos server is already configured."
+    }
+  }
+}

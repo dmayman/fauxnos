@@ -1,0 +1,12 @@
+{
+  "domain": "fauxnos",
+  "name": "Fauxnos",
+  "version": "0.1.0",
+  "config_flow": true,
+  "documentation": "https://github.com/dmayman/fauxnos/tree/main/homeassistant/custom_components/fauxnos",
+  "issue_tracker": "https://github.com/dmayman/fauxnos/issues",
+  "codeowners": ["@dmayman"],
+  "dependencies": [],
+  "requirements": ["paho-mqtt"],
+  "iot_class": "local_push"
+}
