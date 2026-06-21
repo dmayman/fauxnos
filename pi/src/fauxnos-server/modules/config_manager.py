@@ -421,8 +421,15 @@ class ConfigManager:
 
         raise Exception("No available client IDs (maximum reached)")
 
-    def generate_go_librespot_config(self, client: ClientConfig) -> str:
-        """Generate go-librespot configuration for a client"""
+    def generate_go_librespot_config(self, client: ClientConfig,
+                                     device_name_override: Optional[str] = None) -> str:
+        """Generate go-librespot configuration for a client.
+
+        `device_name_override` lets a caller pin the Spotify Connect device
+        name to something other than the persisted display name — used to
+        reflect group membership (e.g. "Kitchen +1") without mutating the
+        stored client.name. When None, falls back to client.name.
+        """
         fifo_base = os.path.expanduser(self.server_config['server']['paths']['fifo_base'])
         fifo_path = f"{fifo_base}/spotify_{client.id}"
 
@@ -444,7 +451,7 @@ class ConfigManager:
         # contract matches fauxnos's UI scale. (initial_volume is also
         # interpreted in that range.)
         config = {
-            'device_name': client.name,
+            'device_name': device_name_override or client.name,
             'initial_volume': 50,
             'volume_steps': 100,
             'external_volume': True,

@@ -134,6 +134,15 @@ class FauxnosServer:
         except Exception as e:
             self.log(f"Startup reconcile failed: {e}", "WARNING")
 
+        # Reconcile go-librespot device names against live group membership.
+        # At boot clients reconnect into solo groups, so this clears any stale
+        # "+N" suffix left in a config.yml from before a reboot/crash; if a
+        # group genuinely persists, the home client keeps its correct "+N".
+        try:
+            self.api_server._reconcile_group_device_names()
+        except Exception as e:
+            self.log(f"Startup device-name reconcile failed: {e}", "WARNING")
+
     def start_client_monitoring(self):
         """Start client event monitoring"""
         self.log("Starting client event monitoring...")

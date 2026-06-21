@@ -837,37 +837,15 @@ class FauxnosAPIServer:
 
         # 1. go-librespot device_name (Spotify Connect picker). This lives
         # on the server box for every client (one go-librespot per client).
+        # Route through the group-aware reconciler rather than writing the
+        # bare new name directly: if this client is currently the home of a
+        # multi-client group, the correct Connect name is "<new name> +N", and
+        # the reconciler computes that from live group state. It is idempotent
+        # (only restarts go-librespot when the name actually changes), so the
+        # rename costs exactly one restart for this client.
         try:
-            client = self.config_manager.get_client_config(client_id)
-            if client is None:
-                status["spotify_connect"] = "failed (client not found after rename)"
-            else:
-                config_content = self.config_manager.generate_go_librespot_config(client)
-                go_librespot_base = Path(
-                    self.config_manager.server_config['server']['paths']['go_librespot_config_base']
-                ).expanduser()
-                target_dir = go_librespot_base / client_id
-                target_dir.mkdir(parents=True, exist_ok=True)
-                (target_dir / "config.yml").write_text(config_content, encoding="utf-8")
-
-                result = subprocess.run(
-                    ["systemctl", "--user", "restart", f"go-librespot-{client_id}.service"],
-                    check=False, capture_output=True, text=True, timeout=15,
-                )
-                if result.returncode == 0:
-                    status["spotify_connect"] = "updated"
-                    self.log(
-                        f"Restarted go-librespot-{client_id}.service "
-                        f"(device_name='{new_name}')",
-                        "SUCCESS",
-                    )
-                else:
-                    err = (result.stderr or result.stdout or "").strip()
-                    status["spotify_connect"] = f"config written, restart failed ({err})"
-                    self.log(
-                        f"go-librespot-{client_id}.service restart failed: {err}",
-                        "WARNING",
-                    )
+            applied = self._reconcile_group_device_names()
+            status["spotify_connect"] = applied.get(client_id, "skipped")
         except Exception as e:
             status["spotify_connect"] = f"failed ({e})"
             self.log(f"go-librespot rename propagation failed for {client_id}: {e}", "ERROR")
@@ -943,6 +921,95 @@ class FauxnosAPIServer:
                 self.log(f"shairport rename failed: {e}", "ERROR")
 
         return status
+
+    # ── go-librespot group-aware device naming ────────────────────────────
+
+    _DEVICE_NAME_RE = re.compile(r'(?m)^device_name:\s*"(.*)"\s*$')
+
+    def _go_librespot_config_path(self, client_id: str) -> Path:
+        base = Path(
+            self.config_manager.server_config['server']['paths']['go_librespot_config_base']
+        ).expanduser()
+        return base / client_id / "config.yml"
+
+    def _current_go_librespot_device_name(self, client_id: str):
+        """Parse the device_name currently on disk for a client's go-librespot
+        config (None if missing/unparseable). Lets the reconciler skip a
+        needless service restart — and the ~2s Spotify Connect blip it causes —
+        when the computed name already matches what's live."""
+        try:
+            cfg = self._go_librespot_config_path(client_id)
+            if not cfg.exists():
+                return None
+            m = self._DEVICE_NAME_RE.search(cfg.read_text(encoding="utf-8"))
+            return m.group(1) if m else None
+        except Exception:
+            return None
+
+    def _apply_go_librespot_device_name(self, client_id: str, device_name: str) -> str:
+        """Rewrite a client's go-librespot config so its Spotify Connect name is
+        `device_name`, then restart the service — but only when it differs from
+        what's on disk. Returns a status string ("unchanged"/"updated"/...)."""
+        if self._current_go_librespot_device_name(client_id) == device_name:
+            return "unchanged"
+        client = self.config_manager.get_client_config(client_id)
+        if client is None:
+            return "skipped (client not found)"
+        config_content = self.config_manager.generate_go_librespot_config(
+            client, device_name_override=device_name
+        )
+        cfg = self._go_librespot_config_path(client_id)
+        cfg.parent.mkdir(parents=True, exist_ok=True)
+        cfg.write_text(config_content, encoding="utf-8")
+        result = subprocess.run(
+            ["systemctl", "--user", "restart", f"go-librespot-{client_id}.service"],
+            check=False, capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            self.log(
+                f"Restarted go-librespot-{client_id}.service (device_name='{device_name}')",
+                "SUCCESS",
+            )
+            return "updated"
+        err = (result.stderr or result.stdout or "").strip()
+        self.log(f"go-librespot-{client_id}.service restart failed: {err}", "WARNING")
+        return f"config written, restart failed ({err})"
+
+    def _reconcile_group_device_names(self) -> dict:
+        """Make every client's go-librespot device_name reflect its current
+        snapcast group membership.
+
+        A group's "home" client is the one whose `home_source` matches the
+        group's stream_id (same derivation as handle_get_groups). When a home
+        client shares its group with N other connected clients, its Spotify
+        Connect name becomes "<display_name> +N"; every solo client (and every
+        non-home member) shows its plain display_name. Idempotent — only
+        rewrites a config + restarts go-librespot when the name actually
+        changes — so it is safe to call after every join / return-home / source
+        switch. Returns {client_id: status} for callers that want it.
+        """
+        from .group_manager import SnapcastGroupManager
+        gm = SnapcastGroupManager(config_manager=self.config_manager)
+        groups = gm.get_groups()
+
+        raw_clients = self.config_manager.server_config.get("clients", [])
+        home_source_map = {
+            c.get("home_source"): c.get("id")
+            for c in raw_clients if c.get("home_source") and c.get("id")
+        }
+        # Start every client at its plain display name; promote group homes below.
+        desired = {c["id"]: c.get("name", c["id"]) for c in raw_clients if c.get("id")}
+
+        for group in groups:
+            home_cid = home_source_map.get(group.get("stream_id"))
+            if not home_cid or home_cid not in desired:
+                continue
+            extra = sum(1 for c in group.get("clients", []) if c.get("connected")) - 1
+            if extra >= 1:
+                desired[home_cid] = f"{desired[home_cid]} +{extra}"
+
+        return {cid: self._apply_go_librespot_device_name(cid, name)
+                for cid, name in desired.items()}
 
     def handle_apply_dac_overlay(self, client_id: str):
         """Handle POST /api/clients/<client_id>/dac_overlay/apply.
@@ -2449,6 +2516,14 @@ class FauxnosAPIServer:
             except Exception:
                 results["mqtt_mode"] = False
 
+            # Switching a multi-client group's stream moves the "home" client
+            # (it's derived from stream_id), so the "+N" suffix needs to follow
+            # the new host. Best-effort.
+            try:
+                self._reconcile_group_device_names()
+            except Exception as e:
+                self.log(f"device-name reconcile after source switch failed: {e}", "WARNING")
+
             return jsonify({"status": "ok", "results": results})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -2591,6 +2666,15 @@ class FauxnosAPIServer:
                 )
             except Exception:
                 pass
+
+            # Reflect the new group size in the host's Spotify Connect name
+            # (e.g. "Kitchen +1"). Best-effort — the snapcast move already
+            # succeeded, so a naming hiccup must not fail the join.
+            try:
+                self._reconcile_group_device_names()
+            except Exception as e:
+                self.log(f"device-name reconcile after join failed: {e}", "WARNING")
+
             return jsonify({"status": "joined"})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -2645,6 +2729,14 @@ class FauxnosAPIServer:
                         failed.append(cid)
                 if failed:
                     return jsonify({"error": f"Some returns failed: {failed}"}), 500
+
+            # Group shrank/disbanded — revert each affected host's Spotify
+            # Connect name back toward its plain display name (or a smaller
+            # "+N"). Best-effort; the snapcast moves already committed.
+            try:
+                self._reconcile_group_device_names()
+            except Exception as e:
+                self.log(f"device-name reconcile after return-home failed: {e}", "WARNING")
 
             return jsonify({"status": "ok"})
         except Exception as e:
