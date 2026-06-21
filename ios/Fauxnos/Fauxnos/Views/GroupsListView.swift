@@ -7,9 +7,15 @@
 //  MQTT in real time with no manual refresh. Each group renders as a `GroupCard`.
 //
 //  FX-33 design pass: the deliberate Fauxnos ground (FX.bg), generous card
-//  spacing, a refined live/offline pill, and — folding in FX-28 — a genuine
-//  loading state (skeleton placeholder cards) distinct from the loaded-empty
-//  state, so the list never flashes "no devices" before the first data lands.
+//  spacing, and — folding in FX-28 — a genuine loading state (skeleton
+//  placeholder cards) distinct from the loaded-empty state, so the list never
+//  flashes "no devices" before the first data lands.
+//
+//  FX-80 header cleanup: the live/offline badge is gone and the large title is
+//  dropped for an inline-only nav bar (no large title overlapping the list on
+//  scroll). The title is the "fauxnos" wordmark in Fustat Bold, whose color
+//  tracks the backdrop behind the bar — illuminated white over dark art,
+//  darkened over light art, plain gray with no artwork (see `wordmarkStyle`).
 //
 
 import SwiftUI
@@ -18,23 +24,62 @@ struct GroupsListView: View {
     @EnvironmentObject private var store: FauxnosStore
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var dev = DevControl.shared   // FX-77 backdrop tuning
+    @ObservedObject private var artColors = AlbumArtColorStore.shared  // FX-80 wordmark contrast
     @StateObject private var dragController = CardDragController()
+
+    /// FX-80: the wordmark fades out as the list scrolls up to it. 1 at rest, 0
+    /// once the first cards have risen into the bar. Driven by scroll offset.
+    @State private var wordmarkScrollOpacity: Double = 1
 
     /// FX-77: the cover of the top playing group, rendered full-bleed behind the
     /// whole list as a blurred backdrop the translucent cards float over. nil when
     /// nothing is playing (or the backdrop is toggled off). In DEBUG, the Mac
     /// album chooser (`demo.art`) overrides the live cover so the look can be
     /// tuned against any artwork without live Spotify.
-    private var backdropArtURL: URL? {
+    /// The art string driving the backdrop (and now the wordmark's contrast
+    /// decision). Kept as the raw string so it keys `AlbumArtColorStore` exactly
+    /// as the cards do; `backdropArtURL` derives the URL the backdrop renders.
+    private var backdropArtSource: String? {
         guard dev.b("backdrop.enabled.\(colorScheme == .dark ? "dark" : "light")", true) else { return nil }
         #if DEBUG
-        if let demo = dev.s("demo.art"), let url = URL(string: demo) { return url }
+        if let demo = dev.s("demo.art") { return demo }
         #endif
         for g in store.displayGroups where store.currentSource(of: g) == "spotify" {
-            if let t = store.track(for: g), t.hasMeta,
-               let s = t.artUrl, let url = URL(string: s) { return url }
+            if let t = store.track(for: g), t.hasMeta, let s = t.artUrl { return s }
         }
         return nil
+    }
+
+    private var backdropArtURL: URL? { backdropArtSource.flatMap { URL(string: $0) } }
+
+    /// FX-80: the "fauxnos" wordmark adapts to whatever sits behind the bar.
+    /// Over a dark backdrop it's translucent white, linear-added so it glows off
+    /// the art; over a light backdrop it flips to a dark, `.plusDarker` mark so it
+    /// stays legible (white would wash out). With no art, a plain mode-adaptive
+    /// gray on the solid ground. The backdrop's brightness behind the bar is the
+    /// cover's average luma composited over `FX.bg` at the backdrop's top opacity
+    /// (it renders full-strength at the top, fading downward).
+    private var wordmarkStyle: WordmarkStyle {
+        guard backdropArtURL != nil, let src = backdropArtSource else {
+            return WordmarkStyle(color: FX.text2, blend: .normal)
+        }
+        artColors.ensure(src)
+        guard let artLuma = artColors.luma(for: src) else {
+            return WordmarkStyle(color: .white.opacity(0.5), blend: .plusLighter)  // loading → assume art
+        }
+        let dark = colorScheme == .dark
+        let topOpacity = dark ? 0.79 : 0.74              // BlurArtBackdrop baseOpacity default
+        let groundLuma = dark ? 0.024 : 0.976            // FX.bg luma (#060606 / #F9F9F9)
+        let behindBar = topOpacity * artLuma + (1 - topOpacity) * groundLuma
+        return behindBar > 0.55
+            ? WordmarkStyle(color: .black.opacity(0.5), blend: .plusDarker)        // light backdrop → darkened
+            : WordmarkStyle(color: .white.opacity(0.5), blend: .plusLighter)       // dark backdrop  → illuminated
+    }
+
+    /// How far the backdrop crossfades a track change over — the wordmark's color
+    /// crossfade rides the same duration so the two transition together (FX-80).
+    private var backdropCrossfade: Double {
+        dev.d("backdrop.xfade.\(colorScheme == .dark ? "dark" : "light")", 0.6)
     }
 
     var body: some View {
@@ -60,11 +105,28 @@ struct GroupsListView: View {
                     .animation(.fxEase, value: dragController.hoverBackground)
                     .animation(.easeInOut(duration: 0.5), value: backdropArtURL != nil)
                 }
-                .navigationTitle("Fauxnos")
+                // FX-80: the standard iOS nav bar (its translucent material is the
+                // blur that fades cards behind it as they scroll), but inline-only
+                // — no large title that overlaps the list on scroll. The title is
+                // the "fauxnos" wordmark in the brand face (Fustat Bold); its color
+                // adapts to the backdrop behind the bar (see `wordmarkStyle`).
+                .navigationTitle("fauxnos")
+                .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        ConnectionBadge(connected: store.mqttConnected)
+                    ToolbarItem(placement: .principal) {
+                        WordmarkTitle(style: wordmarkStyle,
+                                      crossfade: backdropCrossfade,
+                                      scrollOpacity: wordmarkScrollOpacity)
                     }
+                }
+                // Fade the wordmark out as the list scrolls up into the bar.
+                // contentOffset.y + contentInsets.top is 0 at rest, positive once
+                // scrolled; the mark holds for the first few points (so a nudge
+                // doesn't dim it) then fades as the cards reach it.
+                .onScrollGeometryChange(for: CGFloat.self) { geo in
+                    geo.contentOffset.y + geo.contentInsets.top
+                } action: { _, y in
+                    wordmarkScrollOpacity = 1 - min(1, max(0, (y - 20) / 44))
                 }
                 .refreshable { await store.refresh() }
         }
@@ -157,6 +219,62 @@ struct GroupsListView: View {
                                    description: Text("No connected devices reported by \(store.config.host)."))
             .padding(.top, 80)
         }
+    }
+}
+
+// MARK: - Wordmark title (FX-80)
+
+/// The resolved look of the "fauxnos" mark for the current backdrop — a color +
+/// blend pair. Equatable so `WordmarkTitle` can crossfade when it changes.
+private struct WordmarkStyle: Equatable {
+    var color: Color
+    var blend: BlendMode
+}
+
+/// The nav-bar wordmark. When its `style` changes (a track-change flips the
+/// backdrop light↔dark, or art finishes loading) it crossfades between the old
+/// and new look over `crossfade` seconds — matched to the backdrop's own fade so
+/// the two transition together. Blend modes can't tween, so this dissolves two
+/// fully-rendered layers rather than animating a single one. `scrollOpacity`
+/// multiplies on top, fading the whole mark out as the list scrolls up to it.
+private struct WordmarkTitle: View {
+    let style: WordmarkStyle
+    let crossfade: Double
+    let scrollOpacity: Double
+
+    @State private var shown: WordmarkStyle
+    @State private var outgoing: WordmarkStyle?
+    @State private var t: Double = 1   // incoming layer opacity, 0→1 across a swap
+
+    init(style: WordmarkStyle, crossfade: Double, scrollOpacity: Double) {
+        self.style = style
+        self.crossfade = crossfade
+        self.scrollOpacity = scrollOpacity
+        _shown = State(initialValue: style)
+    }
+
+    var body: some View {
+        ZStack {
+            if let outgoing { label(outgoing).opacity(1 - t) }
+            label(shown).opacity(t)
+        }
+        .opacity(scrollOpacity)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("fauxnos")
+        .accessibilityAddTraits(.isHeader)
+        .onChange(of: style) { _, new in
+            outgoing = shown
+            shown = new
+            t = 0
+            withAnimation(.linear(duration: crossfade)) { t = 1 } completion: { outgoing = nil }
+        }
+    }
+
+    private func label(_ s: WordmarkStyle) -> some View {
+        Text("fauxnos")
+            .font(FxFont.fustat(21, .bold))
+            .foregroundStyle(s.color)
+            .blendMode(s.blend)
     }
 }
 
@@ -270,26 +388,6 @@ private struct StaggeredAppear<Content: View>: View {
                     shown = true
                 }
             }
-    }
-}
-
-// MARK: - Connection badge
-
-private struct ConnectionBadge: View {
-    let connected: Bool
-    var body: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(connected ? FX.ok : FX.warn)
-                .frame(width: 7, height: 7)
-            Text(connected ? "Live" : "Offline")
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(FX.text2)
-        }
-        .padding(.horizontal, Space.sm)
-        .padding(.vertical, 5)
-        .background(.ultraThinMaterial, in: Capsule())
-        .accessibilityLabel(connected ? "Real-time connected" : "Real-time disconnected")
     }
 }
 

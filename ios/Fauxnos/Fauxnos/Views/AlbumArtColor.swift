@@ -137,11 +137,20 @@ func buildArtPalette(from raw: OKLCH, dark: Bool) -> ArtPalette {
     )
 }
 
-// MARK: - Dominant-color extraction from a UIImage
+// MARK: - Dominant color + average brightness, extracted from a UIImage
 
-/// Downscale to 32×32, histogram pixels into 36 hue buckets, return the bucket
-/// with the highest summed chroma. Returns nil for near-grayscale covers.
-private func extractDominant(from image: UIImage) -> OKLCH? {
+/// One downscaled pixel pass over the cover yields two independent signals:
+///   • `dominant` — the most-saturated hue bucket (the card accent); nil for
+///     near-grayscale covers, exactly as before.
+///   • `avgLuma`  — the mean Rec.601 luma over all opaque pixels (0…1), used to
+///     decide whether the blurred backdrop behind the nav bar is light or dark
+///     so the wordmark can flip white↔dark for contrast (FX-80). Always present.
+struct ArtAnalysis: Equatable {
+    var dominant: OKLCH?
+    var avgLuma: Double
+}
+
+private func analyze(_ image: UIImage) -> ArtAnalysis? {
     let sz = 32
     guard let cg = image.cgImage else { return nil }
     let space = CGColorSpaceCreateDeviceRGB()
@@ -154,12 +163,17 @@ private func extractDominant(from image: UIImage) -> OKLCH? {
 
     var buckets = [(count: Int, sumC: Double, sumL: Double, sumH: Double)](
         repeating: (0, 0, 0, 0), count: 36)
+    var lumaSum = 0.0, lumaCount = 0
 
     var i = 0
     while i < data.count {
         let alpha = data[i + 3]
         if alpha >= 200 {
             let r = Double(data[i]) / 255, g = Double(data[i + 1]) / 255, b = Double(data[i + 2]) / 255
+            // Perceptual luma over every opaque pixel (incl. grays) — the backdrop
+            // brightness estimate, in the same sRGB space the backdrop composites in.
+            lumaSum += 0.299 * r + 0.587 * g + 0.114 * b
+            lumaCount += 1
             let o = rgbToOklch(r, g, b)
             if o.c >= 0.04, o.l > 0.1, o.l < 0.95 {     // skip near-gray + cover edges
                 let bin = Int(o.h / 10) % 36
@@ -172,13 +186,17 @@ private func extractDominant(from image: UIImage) -> OKLCH? {
         i += 4
     }
 
+    let avgLuma = lumaCount > 0 ? lumaSum / Double(lumaCount) : 0
+
     var bestIdx = -1, bestScore = 0.0
     for (idx, b) in buckets.enumerated() where b.sumC > bestScore {
         bestScore = b.sumC; bestIdx = idx
     }
-    guard bestIdx >= 0 else { return nil }
-    let b = buckets[bestIdx]
-    return OKLCH(l: b.sumL / Double(b.count), c: b.sumC / Double(b.count), h: b.sumH / Double(b.count))
+    let dominant: OKLCH? = bestIdx >= 0 ? {
+        let b = buckets[bestIdx]
+        return OKLCH(l: b.sumL / Double(b.count), c: b.sumC / Double(b.count), h: b.sumH / Double(b.count))
+    }() : nil
+    return ArtAnalysis(dominant: dominant, avgLuma: avgLuma)
 }
 
 // MARK: - Async loader / cache
@@ -191,6 +209,9 @@ final class AlbumArtColorStore: ObservableObject {
     static let shared = AlbumArtColorStore()
 
     @Published private(set) var colors: [String: OKLCH] = [:]
+    /// Average cover brightness (0…1), keyed by URL — present whenever a cover
+    /// decoded, even for grayscale covers that yield no dominant hue (FX-80).
+    @Published private(set) var lumas: [String: Double] = [:]
     private var inFlight: Set<String> = []
     private var failed: Set<String> = []
 
@@ -199,24 +220,34 @@ final class AlbumArtColorStore: ObservableObject {
         return colors[urlString]
     }
 
+    /// Average cover brightness for `urlString`, once extracted (nil while loading).
+    func luma(for urlString: String?) -> Double? {
+        guard let urlString else { return nil }
+        return lumas[urlString]
+    }
+
     /// Kick off extraction for `urlString` if we haven't already. Idempotent.
     func ensure(_ urlString: String?) {
         guard let urlString, let url = URL(string: urlString) else { return }
-        if colors[urlString] != nil || inFlight.contains(urlString) || failed.contains(urlString) { return }
+        if lumas[urlString] != nil || colors[urlString] != nil || inFlight.contains(urlString) || failed.contains(urlString) { return }
         inFlight.insert(urlString)
         Task.detached(priority: .utility) {
-            let extracted: OKLCH? = await {
+            let analysis: ArtAnalysis? = await {
                 guard let (data, _) = try? await URLSession.shared.data(from: url),
                       let img = UIImage(data: data) else { return nil }
-                return extractDominant(from: img)
+                return analyze(img)
             }()
-            await self.store(extracted, for: urlString)
+            await self.store(analysis, for: urlString)
         }
     }
 
-    private func store(_ color: OKLCH?, for urlString: String) {
+    private func store(_ analysis: ArtAnalysis?, for urlString: String) {
         inFlight.remove(urlString)
-        if let color { colors[urlString] = color } else { failed.insert(urlString) }
+        guard let analysis else { failed.insert(urlString); return }
+        // Brightness is always recorded; a missing dominant hue just leaves the
+        // card neutral (the `colors` lookup), but the backdrop is still measured.
+        lumas[urlString] = analysis.avgLuma
+        if let dominant = analysis.dominant { colors[urlString] = dominant }
     }
 }
 
