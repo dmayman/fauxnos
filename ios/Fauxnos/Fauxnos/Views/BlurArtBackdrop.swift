@@ -134,7 +134,7 @@ struct BlurArtBackdrop: View {
                     stops: [
                         .init(color: .black, location: fadeStart),
                         .init(color: .clear,
-                              location: max(dev.f("backdrop.fadeEnd.\(m)", colorScheme == .dark ? 0.6 : 0.79), fadeStart + 0.01)),
+                              location: max(dev.f("backdrop.fadeEnd.\(m)", 0.82), fadeStart + 0.01)),
                     ],
                     startPoint: .top, endPoint: .bottom
                 )
