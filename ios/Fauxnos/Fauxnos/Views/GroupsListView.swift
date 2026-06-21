@@ -139,6 +139,20 @@ struct GroupsListView: View {
                     wordmarkScrollOpacity = 1 - min(1, max(0, (y - 20) / 44))
                 }
                 .refreshable { await store.refresh() }
+                // FX-86: the transient offline toast, replacing the FX-80-removed
+                // ConnectionBadge. Sits just under the nav bar (content is already
+                // inset below it), floats over the cards, and is present only while
+                // the MQTT link isn't live — sliding away the moment it connects.
+                .overlay(alignment: .top) {
+                    ZStack {
+                        if store.connectionState != .connected {
+                            ConnectionToast(state: store.connectionState)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                        }
+                    }
+                    .padding(.top, Space.sm)
+                    .animation(.fxEase, value: store.connectionState)
+                }
         }
         .tint(FX.text)
         .environmentObject(dragController)
@@ -303,6 +317,55 @@ private struct WordmarkTitle: View {
     }
 }
 
+// MARK: - Connection toast (FX-86)
+
+/// A transient capsule shown only while the MQTT link is down. While the client
+/// is dialing/reconnecting (`.connecting`) it carries a spinner and a
+/// "Connecting…" label; once the broker is unreachable between attempts
+/// (`.disconnected`) it settles to a static "Offline" with a slashed-wifi glyph
+/// and no spinner. It never renders in the `.connected` state — the overlay that
+/// hosts it drops it (with a slide-up transition) the instant the link is live,
+/// so there's no permanent connectivity chrome. A floating material capsule
+/// (rather than a flat surface) so it stays legible over the album backdrop.
+private struct ConnectionToast: View {
+    let state: MQTTConnectionState
+
+    var body: some View {
+        HStack(spacing: Space.sm) {
+            switch state {
+            case .connecting:
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(FX.text2)
+            case .disconnected:
+                Image(systemName: "wifi.slash")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(FX.text2)
+            case .connected:
+                EmptyView()   // never rendered — the host overlay hides the toast
+            }
+            Text(label)
+                .font(FxFont.fustat(14, .semibold))
+                .foregroundStyle(FX.text)
+        }
+        .padding(.vertical, Space.sm)
+        .padding(.horizontal, Space.lg)
+        .background(Capsule().fill(.regularMaterial))
+        .overlay(Capsule().strokeBorder(FX.line, lineWidth: 1))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(label)
+    }
+
+    private var label: String {
+        switch state {
+        case .connecting:   return "Connecting…"
+        case .disconnected: return "Offline"
+        case .connected:    return ""
+        }
+    }
+}
+
 // MARK: - Loading skeleton
 
 /// Placeholder cards shown only before the first data arrives, so the screen
@@ -423,5 +486,12 @@ private struct StaggeredAppear<Content: View>: View {
 #Preview("Groups — loading") {
     // Empty store, never started → no data yet → the loading skeleton path.
     GroupsListView().environmentObject(FauxnosStore())
+}
+
+#Preview("Offline toast") {
+    // connected: false seeds `.disconnected`, so the static "Offline" toast
+    // shows over a populated list. (The `.connecting` variant swaps the glyph
+    // for a spinner and the label for "Connecting…".)
+    GroupsListView().environmentObject(FauxnosStore.preview(connected: false))
 }
 
