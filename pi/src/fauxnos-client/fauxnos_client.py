@@ -326,6 +326,7 @@ class FauxnosClient:
             'volume_down':  self._ir_volume_down,
             'mute':         self._ir_mute_toggle,
             'source_cycle': self._ir_source_cycle,
+            'source_analog': self._ir_source_analog,
             # Transport controls are stubbed for phase 2. Phase 3 will
             # wire these to playerctl (Spotify), no-op for analog/vinyl/aux.
             'play_pause':   lambda: self.logger.info("IR play_pause (stub — phase 3)"),
@@ -404,6 +405,30 @@ class FauxnosClient:
         self._play_feedback_sound('source_switch.wav')
         if self.source_manager.switch_source(nxt):
             self.mqtt_client.update_mode(nxt)
+
+    # Built-in source id for the analog input. Matches the `analog`
+    # id in client_config.yaml.template and the server's default
+    # source catalog — every device with ADC hardware uses it.
+    ANALOG_SOURCE_ID = 'analog'
+
+    def _ir_source_analog(self):
+        """Jump straight to the analog source, regardless of current source.
+
+        Discrete sibling of _ir_source_cycle: one press always lands on
+        analog in (e.g. flipping on a turntable), no cycling. No-op with
+        no feedback tone on devices that have no analog source configured
+        (same silent-ignore posture as the stubbed transport handlers) —
+        we guard here rather than letting switch_source log an error.
+        """
+        if self.config_manager.get_source(self.ANALOG_SOURCE_ID) is None:
+            self.logger.info(
+                "IR source_analog: no analog source on this device, ignoring"
+            )
+            return
+        # Same feedback tone + sound-first ordering as source_cycle.
+        self._play_feedback_sound('source_switch.wav')
+        if self.source_manager.switch_source(self.ANALOG_SOURCE_ID):
+            self.mqtt_client.update_mode(self.ANALOG_SOURCE_ID)
 
     def _set_ir_feedback_volume(self, volume_pct: int):
         """

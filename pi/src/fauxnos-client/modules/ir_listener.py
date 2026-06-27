@@ -64,6 +64,7 @@ COMMAND_IDS = [
     'volume_down',
     'mute',
     'source_cycle',
+    'source_analog',
     'play_pause',
     'next',
     'previous',

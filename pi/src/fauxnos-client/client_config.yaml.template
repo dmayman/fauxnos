@@ -94,9 +94,9 @@ mqtt:
 # hold is on for volume (so holding a button ramps the level the same
 # way a held IR button does), off for source_cycle (cycling through
 # sources rapidly is bad UX). Commands must be one of the canonical
-# IR ids: volume_up, volume_down, mute, source_cycle, play_pause, next,
-# previous — buttons share the IR dispatch table so they play the same
-# feedback sounds and publish the same MQTT updates.
+# IR ids: volume_up, volume_down, mute, source_cycle, source_analog,
+# play_pause, next, previous — buttons share the IR dispatch table so
+# they play the same feedback sounds and publish the same MQTT updates.
 buttons:
   enabled: false
   bounce_time_ms: 50           # software debounce window

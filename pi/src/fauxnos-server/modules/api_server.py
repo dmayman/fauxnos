@@ -1005,7 +1005,7 @@ class FauxnosAPIServer:
     # Canonical command IDs for the hardware-remote feature. Must match
     # COMMAND_IDS in client/modules/ir_listener.py.
     IR_COMMAND_IDS = (
-        'volume_up', 'volume_down', 'mute', 'source_cycle',
+        'volume_up', 'volume_down', 'mute', 'source_cycle', 'source_analog',
         'play_pause', 'next', 'previous',
     )
 

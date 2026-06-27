@@ -1572,6 +1572,7 @@ const IR_COMMANDS = [
   { id: 'volume_down',  label: 'Volume down' },
   { id: 'mute',         label: 'Mute' },
   { id: 'source_cycle', label: 'Source' },
+  { id: 'source_analog', label: 'Analog In' },
   { id: 'play_pause',   label: 'Play / Pause' },
   { id: 'next',         label: 'Next' },
   { id: 'previous',     label: 'Previous' },
