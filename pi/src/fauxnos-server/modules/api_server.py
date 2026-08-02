@@ -356,6 +356,10 @@ class FauxnosAPIServer:
         def post_server_update():
             return self.handle_server_update()
 
+        @app.route('/api/server/restart', methods=['POST'])
+        def post_server_restart():
+            return self.handle_server_restart()
+
         @app.route('/api/clients/<client_id>/version', methods=['GET'])
         def get_client_version(client_id):
             return self.handle_client_version(client_id)
@@ -2778,6 +2782,32 @@ class FauxnosAPIServer:
         except Exception as e:
             self.log(f"Server version error: {e}", "ERROR")
             return jsonify({"error": "Internal server error"}), 500
+
+    def handle_server_restart(self):
+        """Handle POST /api/server/restart.
+
+        Bounce the fauxnos-server process on request (the iOS/web settings
+        menu). Fires a detached `sleep 1 && systemctl --user restart
+        fauxnos-server` — same pattern as the tail of handle_server_update:
+        start_new_session=True so the bash survives our own SIGTERM, and the
+        1s delay lets this 202 flush before the restart kills us. The reboot
+        of state is observed by clients over MQTT (the reconnect), not here.
+        """
+        self.log("Server restart requested via API", "INFO")
+        try:
+            subprocess.Popen(
+                ["bash", "-c", "sleep 1 && systemctl --user restart fauxnos-server"],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            self.log(f"Server restart failed to schedule: {e}", "ERROR")
+            return jsonify({"error": "Internal server error"}), 500
+        return jsonify({
+            "status": "restarting",
+            "message": "fauxnos-server restarting in ~1s",
+        }), 202
 
     def handle_server_update(self):
         """Handle POST /api/server/update.

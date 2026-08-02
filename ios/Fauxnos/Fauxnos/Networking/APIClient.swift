@@ -176,6 +176,14 @@ struct APIClient {
     func returnHome(clientId: String) async throws {
         try await post("api/groups/return-home", json: ["client_id": clientId])
     }
+
+    /// Restart the fauxnos-server process (`POST /api/server/restart`). The
+    /// server schedules a detached `systemctl --user restart` ~1s out and
+    /// returns 202 immediately, so this call resolves before the bounce
+    /// actually happens. The MQTT link then drops and reconnects on its own.
+    func restartServer() async throws {
+        try await post("api/server/restart")
+    }
 }
 
 /// Transport actions the server whitelists (`handle_post_client_playback`).

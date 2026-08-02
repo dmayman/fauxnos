@@ -436,6 +436,20 @@ final class FauxnosStore: ObservableObject {
         }
     }
 
+    // MARK: - Server control
+
+    /// Restart the fauxnos-server process via `POST /api/server/restart`. The
+    /// server bounces itself ~1s after acking, so the MQTT link drops and the
+    /// offline→connecting toast surfaces on its own, then clears on reconnect —
+    /// no explicit success UI needed. Surfaces transport failures via `apiError`.
+    func restartServer() async {
+        do {
+            try await api.restartServer()
+        } catch {
+            apiError = (error as? APIError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
     // MARK: - Grouping (FX-20)
 
     private func findClient(_ id: String) -> SnapClient? {

@@ -24,7 +24,7 @@ struct TablerIcon: View {
         case brandSpotify, play, pause, trackPrev, trackNext
         case chevronDown, microphone, broadcastTower, externalLink, headphones, x, home
         // Outline (tabler-icons)
-        case volumeHigh, volumeLow, volumeOff, unlink
+        case volumeHigh, volumeLow, volumeOff, unlink, settings, refresh
 
         var codepoint: UInt32 {
             switch self {
@@ -44,12 +44,14 @@ struct TablerIcon: View {
             case .volumeLow:      return 0xeb4f   // volume-2 (1 wave)
             case .volumeOff:      return 0xf1c3   // volume-off
             case .unlink:         return 0xeb46
+            case .settings:       return 0xeb20   // gear
+            case .refresh:        return 0xeb13
             }
         }
 
         var filled: Bool {
             switch self {
-            case .volumeHigh, .volumeLow, .volumeOff, .unlink: return false
+            case .volumeHigh, .volumeLow, .volumeOff, .unlink, .settings, .refresh: return false
             default: return true
             }
         }

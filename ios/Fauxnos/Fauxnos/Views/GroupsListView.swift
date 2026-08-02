@@ -32,6 +32,18 @@ struct GroupsListView: View {
     /// once the first cards have risen into the bar. Driven by scroll offset.
     @State private var wordmarkScrollOpacity: Double = 1
 
+    /// The nav-bar gear menu (restart fauxnos). `showSettings` stays true through
+    /// the close animation so the menu animates out before unmounting; `settingsShown`
+    /// drives the pop scale+fade; `settingsFrame` is the gear's captured global
+    /// frame the floating menu anchors under. Mirrors the source-picker pattern.
+    @State private var showSettings = false
+    @State private var settingsShown = false
+    @State private var settingsFrame: CGRect = .zero
+    @State private var confirmRestart = false
+
+    private static let settingsAnimation: Animation = .spring(response: 0.32, dampingFraction: 0.74)
+    private static let settingsCloseAnimation: Animation = .spring(response: 0.28, dampingFraction: 0.62)
+
     /// FX-77: the cover of the top playing group, rendered full-bleed behind the
     /// whole list as a blurred backdrop the translucent cards float over. nil when
     /// nothing is playing (or the backdrop is toggled off). In DEBUG, the Mac
@@ -161,6 +173,7 @@ struct GroupsListView: View {
                                       crossfade: backdropCrossfade,
                                       scrollOpacity: wordmarkScrollOpacity)
                     }
+                    gearToolbarItem
                 }
                 // Fade the wordmark out as the list scrolls up into the bar.
                 // contentOffset.y + contentInsets.top is 0 at rest, positive once
@@ -194,9 +207,94 @@ struct GroupsListView: View {
         // to its trigger's global frame — attached to the NavigationStack so its
         // coordinate origin is the screen, matching the `.global` trigger frames.
         .overlay { sourceMenuLayer }
+        // The nav-bar gear's glass menu (restart fauxnos), floating anchored to
+        // the gear the same way the source dropdown anchors to its trigger.
+        .overlay { settingsMenuLayer }
         .tint(FX.text)
         .environmentObject(dragController)
         .environmentObject(sourceMenu)
+        // Restart interrupts audio in every room, so it's a confirmed action.
+        .confirmationDialog("Restart fauxnos?", isPresented: $confirmRestart, titleVisibility: .visible) {
+            Button("Restart", role: .destructive) {
+                Haptics.commit()
+                Task { await store.restartServer() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Audio will drop for a few seconds while the server restarts.")
+        }
+    }
+
+    /// The trailing gear as a toolbar item. On iOS 26 the bar groups trailing
+    /// items into a shared Liquid Glass background (the "bubble"); we opt this
+    /// item out with `sharedBackgroundVisibility(.hidden)` so it's a bare glyph
+    /// — matching the plain-Text wordmark — while still living in the header.
+    @ToolbarContentBuilder
+    private var gearToolbarItem: some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .topBarTrailing) { gearContent }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .topBarTrailing) { gearContent }
+        }
+    }
+
+    /// The gear glyph itself + the geometry reader that captures its global frame
+    /// (the floating `settingsMenuLayer` anchors under it). Shares the wordmark's
+    /// adaptive color + scroll fade via `HeaderGear`.
+    private var gearContent: some View {
+        HeaderGear(style: wordmarkStyle,
+                   crossfade: backdropCrossfade,
+                   scrollOpacity: wordmarkScrollOpacity) { toggleSettings() }
+            .background {
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { settingsFrame = geo.frame(in: .global) }
+                        .onChange(of: geo.frame(in: .global)) { _, f in settingsFrame = f }
+                }
+            }
+    }
+
+    private func toggleSettings() {
+        Haptics.select()
+        if showSettings { closeSettings(); return }
+        // Scrolling would strand the source menu from its trigger; close it so
+        // only one floating menu is up at a time.
+        if sourceMenu.openGroupId != nil { sourceMenu.close() }
+        showSettings = true
+        settingsShown = false                                             // mount collapsed…
+        withAnimation(Self.settingsAnimation) { settingsShown = true }    // …then pop open
+    }
+
+    private func closeSettings() {
+        withAnimation(Self.settingsCloseAnimation) { settingsShown = false } completion: {
+            if !self.settingsShown { self.showSettings = false }          // unmount once collapsed
+        }
+    }
+
+    /// The floating glass settings dropdown + a full-screen tap-catcher to
+    /// dismiss it. Right-aligned just under the gear that opened it — the same
+    /// treatment as `sourceMenuLayer`, anchored to the gear's global frame.
+    @ViewBuilder
+    private var settingsMenuLayer: some View {
+        if showSettings {
+            let f = settingsFrame
+            ZStack(alignment: .topLeading) {
+                Color.black.opacity(0.001)
+                    .contentShape(Rectangle())
+                    .onTapGesture { closeSettings() }
+                SettingsMenu {
+                    closeSettings()
+                    confirmRestart = true
+                }
+                .scaleEffect(settingsShown ? 1 : 0.7, anchor: .topTrailing)
+                .opacity(settingsShown ? 1 : 0)
+                // Right edge under the gear's right edge, hugging just below it.
+                .offset(x: max(Space.lg, f.maxX - SettingsMenu.width), y: f.maxY + 6)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .ignoresSafeArea()
+        }
     }
 
     /// The floating glass source dropdown + a full-screen tap-catcher to dismiss
@@ -385,6 +483,59 @@ private struct WordmarkTitle: View {
     private func label(_ s: WordmarkStyle) -> some View {
         Text("fauxnos")
             .font(FxFont.fustat(21, .bold))
+            .foregroundStyle(s.color)
+            .blendMode(s.blend)
+    }
+}
+
+/// The trailing settings gear, styled as part of the header: it takes the exact
+/// same `WordmarkStyle` as the wordmark, so it shifts color with the backdrop
+/// (illuminated over dark art, darkened over light, plain gray with none),
+/// crossfades on a track change over the same duration, and fades out on scroll
+/// via `scrollOpacity`. A plain tappable glyph — NOT a `Button` — so iOS 26's
+/// toolbar doesn't wrap it in a glass bubble (matching the plain-Text wordmark).
+private struct HeaderGear: View {
+    let style: WordmarkStyle
+    let crossfade: Double
+    let scrollOpacity: Double
+    let action: () -> Void
+
+    @State private var shown: WordmarkStyle
+    @State private var outgoing: WordmarkStyle?
+    @State private var t: Double = 1
+
+    init(style: WordmarkStyle, crossfade: Double, scrollOpacity: Double, action: @escaping () -> Void) {
+        self.style = style
+        self.crossfade = crossfade
+        self.scrollOpacity = scrollOpacity
+        self.action = action
+        _shown = State(initialValue: style)
+    }
+
+    var body: some View {
+        ZStack {
+            if let outgoing { icon(outgoing).opacity(1 - t) }
+            icon(shown).opacity(t)
+        }
+        .opacity(scrollOpacity)
+        // Pad the hit target out past the glyph so it's comfortably tappable,
+        // then take the whole area (the icon itself is only ~21pt).
+        .padding(.leading, Space.md)
+        .padding(.vertical, Space.sm)
+        .contentShape(Rectangle())
+        .onTapGesture { action() }
+        .accessibilityLabel("Settings")
+        .accessibilityAddTraits(.isButton)
+        .onChange(of: style) { _, new in
+            outgoing = shown
+            shown = new
+            t = 0
+            withAnimation(.linear(duration: crossfade)) { t = 1 } completion: { outgoing = nil }
+        }
+    }
+
+    private func icon(_ s: WordmarkStyle) -> some View {
+        TablerIcon(glyph: .settings, size: 21)
             .foregroundStyle(s.color)
             .blendMode(s.blend)
     }
