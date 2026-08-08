@@ -108,10 +108,10 @@ struct GroupCard: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            rowsSection
             if showMediaCard {
                 if isEmptyMedia { emptyMediaRegion } else { mediaRegion }
             }
-            rowsSection
         }
         .background(outerBackground)
         .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .circular))
@@ -401,27 +401,28 @@ struct GroupCard: View {
                        groupId: group.id, inPlace: true, matchesSource: false)
     }
 
-    /// The floating rows panel outline — rounded top corners only; the bottom
-    /// stays square because the outer card clipShape rounds the card's bottom.
+    /// The device rows sub-card outline. The rows now sit ATOP the media region,
+    /// so the panel rounds its top corners into the card's top (matching the outer
+    /// card radius so no tint slips through) and keeps a square bottom where it
+    /// meets the media region below.
     private var rowsPanelShape: UnevenRoundedRectangle {
         UnevenRoundedRectangle(
-            topLeadingRadius: Radius.inner,
+            topLeadingRadius: Radius.card,
             bottomLeadingRadius: 0,
             bottomTrailingRadius: 0,
-            topTrailingRadius: Radius.inner,
+            topTrailingRadius: Radius.card,
             style: .circular
         )
     }
 
-    /// Drop-indicator outline for the rows portion: like `rowsPanelShape` but its
-    /// bottom corners match the outer card radius so the white stroke hugs the
-    /// card's rounded bottom instead of being clipped square.
+    /// Drop-indicator outline for the rows portion — matches `rowsPanelShape`:
+    /// rounded top into the card, square bottom at the seam with the media.
     private var rowsDropShape: UnevenRoundedRectangle {
         UnevenRoundedRectangle(
-            topLeadingRadius: Radius.inner,
-            bottomLeadingRadius: Radius.card,
-            bottomTrailingRadius: Radius.card,
-            topTrailingRadius: Radius.inner,
+            topLeadingRadius: Radius.card,
+            bottomLeadingRadius: 0,
+            bottomTrailingRadius: 0,
+            topTrailingRadius: Radius.card,
             style: .circular
         )
     }
