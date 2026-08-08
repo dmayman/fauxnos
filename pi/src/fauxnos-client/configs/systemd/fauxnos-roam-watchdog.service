@@ -1,0 +1,28 @@
+[Unit]
+Description=Fauxnos wifi roam watchdog (unsticks a client parked on a far AP)
+Documentation=file:///usr/local/bin/fauxnos-roam-watchdog
+# nmcli talks to NetworkManager over D-Bus; without NM up every pass is a
+# no-op that logs warnings.
+After=NetworkManager.service
+Wants=NetworkManager.service
+# No wifi tooling, nothing to watch. Short-circuits cleanly on a wired-only
+# or minimal image instead of failing every 60s.
+ConditionPathExists=/usr/sbin/iw
+
+[Service]
+Type=oneshot
+# Runs as root: `iw scan` needs CAP_NET_ADMIN and nmcli device control is
+# polkit-gated behind an active login session, which a background service
+# does not have. See the privilege-model note in the script header.
+ExecStart=/usr/bin/python3 /usr/local/bin/fauxnos-roam-watchdog
+# Anti-stranding safety net. Fires even when ExecStart failed or hit the
+# timeout, so a bounce interrupted midway still gets the interface back up.
+# Silent no-op unless we bounced recently and the interface is still down.
+ExecStopPost=-/usr/bin/python3 /usr/local/bin/fauxnos-roam-watchdog --ensure-connected
+# Worst case is scan (30s) + disconnect (30s) + a reconnect fallback chain
+# (45s each) + post-bounce verification (45s). Generous, but bounded — the
+# timer won't start a second pass while this one is running.
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

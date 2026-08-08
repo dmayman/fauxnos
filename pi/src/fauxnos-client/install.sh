@@ -654,8 +654,17 @@ download_client_code() {
         "configs/systemd/snapclient.service"
         "configs/systemd/fauxnos-client.service"
         "configs/systemd/shairport-sync-fauxnos.service"
+        "configs/systemd/fauxnos-roam-watchdog.service"
+        "configs/systemd/fauxnos-roam-watchdog.timer"
         "configs/shairport-sync/fauxnos.conf"
         "configs/shairport-sync/claim-source.sh"
+    )
+
+    # Standalone helper scripts installed outside $INSTALL_DIR (see
+    # configure_roam_watchdog). Kept in their own array so it's obvious
+    # these aren't imported by fauxnos_client.py.
+    local script_files=(
+        "scripts/wifi-roam-watchdog.py"
     )
 
     # Python modules
@@ -700,7 +709,7 @@ download_client_code() {
         fi
     done
 
-    for file in "${config_files[@]}" "${module_files[@]}" "${sound_files[@]}"; do
+    for file in "${config_files[@]}" "${module_files[@]}" "${script_files[@]}" "${sound_files[@]}"; do
         local url="${base_url}/$file"
         local dir
         dir=$(dirname "$file")
@@ -720,6 +729,79 @@ download_client_code() {
     chmod +x pi-setup.sh 2>/dev/null || true
 
     log_success "Client code downloaded to: $INSTALL_DIR"
+}
+
+# Install the wifi roam watchdog (system-level timer, runs as root)
+#
+# Closes the residual hole in the BSSID-pinning fix: if the pinned AP
+# reboots, NetworkManager falls back to the unpinned profile, the Pi
+# associates with a far mesh node, and brcmfmac never roams back — the
+# downlink rate collapses to legacy 802.11b rates and snapcast starves.
+# See the script header for the full 2026-08-08 diagnosis.
+#
+# ROOT, not a --user unit with a sudoers drop-in, because:
+#   - `iw scan` needs CAP_NET_ADMIN, and nmcli device control is polkit-
+#     gated behind an active login session that a background user service
+#     doesn't have;
+#   - a sudoers drop-in for `nmcli` would grant the user full network
+#     control anyway — same privilege, more moving parts;
+#   - we already ship one root system unit on the client
+#     (fauxnos-ir-decoders.service), so this is the established shape.
+# It touches no audio and no user state, so nothing about it wants to live
+# in the user session.
+#
+# Idempotent: files are only rewritten when their contents differ, and
+# `enable --now` is a no-op on an already-running timer.
+configure_roam_watchdog() {
+    log_section "Installing Wifi Roam Watchdog"
+
+    local src="$INSTALL_DIR/scripts/wifi-roam-watchdog.py"
+    local unit_src="$INSTALL_DIR/configs/systemd"
+    local bin=/usr/local/bin/fauxnos-roam-watchdog
+
+    if [ ! -f "$src" ] \
+       || [ ! -f "$unit_src/fauxnos-roam-watchdog.service" ] \
+       || [ ! -f "$unit_src/fauxnos-roam-watchdog.timer" ]; then
+        log_warning "Roam watchdog files missing from download — skipping"
+        return 0
+    fi
+
+    if ! cmp -s "$src" "$bin"; then
+        sudo install -m 0755 -o root -g root "$src" "$bin"
+        log "Installed $bin"
+    else
+        log "$bin already up to date"
+    fi
+
+    local changed=0
+    local unit
+    for unit in fauxnos-roam-watchdog.service fauxnos-roam-watchdog.timer; do
+        if ! cmp -s "$unit_src/$unit" "/etc/systemd/system/$unit"; then
+            sudo install -m 0644 -o root -g root \
+                "$unit_src/$unit" "/etc/systemd/system/$unit"
+            log "Installed /etc/systemd/system/$unit"
+            changed=1
+        fi
+    done
+
+    # Persistent state (degradation clock + bounce timestamps) lives outside
+    # $HOME because the watchdog runs as root and must survive an install.sh
+    # re-run, which wipes $INSTALL_DIR.
+    sudo mkdir -p /var/lib/fauxnos
+
+    if [ "$changed" = "1" ]; then
+        sudo systemctl daemon-reload
+    fi
+    sudo systemctl enable --now fauxnos-roam-watchdog.timer > /dev/null 2>&1 || true
+    # Pick up a changed unit file without waiting for the next boot.
+    if [ "$changed" = "1" ]; then
+        sudo systemctl restart fauxnos-roam-watchdog.timer 2>/dev/null || true
+    fi
+
+    log_success "Wifi roam watchdog installed (60s timer, root)"
+    log "  Dry run:   sudo $bin --dry-run"
+    log "  Self test: $bin --self-test"
+    log "  Logs:      journalctl -u fauxnos-roam-watchdog -f"
 }
 
 # Render the default.pa template's `control=__EQ_CONTROL__` placeholder
@@ -928,6 +1010,14 @@ validate_installation() {
         fi
     done
 
+    # Roam watchdog is a system-level timer, not a --user one. Non-fatal:
+    # a device with no wifi tooling short-circuits on ConditionPathExists.
+    if systemctl is-enabled fauxnos-roam-watchdog.timer &>/dev/null; then
+        log_success "Timer enabled: fauxnos-roam-watchdog"
+    else
+        log_warning "Timer not enabled: fauxnos-roam-watchdog"
+    fi
+
     # Check audio system
     if command -v pactl &> /dev/null; then
         log_success "PulseAudio available"
@@ -1024,6 +1114,7 @@ main() {
     setup_pulseaudio_user_services
     download_client_code
     migrate_remove_camilladsp
+    configure_roam_watchdog
     setup_default_pa
 
     # Attempt registration (may fail if server not available)

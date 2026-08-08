@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Fauxnos wifi roam watchdog every 60s
+
+[Timer]
+# 120s after boot: NetworkManager needs to have picked an AP and settled,
+# otherwise the first pass just logs 'not-connected'.
+OnBootSec=120
+OnUnitActiveSec=60
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
