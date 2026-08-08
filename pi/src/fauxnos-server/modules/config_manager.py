@@ -740,6 +740,38 @@ WantedBy=default.target
 """
         return service_content.strip()
 
+    def generate_watchdog_service(self) -> str:
+        """Generate the oneshot service that runs the go-librespot dealer watchdog.
+
+        Triggered by go-librespot-watchdog.timer (below), not WantedBy any target —
+        the timer owns scheduling. See scripts/go-librespot-watchdog.py for what it does.
+        """
+        script_path = os.path.expanduser("~/scripts/go-librespot-watchdog.py")
+        service_content = f"""[Unit]
+Description=Fauxnos go-librespot dealer watchdog (restarts zombied Spotify Connect endpoints)
+After=snapserver.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 {script_path}
+"""
+        return service_content.strip()
+
+    def generate_watchdog_timer(self) -> str:
+        """Generate the timer that fires the watchdog every 60s."""
+        timer_content = """[Unit]
+Description=Run the Fauxnos go-librespot dealer watchdog every 60s
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
+"""
+        return timer_content.strip()
+
     def generate_client_json_config(self, client: ClientConfig) -> Dict[str, Any]:
         """Generate JSON configuration for fauxnos-client"""
         server_host = "fauxnos-server.local"  # Assume mDNS

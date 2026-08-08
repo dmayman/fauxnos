@@ -154,6 +154,27 @@ class DeploymentManager:
                 f.write(pinner_script)
             os.chmod(pinner_script_file, 0o755)
 
+            # go-librespot dealer watchdog: static script (committed source) +
+            # generated service/timer. Client-independent, so staged
+            # unconditionally. See scripts/go-librespot-watchdog.py.
+            watchdog_src = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                "scripts", "go-librespot-watchdog.py",
+            )
+            if os.path.exists(watchdog_src):
+                shutil.copy2(watchdog_src, os.path.join(scripts_dir, "go-librespot-watchdog.py"))
+                os.chmod(os.path.join(scripts_dir, "go-librespot-watchdog.py"), 0o755)
+
+                watchdog_service_file = os.path.join(systemd_dir, "go-librespot-watchdog.service")
+                with open(watchdog_service_file, 'w') as f:
+                    f.write(self.config_manager.generate_watchdog_service())
+
+                watchdog_timer_file = os.path.join(systemd_dir, "go-librespot-watchdog.timer")
+                with open(watchdog_timer_file, 'w') as f:
+                    f.write(self.config_manager.generate_watchdog_timer())
+            else:
+                self.logger.warning(f"Watchdog script not found at {watchdog_src}; skipping watchdog deploy")
+
             # Generate snapserver sources (for manual addition to snapserver.conf)
             sources = self.config_manager.generate_snapserver_sources()
             sources_file = os.path.join(staging_dir, "snapserver_sources.txt")
@@ -191,6 +212,13 @@ class DeploymentManager:
                         content = f.read()
                         if "[Unit]" not in content or "[Service]" not in content:
                             self.logger.error(f"Invalid systemd service: {service_file}")
+                            return False
+                elif filename.endswith(".timer"):
+                    timer_file = os.path.join(systemd_dir, filename)
+                    with open(timer_file) as f:
+                        content = f.read()
+                        if "[Timer]" not in content:
+                            self.logger.error(f"Invalid systemd timer: {timer_file}")
                             return False
 
             # Validate FIFO script (executable and basic structure)
@@ -243,11 +271,11 @@ class DeploymentManager:
             os.makedirs(systemd_target, exist_ok=True)
 
             for filename in os.listdir(systemd_staging):
-                if filename.endswith(".service"):
-                    service_file = os.path.join(systemd_staging, filename)
+                if filename.endswith(".service") or filename.endswith(".timer"):
+                    unit_file = os.path.join(systemd_staging, filename)
                     target_file = os.path.join(systemd_target, filename)
-                    shutil.copy2(service_file, target_file)
-                    self.logger.info(f"Deployed user systemd service: {filename}")
+                    shutil.copy2(unit_file, target_file)
+                    self.logger.info(f"Deployed user systemd unit: {filename}")
 
             # Deploy scripts
             scripts_staging = os.path.join(staging_dir, "scripts")
@@ -371,6 +399,20 @@ class DeploymentManager:
                         self.logger.info(f"Started and enabled {service_name}")
                     except Exception as e:
                         self.logger.warning(f"Could not start {service_name}: {e}")
+
+            # Enable + (re)start the go-librespot dealer watchdog timer. The timer
+            # drives the oneshot service; restart is idempotent and safe to run on
+            # every deploy. Only if the unit was actually deployed this run.
+            watchdog_timer = os.path.expanduser("~/.config/systemd/user/go-librespot-watchdog.timer")
+            if os.path.exists(watchdog_timer):
+                try:
+                    subprocess.run(["systemctl", "--user", "enable", "go-librespot-watchdog.timer"],
+                                   check=False, capture_output=True)
+                    subprocess.run(["systemctl", "--user", "restart", "go-librespot-watchdog.timer"],
+                                   check=False, capture_output=True)
+                    self.logger.info("Enabled and started go-librespot-watchdog.timer")
+                except Exception as e:
+                    self.logger.warning(f"Could not start go-librespot-watchdog.timer: {e}")
 
             return True
 
