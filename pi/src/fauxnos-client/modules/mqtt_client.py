@@ -54,7 +54,7 @@ class MQTTClient:
                  ir_feedback_volume_callback: Optional[Callable[[int], None]] = None,
                  eq_callback: Optional[Callable[[bool, Optional[Dict[str, float]]], bool]] = None,
                  eq_getter: Optional[Callable[[], Dict]] = None,
-                 evc_state_callback: Optional[Callable[[bool], None]] = None,
+                 evc_state_callback: Optional[Callable[[bool, int], None]] = None,
                  evc_mirror_callback: Optional[Callable[[int], None]] = None,
                  broker_host: Optional[str] = None,
                  broker_port: int = 1883):
@@ -165,7 +165,9 @@ class MQTTClient:
             f"set/clients/{self.device_id}/eq",
             # External volume controller config (retained, server-published).
             # Tells the client whether its local audio chain should be pinned
-            # at unity (external authority owns attenuation) — see
+            # at unity (external authority owns attenuation), and how far to
+            # pad the DAC output to keep that full-scale signal from
+            # overloading the analog stage downstream — see
             # SourceManager.set_external_volume_state.
             f"config/clients/{self.device_id}/external_volume_controller",
             # External-volume authoritative-value mirror: server publishes
@@ -228,7 +230,10 @@ class MQTTClient:
             ):
                 try:
                     cfg = json.loads(payload) if payload else {}
-                    self.evc_state_callback(bool(cfg.get("enabled", False)))
+                    self.evc_state_callback(
+                        bool(cfg.get("enabled", False)),
+                        int(cfg.get("output_pad_db", 0) or 0),
+                    )
                 except Exception as e:
                     logger.warning(f"Failed to parse EVC config payload: {e}")
                 return

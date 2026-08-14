@@ -1059,6 +1059,7 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
       : ''
   )
   const [brokerUpdateContentType, setBrokerUpdateContentType] = useState(evc.broker_update_content_type || 'json')
+  const [outputPadDb, setOutputPadDb] = useState(String(evc.output_pad_db ?? 0))
   const [lanIp, setLanIp] = useState(null)
   const [pushing, setPushing] = useState(false)
   const [pushMessage, setPushMessage] = useState(null)
@@ -1097,6 +1098,7 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
         : ''
     )
     setBrokerUpdateContentType(e.broker_update_content_type || 'json')
+    setOutputPadDb(String(e.output_pad_db ?? 0))
   }, [client.external_volume_controller])
 
   // Fetch fauxnos's current LAN IP once on mount — used to show the
@@ -1126,6 +1128,9 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
         body: JSON.stringify({
           enabled,
           transport,
+          // Clamp to <= 0 here as well as on the client — a positive pad
+          // would be a boost, which is never what this control means.
+          output_pad_db: Math.min(0, parseInt(outputPadDb, 10) || 0),
           // Write BOTH blocks every time. Switching transport doesn't
           // discard the other side's config — users can flip back without
           // having to retype URLs / topics.
@@ -1156,7 +1161,7 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
     }
   }, [client.client_id, enabled, transport, url, payload, contentType,
       brokerUpdateEnabled, brokerUpdateApi, brokerUpdatePayload,
-      brokerUpdateContentType, onRefresh])
+      brokerUpdateContentType, outputPadDb, onRefresh])
 
   // Manual "Push current IP" — fires the broker-update HTTP call
   // immediately, regardless of last-pushed state. Useful after
@@ -1206,6 +1211,32 @@ function ExternalVolumeControllerSection({ client, onRefresh }) {
       </div>
       {enabled && (
         <div className="fx-ir-card fx-stack" style={{ gap: 'var(--fx-3)' }}>
+          {/* DAC output pad. Transport-independent: it's a property of the
+              analog hand-off, not of how the volume value gets there. */}
+          <div>
+            <div className="fx-ir-label-group" style={{ marginBottom: 'var(--fx-1)' }}>
+              <label className="fx-label" style={{ margin: 0 }}>Output pad (dB)</label>
+              <HelpPopover>
+                Cuts this device's DAC output by a fixed amount. Because the
+                digital chain runs at full scale in external mode, the line
+                output sits at ~2.1&nbsp;V permanently — enough to overload the
+                input of the amp or preamp downstream, which sounds like
+                distortion that only clears up when you turn things down.
+                Dial in the smallest cut that sounds clean. 0 disables it.
+                Has no effect on DACs without a hardware mixer.
+              </HelpPopover>
+            </div>
+            <input
+              className="fx-input"
+              type="number"
+              max={0}
+              step={1}
+              value={outputPadDb}
+              onChange={e => setOutputPadDb(e.target.value)}
+              placeholder="0"
+            />
+          </div>
+
           {/* Transport radio — picks which transport's fields are live. */}
           <div>
             <label className="fx-label">Transport</label>

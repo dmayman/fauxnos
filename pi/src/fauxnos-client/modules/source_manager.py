@@ -72,6 +72,12 @@ class SourceManager:
         #     out via the configured transport
         self.external_volume_enabled: bool = False
 
+        # Companion to the flag above: how far to pad the DAC's own
+        # output while external mode is on. See _apply_output_pad.
+        # None = "we haven't applied anything yet", so the first retained
+        # EVC message always writes the mixer even if the pad is 0.
+        self.output_pad_db: Optional[int] = None
+
         # Initialize volumes from config
         for source_id, source in config_manager.sources.items():
             self.source_volumes[source_id] = source.starting_volume
@@ -145,11 +151,47 @@ class SourceManager:
                 f"External volume forward failed (slider may not reach the external controller): {e}"
             )
 
-    def set_external_volume_state(self, enabled: bool):
-        """Update the external-volume-controller flag.
+    def _apply_output_pad(self, pad_db: int):
+        """Attenuate the DAC's own output by `pad_db` dB (<= 0).
+
+        In external mode the whole digital chain is pinned at 0 dBFS, so
+        the DAC runs flat out — ~2.1 Vrms on a PCM512x — permanently. That
+        overloads the input stage of whatever analog box is actually doing
+        the attenuating (Kitchen: the VinylTable's TDA7468), which reads as
+        distortion that only cleans up when you cut the digital level. The
+        pad moves that headroom into the DAC's own 32-bit volume, where it
+        costs no bits, instead of into PulseAudio's s16 chain, where -24 dB
+        costs four.
+
+        `Analogue` is pinned at 0 dB so `pad_db` alone fully describes the
+        hardware state — no two-knob arithmetic to reason about later. The
+        `--` is required: amixer's getopt would read `-24dB` as a flag.
+
+        Cards with no mixer at all (PCM5102A / the `hifiberry-dac` overlay)
+        have neither control; amixer exits non-zero and we log and move on.
+        """
+        for control, value in (("Analogue", "0dB"), ("Digital", f"{pad_db}dB")):
+            r = subprocess.run(
+                ["amixer", "-c", "0", "--", "set", control, value],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode != 0:
+                self.logger.warning(
+                    f"Output pad: no '{control}' mixer control on this card "
+                    f"— skipping (amixer: {r.stderr.strip()})"
+                )
+                return
+        # Persist so the pad survives a reboot without waiting for the
+        # retained MQTT message to land (alsa-restore runs long before us).
+        subprocess.run(["sudo", "-n", "alsactl", "store"],
+                       capture_output=True, text=True, timeout=10)
+        self.logger.info(f"Output pad applied: DAC Digital → {pad_db} dB")
+
+    def set_external_volume_state(self, enabled: bool, output_pad_db: int = 0):
+        """Update the external-volume-controller flag and DAC output pad.
 
         Called by mqtt_client when a `config/clients/<id>/external_volume_controller`
-        retained message arrives. Idempotent — only logs on transitions
+        retained message arrives. Idempotent — only acts on transitions
         so we don't spam at every reconnect (the retained payload fires
         on every subscribe).
 
@@ -160,7 +202,19 @@ class SourceManager:
         Without this, the actual chain would be 30% (local) × N% (external)
         until the next slider move. Idempotent — set_volume(100) is a no-op
         if snapcast was already at 100.
+
+        The pad is tracked separately from `enabled` because the user can
+        retune it without toggling the flag — an `enabled`-only guard would
+        swallow every pad edit after the first. It only applies while
+        external is on; turning external off restores the DAC to 0 dB,
+        since the chain goes back to attenuating locally and the pad would
+        otherwise stack on top of it.
         """
+        target_pad = min(0, int(output_pad_db)) if enabled else 0
+        if target_pad != self.output_pad_db:
+            self.output_pad_db = target_pad
+            self._apply_output_pad(target_pad)
+
         if bool(enabled) == self.external_volume_enabled:
             return
         self.external_volume_enabled = bool(enabled)

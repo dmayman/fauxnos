@@ -1755,6 +1755,12 @@ class FauxnosAPIServer:
                 return {
                     "enabled": bool(evc.get("enabled", False)),
                     "transport": evc.get("transport", "http"),
+                    # DAC output pad in dB (<= 0). See
+                    # SourceManager._apply_output_pad — when external is
+                    # enabled the client's digital chain is pinned at
+                    # 0 dBFS, so the DAC needs a fixed pad to keep from
+                    # overloading the analog box downstream.
+                    "output_pad_db": int(evc.get("output_pad_db", 0) or 0),
                     # HTTP
                     "control_api": evc.get("control_api", ""),
                     "control_payload": evc.get("control_payload", {}),
@@ -1815,6 +1821,10 @@ class FauxnosAPIServer:
                 # today, but we ship the transport so future client code
                 # can adapt (e.g. tell the user "you're using MQTT" in logs).
                 "transport": evc.get("transport", "http"),
+                # DAC output pad in dB (<= 0). Retained, so a reflashed
+                # client picks its pad back up on first subscribe — before
+                # anything plays — with no install.sh involvement.
+                "output_pad_db": int(evc.get("output_pad_db", 0) or 0),
             })
             client.publish(topic, payload, retain=True)
         except Exception as e:
@@ -1987,9 +1997,10 @@ class FauxnosAPIServer:
     def handle_update_external_volume_controller(self, client_id: str):
         """PUT /api/clients/<id>/external_volume_controller — patch the blob.
 
-        Accepts any subset of {enabled, transport, control_api, control_payload,
-        content_type, mqtt_topic_out, mqtt_payload_out, mqtt_topic_in,
-        broker_update_api, broker_update_payload, broker_update_content_type}.
+        Accepts any subset of {enabled, transport, output_pad_db, control_api,
+        control_payload, content_type, mqtt_topic_out, mqtt_payload_out,
+        mqtt_topic_in, broker_update_api, broker_update_payload,
+        broker_update_content_type}.
         Missing keys are left at their existing value (mirrors
         handle_update_source's additive merge pattern).
 
