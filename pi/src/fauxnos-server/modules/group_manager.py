@@ -212,6 +212,44 @@ class SnapcastGroupManager:
         print(f"✅ {client_id} returned home → {new_group.get('id')[:8]} @ {home_source}")
         return True
 
+    def leave_group_on_source_change(self, client_id: str, source_id: str) -> List[str]:
+        """A client that switches away from the source its group is playing
+        can't stay in that group — snapcast would keep feeding it a stream
+        it is no longer listening to.
+
+        Non-host member → return just that client home.
+        Host (the client whose home_source is the group's stream) → disband:
+        every other member goes home, leaving the host alone in its own group.
+
+        Returns the ids of the *other* clients that were sent home, so the
+        caller can MQTT-publish their mode (they were moved without asking;
+        the client that changed source did ask, and is left alone).
+        """
+        group = self.find_client_group(client_id)
+        if not group:
+            return []
+        members = [c.get("id") for c in group.get("clients", [])
+                   if c.get("connected") and c.get("id")]
+        if len(members) < 2:
+            return []
+
+        # Group stream is `source_<host>_<source_id>`.
+        parts = (group.get("stream_id") or "").split("_", 2)
+        if len(parts) != 3 or parts[0] != "source":
+            return []
+        host_id, group_source = parts[1], parts[2]
+        if source_id == group_source:
+            return []
+
+        if client_id != host_id:
+            print(f"👋 {client_id} switched to {source_id} → leaving group")
+            self.return_client_to_home(client_id)
+            return []
+
+        print(f"💥 Host {client_id} left {group_source} → disbanding group")
+        return [cid for cid in members
+                if cid != client_id and self.return_client_to_home(cid)]
+
     # ── Reconcile ─────────────────────────────────────────────────────────
 
     def reconcile_stream_assignments(self, groups: Optional[List[Dict[str, Any]]] = None) -> bool:

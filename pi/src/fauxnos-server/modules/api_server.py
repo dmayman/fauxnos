@@ -2690,6 +2690,22 @@ class FauxnosAPIServer:
         except Exception:
             pass
 
+    def _leave_group_on_source_change(self, client_id: str, source_id: str) -> None:
+        """Drop a client out of its snapcast group when it switches away from
+        the source that group is playing (disbands the group if it's the host).
+
+        Driven from the MQTT `status/clients/<id>/mode` handler — the single
+        funnel every source change passes through (IR, on-device auto-switch,
+        web UI, API), since source_manager always publish_mode()s.
+        """
+        try:
+            from .group_manager import SnapcastGroupManager
+            gm = SnapcastGroupManager(config_manager=self.config_manager)
+            for cid in gm.leave_group_on_source_change(client_id, source_id):
+                self._publish_mode_for_stream(cid, cid)
+        except Exception as e:
+            self.log(f"Group leave-on-source-change failed for {client_id}: {e}", "WARNING")
+
     # ── Status handlers ────────────────────────────────────────────────────────
 
     def handle_get_status(self):
@@ -3812,6 +3828,12 @@ rm -- "$0"
                 if source_id and self._last_mode_by_client.get(client_id) != source_id:
                     self._last_mode_by_client[client_id] = source_id
                     self._trigger_external_for_source(client_id, source_id)
+                    # Off-thread: group ops do blocking RPC + a 0.5s settle
+                    # sleep each, which would stall MQTT dispatch.
+                    threading.Thread(
+                        target=self._leave_group_on_source_change,
+                        args=(client_id, source_id), daemon=True,
+                    ).start()
                 return
 
             if action == "hello":
