@@ -711,6 +711,9 @@ private struct StaggeredAppear<Content: View>: View {
     }
 }
 
+// `FauxnosStore.preview(...)` is a DEBUG-only extension, so these have to be
+// too — #Preview macros still compile in a Release archive.
+#if DEBUG
 #Preview("Groups — populated") {
     GroupsListView().environmentObject(FauxnosStore.preview())
 }
@@ -726,4 +729,5 @@ private struct StaggeredAppear<Content: View>: View {
     // for a spinner and the label for "Connecting…".)
     GroupsListView().environmentObject(FauxnosStore.preview(connected: false))
 }
+#endif
 

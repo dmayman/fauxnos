@@ -9,6 +9,13 @@
 	  cleartext loads to local (.local / link-local / unqualified) hosts only —
 	  public TLS enforcement stays on for anything else.
 	-->
+	<!--
+	  No encryption beyond what iOS itself provides (the app speaks plain HTTP/WS
+	  on the LAN), so export compliance is exempt. Declaring it here answers the
+	  question once instead of per-build in App Store Connect.
+	-->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
