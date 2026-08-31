@@ -65,10 +65,14 @@
   --fx-line:        rgba(255, 255, 255, 0.06);
   --fx-line-strong: rgba(255, 255, 255, 0.12);
 
-  /* Text */
+  /* Text. The secondary/tertiary grays are translucent white rather than flat
+     gray so anything wearing them (the wordmark, meta lines, icons) picks up
+     the album-art backdrop instead of sitting on it as a gray slab. Alphas are
+     the exact composites of the hexes they replace over --fx-bg, so nothing
+     shifts on the opaque surfaces (popovers, panels) that also use them. */
   --fx-text:   #F2F2F2;
-  --fx-text-2: #A0A0A0;
-  --fx-text-3: #6A6A6A;
+  --fx-text-2: rgba(255, 255, 255, 0.62);
+  --fx-text-3: rgba(255, 255, 255, 0.40);
 
   /* Neutral accent (high-emphasis text color) */
   --fx-accent:        #F2F2F2;
@@ -92,6 +96,13 @@
 
   /* Overlay for floating-panel scrim */
   --fx-scrim: rgba(0, 0, 0, 0.55);
+
+  /* Group-card fills. Translucent so the album-art backdrop reads through
+     them (iOS media.opacity / device.opacity); the lightness matches what
+     buildArtTokens emits, so an art-less card reads as the same surface,
+     just hueless. */
+  --fx-card-fill: oklch(0.33 0 0 / 0.40);
+  --fx-rows-fill: oklch(0.19 0 0 / 0.29);
 }
 
 [data-theme="light"] {
@@ -103,8 +114,8 @@
   --fx-line-strong: rgba(0, 0, 0, 0.16);
 
   --fx-text:   #4A4A4A;
-  --fx-text-2: #7A7A7A;
-  --fx-text-3: #A0A0A0;
+  --fx-text-2: rgba(0, 0, 0, 0.51);
+  --fx-text-3: rgba(0, 0, 0, 0.36);
 
   /* Neutral accent (high-emphasis text color) */
   --fx-accent:        #1A1A1A;
@@ -125,6 +136,9 @@
   --fx-shadow-3: 0 12px 48px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.04);
 
   --fx-scrim: rgba(0, 0, 0, 0.32);
+
+  --fx-card-fill: oklch(0.95 0 0 / 0.66);
+  --fx-rows-fill: #FFFFFF;
 }
 
 /* Honor OS preference only when the user hasn't explicitly set a theme. */
@@ -137,8 +151,8 @@
     --fx-line:        rgba(0, 0, 0, 0.08);
     --fx-line-strong: rgba(0, 0, 0, 0.16);
     --fx-text:        #4A4A4A;
-    --fx-text-2:      #7A7A7A;
-    --fx-text-3:      #A0A0A0;
+    --fx-text-2:      rgba(0, 0, 0, 0.51);
+    --fx-text-3:      rgba(0, 0, 0, 0.36);
     --fx-accent:      #1A1A1A;
     --fx-accent-hover:#000000;
     --fx-accent-soft: rgba(0, 0, 0, 0.06);
@@ -154,6 +168,8 @@
     --fx-shadow-2:    0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.03);
     --fx-shadow-3:    0 12px 48px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.04);
     --fx-scrim:       rgba(0, 0, 0, 0.32);
+    --fx-card-fill:   oklch(0.95 0 0 / 0.66);
+    --fx-rows-fill:   #FFFFFF;
   }
 }
 
@@ -1272,6 +1288,54 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* ── Album-art backdrop ────────────────────────────────────────────────────── */
+/* The playing cover, full-bleed behind the page, blown up + blurred + faded
+   down the screen; the translucent cards float over it. Port of iOS
+   BlurArtBackdrop.swift, using its baked look constants — except opacity, which
+   runs at half iOS's (.79/.74) because a desktop-sized field of it reads much
+   brighter than a phone's. Fixed and clipped, so it stays put while the list
+   scrolls and the overscan never spills. */
+.fx-art-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.fx-art-backdrop img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  /* Scaled past the frame so the blur's own transparent edge stays offscreen. */
+  transform: scale(1.25);
+  filter: blur(52px);
+  opacity: 0.40;
+  -webkit-mask-image: linear-gradient(to bottom, #000 0%, transparent 82%);
+  mask-image: linear-gradient(to bottom, #000 0%, transparent 82%);
+}
+.fx-art-backdrop img.is-outgoing {
+  animation: fx-backdrop-out 600ms linear forwards;
+}
+@keyframes fx-backdrop-out {
+  /* Holds, then fades over the back half — the incoming cover is fully opaque
+     underneath well before this clears, so coverage never dips. */
+  0%, 18% { opacity: 0.40; }
+  100%    { opacity: 0; }
+}
+[data-theme="light"] .fx-art-backdrop img { opacity: 0.37; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .fx-art-backdrop img { opacity: 0.37; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fx-art-backdrop img.is-outgoing { animation: none; opacity: 0; }
+}
+
+/* Page chrome sits above the backdrop (which is a z-index:0 stacking context —
+   static siblings would otherwise paint behind it). */
+.fx-header, .fx-main { position: relative; z-index: 1; }
+
 /* ── App shell ─────────────────────────────────────────────────────────────── */
 .fx-main {
   max-width: 760px;
@@ -1760,7 +1824,7 @@ body {
 }
 .fx-group-card-v2 {
   position: relative;
-  background: var(--fx-surface-1);
+  background: var(--fx-card-fill);
   border: 1px solid var(--fx-line-strong);
   border-radius: 36px;
   /* Resting drop shadow lifts the card off the page bg. Uses the shared
@@ -1771,18 +1835,18 @@ body {
   flex-direction: column;
 }
 .fx-group-card-v2[data-has-media="true"] {
-  /* Outer card carries the album-art tint, but its 1px border must read as
-     a neutral idle-card edge — not pick up the tint. CSS paints a card's
-     background under its border (background-clip: border-box), so the
-     inherited translucent --fx-line-strong stroke over the green tint would
-     bleed green. Fix: two background layers — the tint clipped to
-     padding-box (interior only) sitting over an --fx-surface-1 layer
-     clipped to border-box (fills under the border). The border then
-     composites over --fx-surface-1, exactly like a default card, in both
-     rest and hover — while the interior keeps its album tint. */
-  background:
-    linear-gradient(var(--art-card-tint, var(--fx-surface-1)), var(--art-card-tint, var(--fx-surface-1))) padding-box,
-    var(--fx-surface-1) border-box;
+  /* Album-art tint, translucent (the alpha comes baked into the token) so the
+     blurred backdrop glows through. Single layer: the old padding-box/border-box
+     sandwich existed to keep the 1px border from picking up the tint, but its
+     under-layer was opaque --fx-surface-1, which would now block the backdrop.
+     The border composites over the backdrop instead, exactly as it does on iOS. */
+  background: var(--art-card-tint, var(--fx-card-fill));
+}
+/* V2 (single, no media): the whole card IS a device, so it wears the device
+   sub-card fill rather than the outer media fill — matching the rows panel of
+   a playing card (iOS GroupCard.outerBackground). */
+.fx-group-card-v2.v2-single {
+  background: var(--fx-rows-fill);
 }
 /* V4 empty (multi-device, no Spotify connected) — the outer card carries a
    recessed --fx-surface-2 backdrop and the device-rows float on top of it as
@@ -2228,7 +2292,7 @@ body {
   margin: 0;
   /* Dark mode: a darker shade of the album-art tint (--art-inner-surface,
      emitted only in dark mode). Light mode: falls back to white surface-1. */
-  background: var(--art-inner-surface, var(--fx-surface-1));
+  background: var(--art-inner-surface, var(--fx-rows-fill));
   /* Only the top stroke shows — left/right/bottom edges sit flush against
      the outer card's own border, so adding more strokes would draw a
      double line. */

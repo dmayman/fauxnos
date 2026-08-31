@@ -6,9 +6,11 @@ import AddDeviceTab from './components/AddDeviceTab'
 import DevicesPopover from './components/DevicesPopover'
 import DevicePanel from './components/DevicePanel'
 import UpdateStreamModal from './components/UpdateStreamModal'
+import ArtBackdrop from './components/ArtBackdrop'
 import TuningPanel from './components/TuningPanel'
 import { useMqtt } from './hooks/useMqtt'
 import { apiFetch, getServerVersion } from './api'
+import { backdropArtUrl } from './lib/nowPlaying'
 import { SHOW_BRANCH_INDICATOR } from './lib/devFlags'
 
 /**
@@ -220,6 +222,7 @@ export default function App() {
 
   return (
     <div className="fx-root">
+      <ArtBackdrop url={backdropArtUrl(groups, mqtt)} />
       {popoverOpen && (
         <DevicesPopover
           clients={clients}

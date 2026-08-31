@@ -36,6 +36,7 @@ import { useTuning } from '../hooks/useTuning'
 import { useTheme } from '../hooks/useTheme'
 import { useSliderHover } from '../hooks/useSliderHover'
 import { buildArtTokens } from '../lib/artTokens'
+import { homeIdOf, sourceIdOf } from '../lib/nowPlaying'
 import { sendPlayback } from '../api'
 
 /* Volume glyph ramps with the level: mute (X) is reserved for v === 0
@@ -758,16 +759,7 @@ export default function GroupCard({
   appear = false, appearDelayMs = 0,
 }) {
   const isMulti = group.clients.length > 1
-  // home_client_id can be null when the server hasn't materialized it yet
-  // (or for groups where snapcast/spotify state is out of sync). Fall back
-  // to: the single client (single-device groups), the stream-id-encoded
-  // home, or the first client. Tracks/playback MQTT keys use this id, so
-  // a null home means MediaCard can never resolve metadata.
-  const homeClientId =
-    group.home_client_id
-    || (group.clients.length === 1 ? group.clients[0]?.id : null)
-    || (group.stream_id?.match(/source_(fauxnos\d+)_/)?.[1])
-    || group.clients[0]?.id
+  const homeClientId = homeIdOf(group)
   const cardRef = useRef(null)
 
   // The mweb "Edit group" pill is revealed by tapping the card body; only one
@@ -816,8 +808,7 @@ export default function GroupCard({
   // Analog, custom) have no transport, and a stale Spotify track lingers in
   // mqtt.tracks after switching away — so gate the media surface on Spotify
   // mode and let other sources fall back to the plain device-row layout.
-  const currentSourceId = mqtt.modes[homeClientId]
-    || (group.stream_id ? group.stream_id.replace(/^source_fauxnos\d+_/, '') : null)
+  const currentSourceId = sourceIdOf(group, mqtt, homeClientId)
   const isSpotify = currentSourceId === 'spotify'
   const hasMedia = isSpotify && !!track && (track.title || track.artist)
   const isAirplayHome = mqtt.modes[homeClient?.id] === 'airplay'
@@ -1046,7 +1037,10 @@ export default function GroupCard({
   return (
     <div
       className={`fx-group-row-v2-wrap${appear ? ' fx-appear' : ''}`}
-      style={appear ? { '--appear-delay': `${appearDelayMs}ms` } : undefined}
+      /* --art-* sits on the wrapper too (the card inherits it) so the gutter
+         glow pseudo-element — which lives outside the card's overflow:hidden
+         box — can read the accent hue. */
+      style={{ ...artStyle, ...(appear ? { '--appear-delay': `${appearDelayMs}ms` } : null) }}
       data-group-card-id={group.home_client_id || group.id}
     >
       <div
