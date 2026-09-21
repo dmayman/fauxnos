@@ -15,7 +15,8 @@ Apply path:
      every apply so PA picks up the new gains on its next idle-spawn.
      The eq_state.json `enabled` flag controls whether `control=` is
      rendered with the user's saved gains (enabled=true) or with all
-     zeros (enabled=false, passthrough).
+     zeros (enabled=false, passthrough). Either way EQ_MAKEUP_DB is
+     added on the wire so a flat EQ is unity gain.
   3. To make the change audible immediately (rather than at next PA
      restart), we run a pactl unload/load dance — drop the 4 dependent
      loopbacks, drop the eq_sink module, reload eq_sink with new gains,
@@ -59,6 +60,16 @@ _HARDWARE_SINK = "alsa_output.platform-soc_sound.stereo-fallback"
 _EQ_SINK_NAME = "eq_sink"
 _LOOPBACK_LATENCY_MSEC = 80
 _EQ_CONTROL_PLACEHOLDER = "__EQ_CONTROL__"
+
+# Eq10X2 sums its 10 band-pass filters in parallel, and the overlap makes
+# an all-0 dB setting run +3.5 dB hot (measured on music, fauxnos001,
+# 2026-09-21). At full-scale sources (EVC devices pin the chain at 0 dBFS)
+# that clipped every peak in the float→s16 hop to the DAC. The output is
+# linear in the band gains, so offsetting every band by the same dB
+# scales the whole EQ back to unity. Duplicated in install.sh
+# setup_default_pa — keep in sync.
+# ponytail: one broadband figure; the flat response still ripples per band.
+EQ_MAKEUP_DB = -3.5
 
 
 class EqController:
@@ -155,11 +166,7 @@ class EqController:
         new_state = {"enabled": bool(enabled), "bands": new_bands}
         self._write_state(new_state)
 
-        wire_gains = (
-            [new_bands[str(hz)] for hz in BANDS_HZ]
-            if enabled
-            else [0.0] * len(BANDS_HZ)
-        )
+        wire_gains = _wire_gains(enabled, new_bands)
 
         rewrite_ok = self._rewrite_default_pa(wire_gains)
         reload_ok = self._live_reload(wire_gains)
@@ -205,11 +212,7 @@ class EqController:
             )
             return
         state = self.get_state()
-        wire_gains = (
-            [state["bands"][str(hz)] for hz in BANDS_HZ]
-            if state["enabled"]
-            else [0.0] * len(BANDS_HZ)
-        )
+        wire_gains = _wire_gains(state["enabled"], state["bands"])
         if self._rewrite_default_pa(wire_gains, only_if_changed=True):
             self.logger.info(
                 f"eq sync at startup: default.pa control= aligned with "
@@ -328,6 +331,12 @@ class EqController:
 # ------------------------------------------------------------------------
 # Module-level helpers (kept outside the class so they're easy to unit-test)
 # ------------------------------------------------------------------------
+
+
+def _wire_gains(enabled: bool, bands: Dict[str, float]) -> List[float]:
+    """User band gains (or flat when disabled) plus the Eq10X2 makeup offset."""
+    user = [bands[str(hz)] for hz in BANDS_HZ] if enabled else [0.0] * len(BANDS_HZ)
+    return [g + EQ_MAKEUP_DB for g in user]
 
 
 def _format_gain(g: float) -> str:

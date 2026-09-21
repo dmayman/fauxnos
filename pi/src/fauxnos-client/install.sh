@@ -852,6 +852,9 @@ if enabled:
     wire = [bands[str(hz)] for hz in bands_hz]
 else:
     wire = [0.0] * len(bands_hz)
+# Eq10X2 runs +3.5 dB hot when flat; keep in sync with
+# eq_controller.EQ_MAKEUP_DB.
+wire = [g - 3.5 for g in wire]
 
 def fmt(g):
     g = round(float(g), 1)
