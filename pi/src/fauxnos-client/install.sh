@@ -953,12 +953,14 @@ register_client() {
     # --no-reboot: install.sh owns the final reboot. Without this flag
     # setup-client.py would reboot first, killing install.sh's own countdown
     # and validation steps.
-    local setup_args="--setup --no-reboot"
+    # Array, not a string: a multi-word name ("Living Room") must stay one
+    # argument, or argparse rejects the stray word and setup never runs.
+    local setup_args=(--setup --no-reboot)
     if [ -n "$DISPLAY_NAME" ]; then
-        setup_args="$setup_args --display-name $DISPLAY_NAME"
+        setup_args+=(--display-name "$DISPLAY_NAME")
     fi
 
-    if python3 setup-client.py $setup_args; then
+    if python3 setup-client.py "${setup_args[@]}"; then
         log_success "Client registration completed successfully"
         return 0
     else
