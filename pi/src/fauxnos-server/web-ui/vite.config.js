@@ -29,7 +29,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://fauxnos000.local:8080',
+      '/api': process.env.FAUXNOS_API || 'http://fauxnos000.local:8080',
     },
   },
 })

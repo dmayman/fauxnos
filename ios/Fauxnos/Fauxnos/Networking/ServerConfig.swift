@@ -35,7 +35,10 @@ struct ServerConfig: Equatable {
     /// MQTT-over-websocket endpoint. The mosquitto websocket listener lives on
     /// :9001 regardless of the API port redirect.
     var mqttWebSocketURL: URL {
-        let bareHost = host.split(separator: ":").first.map(String.init) ?? host
+        // `fauxnos.mqttHost` lets the REST host point at a proxy (e.g. the
+        // spoofed-rooms demo on localhost:8090) while MQTT stays on the Pi.
+        let bareHost = UserDefaults.standard.string(forKey: "fauxnos.mqttHost")
+            ?? host.split(separator: ":").first.map(String.init) ?? host
         return URL(string: "ws://\(bareHost):9001")!
     }
 }
