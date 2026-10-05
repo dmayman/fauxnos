@@ -119,6 +119,11 @@ class GoLibrespotController:
         # race is one missed-or-extra event, which is benign.
         self._suppress_volume_until: float = 0.0
 
+        # One keep-alive connection for every HTTP call. A fresh connection
+        # per call repeats the name lookup of the server, which occasionally
+        # takes 5s and isn't covered by the request timeout.
+        self._session = requests.Session()
+
     # -------- HTTP --------
 
     def set_volume(self, volume_pct: int) -> bool:
@@ -135,7 +140,7 @@ class GoLibrespotController:
         self._suppress_volume_until = time.monotonic() + ECHO_SUPPRESS_S
         url = f"{self.base_url}/player/volume"
         try:
-            resp = requests.post(
+            resp = self._session.post(
                 url,
                 json={"volume": volume_pct},
                 timeout=HTTP_TIMEOUT_S,
@@ -173,7 +178,7 @@ class GoLibrespotController:
         """
         url = f"{self.base_url}/player/pause"
         try:
-            resp = requests.post(url, timeout=HTTP_TIMEOUT_S)
+            resp = self._session.post(url, timeout=HTTP_TIMEOUT_S)
             if resp.status_code in (200, 204):
                 self.logger.debug("go-librespot paused")
                 return True
