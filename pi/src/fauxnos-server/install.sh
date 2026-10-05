@@ -26,7 +26,8 @@ LOG_FILE="/tmp/fauxnos-server-install.log"
 SERVER_HOSTNAME="fauxnos000"
 SNAPCAST_MIN_VERSION="0.30"
 SNAPCAST_TARGET_VERSION="0.31.0"
-GO_LIBRESPOT_VERSION="latest"
+# Pinned to a release tested with Fauxnos. To upgrade, bump this and re-run.
+GO_LIBRESPOT_VERSION="v0.10.3"
 
 # ─── Colors ───────────────────────────────────────────────────────────────────
 RED='\033[0;31m'
@@ -215,8 +216,11 @@ _install_snapserver_from_github() {
 install_go_librespot() {
     log_section "Installing go-librespot"
 
-    if [ -f "/usr/local/bin/go-librespot" ]; then
-        log "go-librespot already installed at /usr/local/bin/go-librespot"
+    # go-librespot has no --version flag, so a marker file records which
+    # release is installed. A missing or different marker triggers a reinstall.
+    local version_file="/usr/local/bin/go-librespot.version"
+    if [ -f "/usr/local/bin/go-librespot" ] && [ "$(cat "$version_file" 2>/dev/null)" = "$GO_LIBRESPOT_VERSION" ]; then
+        log "go-librespot $GO_LIBRESPOT_VERSION already installed at /usr/local/bin/go-librespot"
         log_success "go-librespot ready"
         return
     fi
@@ -225,27 +229,22 @@ install_go_librespot() {
     arch=$(uname -m)
     case "$arch" in
         aarch64) local go_arch="arm64" ;;
-        armv7l)  local go_arch="armv7" ;;
-        x86_64)  local go_arch="amd64" ;;
+        armv6l|armv7l) local go_arch="armv6_rpi" ;;
+        x86_64)  local go_arch="x86_64" ;;
         *)        log_error "Unknown arch: $arch"; return 1 ;;
     esac
 
     local tarball="go-librespot_linux_${go_arch}.tar.gz"
-    local api_url="https://api.github.com/repos/devgianlu/go-librespot/releases/latest"
+    local download_url="https://github.com/devgianlu/go-librespot/releases/download/${GO_LIBRESPOT_VERSION}/${tarball}"
 
-    log "Fetching latest go-librespot release info..."
-    local download_url
-    download_url=$(curl -fsSL "$api_url" | jq -r --arg name "$tarball" '.assets[] | select(.name==$name) | .browser_download_url')
-
-    if [ -z "$download_url" ]; then
-        log_error "Could not find go-librespot download URL for $tarball"
-        return 1
-    fi
-
-    log "Downloading $tarball..."
+    log "Downloading $tarball ($GO_LIBRESPOT_VERSION)..."
     local tmp_dir
     tmp_dir=$(mktemp -d)
-    curl -fsSL "$download_url" -o "$tmp_dir/$tarball"
+    if ! curl -fsSL "$download_url" -o "$tmp_dir/$tarball"; then
+        log_error "Download failed: $download_url"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
     tar -xzf "$tmp_dir/$tarball" -C "$tmp_dir"
 
     local binary
@@ -257,9 +256,10 @@ install_go_librespot() {
     fi
 
     sudo install -m 755 "$binary" /usr/local/bin/go-librespot
+    echo "$GO_LIBRESPOT_VERSION" | sudo tee "$version_file" >/dev/null
     rm -rf "$tmp_dir"
 
-    log_success "go-librespot installed to /usr/local/bin/go-librespot"
+    log_success "go-librespot $GO_LIBRESPOT_VERSION installed to /usr/local/bin/go-librespot"
 }
 
 # ─── Step 5: Download server code ─────────────────────────────────────────────

@@ -40,7 +40,7 @@ State (defer counts + restart timestamps) persists across runs in a small JSON
 sidecar, since each timer firing is a fresh process.
 
 Detection string note: the "did not receive last pong from dealer" message is
-go-librespot's wording as of 0.7.x. A version bump could change it; if the
+go-librespot's wording in 0.7.x through 0.10.3. A version bump could change it; if the
 watchdog goes quiet across an upgrade, re-check this against the current logs.
 """
 
