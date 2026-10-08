@@ -29,6 +29,7 @@ Topic schema:
 
 import json
 import logging
+import threading
 import time
 from typing import Callable, Optional, Dict, List
 
@@ -127,6 +128,19 @@ class MQTTClient:
 
         # Build sources list from config
         self.sources_list = self._determine_sources()
+
+        # Volume commands are applied by a worker that takes only the newest
+        # value. Applying one can block (a name lookup of the server can take
+        # 5s), and replaying every command queued behind it walks the volume,
+        # and every UI slider, back through the stale values.
+        self._pending_volume: Optional[int] = None
+        self._volume_evt = threading.Event()
+        # Serializes volume application with the other commands, which run
+        # on the paho thread, so a mode switch can't interleave with it.
+        self._command_lock = threading.Lock()
+        threading.Thread(
+            target=self._volume_worker, name="mqtt-volume", daemon=True
+        ).start()
 
     def _determine_sources(self) -> List[str]:
         """Get list of source IDs from config"""
@@ -270,7 +284,44 @@ class MQTTClient:
 
             self._handle_command(command_type, action, payload, sub_action)
 
+    def _volume_worker(self):
+        """Apply the newest pending volume; values superseded meanwhile are dropped."""
+        while True:
+            self._volume_evt.wait()
+            # Clear before reading, so a value set after the read re-arms the event.
+            self._volume_evt.clear()
+            volume = self._pending_volume
+            try:
+                with self._command_lock:
+                    self.volume_callback(volume)
+                    self.update_volume(volume)
+            except Exception as e:
+                logger.error(f"Error applying volume {volume}%: {e}")
+
     def _handle_command(
+        self,
+        command_type: str,
+        action: str,
+        payload: str,
+        sub_action: Optional[str] = None,
+    ):
+        if command_type == "set" and action == "volume":
+            try:
+                volume = int(payload)
+            except ValueError:
+                logger.error(f"Invalid volume value: {payload!r}")
+                return
+            if 0 <= volume <= 100:
+                logger.info(f"MQTT volume command: {volume}%")
+                self._pending_volume = volume
+                self._volume_evt.set()
+            else:
+                logger.error(f"Invalid volume value: {volume}")
+            return
+        with self._command_lock:
+            self._handle_locked_command(command_type, action, payload, sub_action)
+
+    def _handle_locked_command(
         self,
         command_type: str,
         action: str,
@@ -279,16 +330,7 @@ class MQTTClient:
     ):
         try:
             if command_type == "set":
-                if action == "volume":
-                    volume = int(payload)
-                    if 0 <= volume <= 100:
-                        logger.info(f"MQTT volume command: {volume}%")
-                        self.volume_callback(volume)
-                        self.update_volume(volume)
-                    else:
-                        logger.error(f"Invalid volume value: {volume}")
-
-                elif action == "mode":
+                if action == "mode":
                     if payload in self.sources_list:
                         logger.info(f"MQTT mode command: {payload}")
                         self.mode_callback(payload)

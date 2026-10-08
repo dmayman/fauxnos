@@ -52,6 +52,9 @@ class SourceManager:
         self.go_librespot = go_librespot
         self.state_manager = StateManager(config_manager.state_file)
         self._on_external_volume_change = on_external_volume_change
+        # Keep-alive connection to the server API, so forwarding a volume
+        # drag doesn't repeat the name lookup of the server for every step.
+        self._server_http = requests.Session()
 
         # Track current source and volumes
         self.current_source: Optional[str] = None
@@ -144,7 +147,7 @@ class SourceManager:
             client_id = self.config_manager.device_config.name
             host = self.config_manager.server_host
             url = f"http://{host}:8080/api/clients/{client_id}/external_volume"
-            requests.post(url, json={"value": int(volume)}, timeout=2.0)
+            self._server_http.post(url, json={"value": int(volume)}, timeout=2.0)
         except Exception as e:
             # Log but don't raise — phone WS handler must not crash.
             self.logger.warning(

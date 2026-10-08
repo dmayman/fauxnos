@@ -26,6 +26,11 @@ class SnapcastController:
         self.host = host
         self.port = port
         self.request_id = 1
+        # Resolved address of `host`, reused across calls. Looking the name
+        # up on every call stalls for 5s about once in 30 calls (mDNS), which
+        # freezes a volume drag. Cleared on any failure so the next call
+        # looks the name up again (the server's IP can change).
+        self._addr: Optional[str] = None
 
     def _send_command(self, method: str, params: Dict[str, Any]) -> Optional[Dict]:
         """
@@ -49,9 +54,11 @@ class SnapcastController:
             self.request_id += 1
 
             # Connect to snapcast server
+            addr = self._addr or socket.gethostbyname(self.host)
+            self._addr = None
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(5)
-            sock.connect((self.host, self.port))
+            sock.connect((addr, self.port))
 
             # Send request
             request_json = json.dumps(request) + '\n'
@@ -68,6 +75,7 @@ class SnapcastController:
                     break
 
             sock.close()
+            self._addr = addr  # reached the server, so keep the address
 
             # Parse response
             response_json = response_data.decode('utf-8').strip()
