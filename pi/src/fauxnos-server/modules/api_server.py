@@ -126,12 +126,66 @@ class FauxnosAPIServer:
         # rather than in any UI client. Keyed by client_id, guarded by the lock.
         self._ext_vol_lock = _threading.Lock()
         self._ext_vol_state: dict = {}  # client_id -> {"timer": Timer|True|None, "pending": int|None}
+        # Whether each room's external volume controller answers, so the apps
+        # can say so. client_id -> {"responding": bool, "last_reply": float,
+        # "watching": bool}. Guarded by _ext_vol_lock.
+        self._evc_health: dict = {}
         self.setup_routes()
 
     # Min spacing between external-volume dispatches per client (~4/sec) —
     # comfortably under Particle's ~2 calls/sec budget once you account for
     # the leading-edge fire skipping the first window. See FX-65.
     _EXT_VOL_THROTTLE_S = 0.25
+
+    # How long an MQTT controller has to answer a volume command before the
+    # room is reported as not responding. A controller on the LAN answers in
+    # milliseconds; raise this for one that answers through a cloud service.
+    _EVC_REPLY_TIMEOUT_S = 5.0
+
+    def _set_evc_responding(self, client_id: str, responding: bool):
+        """Record whether a room's external volume controller answers, and
+        publish each change to the retained `status/clients/<id>/volume_controller`
+        topic ("ok" | "unresponsive") that the apps turn into a warning."""
+        with self._ext_vol_lock:
+            health = self._evc_health.setdefault(client_id, {})
+            if health.get("responding") == responding:
+                return
+            health["responding"] = responding
+        self._publish_mqtt(
+            f"status/clients/{client_id}/volume_controller",
+            "ok" if responding else "unresponsive",
+            retain=True,
+        )
+        if not responding:
+            self.log(f"External volume controller for {client_id} is not responding", "WARNING")
+
+    def _note_evc_reply(self, client_id: str):
+        """The controller reported a volume, so it is reachable."""
+        with self._ext_vol_lock:
+            self._evc_health.setdefault(client_id, {})["last_reply"] = time.monotonic()
+        self._set_evc_responding(client_id, True)
+
+    def _expect_evc_reply(self, client_id: str):
+        """After a volume command, report the controller as not responding
+        unless it answers within _EVC_REPLY_TIMEOUT_S. One watch per client at
+        a time, so a drag arms a single timer."""
+        with self._ext_vol_lock:
+            health = self._evc_health.setdefault(client_id, {})
+            if health.get("watching"):
+                return
+            health["watching"] = True
+        sent = time.monotonic()
+
+        def _check():
+            with self._ext_vol_lock:
+                health["watching"] = False
+                replied = health.get("last_reply", 0.0) >= sent
+            if not replied:
+                self._set_evc_responding(client_id, False)
+
+        t = threading.Timer(self._EVC_REPLY_TIMEOUT_S, _check)
+        t.daemon = True
+        t.start()
 
     def log(self, message: str, level: str = "INFO"):
         if self.verbose or level in ["ERROR", "WARNING", "SUCCESS"]:
@@ -1153,7 +1207,7 @@ class FauxnosAPIServer:
             'ir': raw.get('ir') or self._empty_ir_block(),
         })
 
-    def _publish_mqtt(self, topic: str, payload: str) -> bool:
+    def _publish_mqtt(self, topic: str, payload: str, retain: bool = False) -> bool:
         """Publish a one-shot MQTT message via the server's listener client.
 
         Returns False if the broker connection isn't up. We piggyback on
@@ -1165,7 +1219,7 @@ class FauxnosAPIServer:
             self.log("MQTT publish skipped: no listener client", "WARNING")
             return False
         try:
-            result = client.publish(topic, payload)
+            result = client.publish(topic, payload, retain=retain)
             # paho returns MQTTMessageInfo; rc=0 means queued for send.
             return getattr(result, 'rc', 1) == 0
         except Exception as e:
@@ -1795,6 +1849,12 @@ class FauxnosAPIServer:
                 # new state immediately — without this, the client would
                 # keep using its cached flag until the next server boot.
                 self._publish_external_volume_controller_state(client_id, current)
+                if not current.get("enabled"):
+                    # No controller to report on: clear the retained status so
+                    # the apps drop any warning for this room.
+                    with self._ext_vol_lock:
+                        self._evc_health.pop(client_id, None)
+                    self._publish_mqtt(f"status/clients/{client_id}/volume_controller", "", retain=True)
                 return True
         return False
 
@@ -2141,9 +2201,11 @@ class FauxnosAPIServer:
                 else:
                     resp = http_requests.post(api_url, json=rendered, timeout=5)
                 self.log(f"External volume HTTP for {client_id}: {resp.status_code} (v={value})", "SUCCESS")
+                self._set_evc_responding(client_id, resp.status_code < 400)
                 return True, {"external_status": resp.status_code}
             except Exception as e:
                 self.log(f"External volume HTTP error for {client_id}: {e}", "WARNING")
+                self._set_evc_responding(client_id, False)
                 return False, {"error": str(e)}
 
         elif transport == "mqtt":
@@ -2159,6 +2221,9 @@ class FauxnosAPIServer:
             ok = self._publish_mqtt(topic, payload_str)
             if ok:
                 self.log(f"External volume MQTT for {client_id}: {topic} = {payload_str}", "SUCCESS")
+                # The controller answers each command with its volume on the
+                # inbound topic; silence means it is off the broker.
+                self._expect_evc_reply(client_id)
             else:
                 self.log(f"External volume MQTT publish failed for {client_id}: {topic}", "WARNING")
             return ok, ({"mqtt_topic": topic, "mqtt_payload": payload_str} if ok
@@ -2258,6 +2323,7 @@ class FauxnosAPIServer:
         Called from both inbound paths — HTTP webhook (handle_external_volume_inbound)
         and MQTT subscription (_handle_external_volume_mqtt_inbound).
         """
+        self._note_evc_reply(client_id)
         self._publish_mqtt(f"status/clients/{client_id}/volume", str(value))
         self._publish_mqtt(f"set/clients/{client_id}/external_volume_mirror", str(value))
 

@@ -192,15 +192,21 @@ struct GroupsListView: View {
                 // ConnectionBadge. Sits just under the nav bar (content is already
                 // inset below it), floats over the cards, and is present only while
                 // the MQTT link isn't live — sliding away the moment it connects.
+                // While the link is live, the same slot reports a room whose
+                // external volume controller has stopped answering the server.
                 .overlay(alignment: .bottom) {
                     ZStack {
                         if store.connectionState != .connected {
                             ConnectionToast(state: store.connectionState)
                                 .transition(.move(edge: .bottom).combined(with: .opacity))
+                        } else if let warning = store.controllerWarning {
+                            ControllerToast(text: warning)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
                         }
                     }
                     .padding(.bottom, Space.xxl)
                     .animation(.fxEase, value: store.connectionState)
+                    .animation(.fxEase, value: store.controllerWarning)
                 }
         }
         // The source dropdown floats above everything (incl. the nav bar) anchored
@@ -572,11 +578,7 @@ private struct ConnectionToast: View {
                 .font(FxFont.fustat(14, .semibold))
                 .foregroundStyle(FX.text)
         }
-        .padding(.vertical, Space.sm)
-        .padding(.horizontal, Space.lg)
-        .background(Capsule().fill(.regularMaterial))
-        .overlay(Capsule().strokeBorder(FX.line, lineWidth: 1))
-        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .toastCapsule()
         .accessibilityElement(children: .combine)
         .accessibilityLabel(label)
     }
@@ -587,6 +589,39 @@ private struct ConnectionToast: View {
         case .disconnected: return "Offline"
         case .connected:    return ""
         }
+    }
+}
+
+/// Shown in the connection toast's slot while a room's external volume
+/// controller isn't answering the server — the volume slider moves but the amp
+/// doesn't. Stays until the controller reports in again.
+private struct ControllerToast: View {
+    let text: String
+
+    var body: some View {
+        HStack(spacing: Space.sm) {
+            Image(systemName: "speaker.slash.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(FX.text2)
+            Text(text)
+                .font(FxFont.fustat(14, .semibold))
+                .foregroundStyle(FX.text)
+        }
+        .toastCapsule()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(text)
+    }
+}
+
+private extension View {
+    /// The floating material capsule shared by the toasts.
+    func toastCapsule() -> some View {
+        self
+            .padding(.vertical, Space.sm)
+            .padding(.horizontal, Space.lg)
+            .background(Capsule().fill(.regularMaterial))
+            .overlay(Capsule().strokeBorder(FX.line, lineWidth: 1))
+            .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
     }
 }
 
@@ -728,6 +763,11 @@ private struct StaggeredAppear<Content: View>: View {
     // shows over a populated list. (The `.connecting` variant swaps the glyph
     // for a spinner and the label for "Connecting…".)
     GroupsListView().environmentObject(FauxnosStore.preview(connected: false))
+}
+
+#Preview("Controller toast") {
+    GroupsListView().environmentObject(
+        FauxnosStore.preview(unresponsiveControllers: ["fauxnos001"]))
 }
 #endif
 

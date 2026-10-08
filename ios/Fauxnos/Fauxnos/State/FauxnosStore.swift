@@ -41,6 +41,9 @@ final class FauxnosStore: ObservableObject {
     @Published private(set) var modes: [String: String] = [:]
     @Published private(set) var tracks: [String: Track] = [:]
     @Published private(set) var playback: [String: Playback] = [:]
+    // Rooms whose external volume controller (an amp that owns its own volume)
+    // has stopped answering the server. Drives the controller toast.
+    @Published private(set) var unresponsiveControllers: Set<String> = []
 
     let config: ServerConfig
     private let api: APIClient
@@ -77,6 +80,7 @@ final class FauxnosStore: ObservableObject {
             "status/clients/+/volume",
             "status/clients/+/track",
             "status/clients/+/playback",
+            "status/clients/+/volume_controller",
             "status/clients/+/calibration/+",
         ]
         #if DEBUG
@@ -229,6 +233,14 @@ final class FauxnosStore: ObservableObject {
             } else if let pb = try? Self.decoder.decode(Playback.self, from: payload) {
                 playback[deviceId] = pb
             }
+        case "volume_controller":
+            // Retained "ok" | "unresponsive"; empty once the room has no
+            // external controller. Anything but "unresponsive" clears it.
+            if String(decoding: payload, as: UTF8.self) == "unresponsive" {
+                unresponsiveControllers.insert(deviceId)
+            } else {
+                unresponsiveControllers.remove(deviceId)
+            }
         case "hello":
             // Hello can carry an initial volume-ish snapshot; M1 only mines it
             // for nothing required, but decode defensively so a future field
@@ -280,6 +292,14 @@ final class FauxnosStore: ObservableObject {
     }
     func displayName(forId id: String, fallback: String) -> String {
         clientNames[id] ?? fallback
+    }
+
+    /// Toast text for a room whose external volume controller isn't answering,
+    /// or nil when every controller is fine. Names one room; if several are
+    /// down, the first by id.
+    var controllerWarning: String? {
+        guard let id = unresponsiveControllers.min() else { return nil }
+        return "\(displayName(forId: id, fallback: id))’s volume controller isn’t responding"
     }
 
     /// Live volume for a client: MQTT overlay wins, else the REST snapshot value.
@@ -556,7 +576,8 @@ extension FauxnosStore {
     /// (not in the Preview file) because the overlay properties are
     /// `private(set)`; only same-file code may seed them. Fixtures: `PreviewData`.
     static func preview(groups: [SpeakerGroup] = PreviewData.groups,
-                        connected: Bool = true) -> FauxnosStore {
+                        connected: Bool = true,
+                        unresponsiveControllers: Set<String> = []) -> FauxnosStore {
         // Seed art-tint colors up front so cards theme on first render rather
         // than flashing neutral while async extraction runs (which never does
         // in previews — `ensure(_:)` no-ops on a pre-seeded URL).
@@ -569,6 +590,7 @@ extension FauxnosStore {
         store.playback = PreviewData.playback
         store.clientNames = PreviewData.names
         store.connectionState = connected ? .connected : .disconnected
+        store.unresponsiveControllers = unresponsiveControllers
         store.lastUpdated = Date()
         return store
     }
