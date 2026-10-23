@@ -69,6 +69,35 @@ sources:
     pa_calibration: 100
     on_leave_command: "systemctl --user restart shairport-sync-fauxnos.service"
 
+  # Internal source - Noise, generated ON THIS DEVICE (sox → noisesink)
+  # so it keeps playing through a server restart or a Wi-Fi drop. The
+  # generator is a separate user service (fauxnos-noise.service,
+  # Restart=always): started on enter, stopped on leave. Colour is set
+  # in ~/.config/fauxnos/noise.env (FAUXNOS_NOISE_COLOR=white|pink|brown,
+  # default brown). See docs/LOCAL_SOURCES.md.
+  - id: noise
+    label: Noise
+    type: internal
+    sink: noisesink
+    starting_volume: 30
+    volume_controller: self
+    pa_calibration: 100
+    on_enter_command: "systemctl --user start fauxnos-noise.service"
+    on_leave_command: "systemctl --user stop fauxnos-noise.service"
+
+  # Internal source - Library: this device's own MPD (fauxnos-mpd.service)
+  # streaming MP3s over HTTP from the server's library folder. Nothing
+  # plays until a set/clients/<id>/library/play command queues something;
+  # leaving the source stops MPD.
+  - id: library
+    label: Library
+    type: internal
+    sink: librarysink
+    starting_volume: 40
+    volume_controller: self
+    pa_calibration: 100
+    on_leave_command: "mpc -q stop"
+
 # Logging configuration
 logging:
   file: ~/logs/fauxnos-client.log

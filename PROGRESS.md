@@ -166,3 +166,11 @@ The generated snapclient service should match the one I created, it has some ext
 - Integrated dependency installation into client setup workflow
 - Consolidated README.md with complete source management documentation
 - Updated requirements.txt with all necessary dependencies
+10/23/2026
+- Added two local sources that play on the device itself, not over snapcast (docs/LOCAL_SOURCES.md):
+  * Noise — sox generates white/pink/brown noise on-device into a new `noisesink` (fauxnos-noise.service, Restart=always). Survives a server restart or Wi-Fi drop, and a fauxnos-client restart no longer mutes the restored source.
+  * Library — each device runs its own MPD (fauxnos-mpd.service → `librarysink`), streaming MP3s over HTTP from the server's new `/library/` route (`~/fauxnos-library/`, listed at `GET /api/library`).
+- Crossfades are back, opt-in per switch: `set/clients/<id>/mode {"source", "fade_ms"}`. Runs on a background thread (the old always-on fade blocked every switch); leave hooks fire at the end of the fade.
+- New `set/clients/<id>/library/play` and `/library/stop` MQTT commands; new `on_enter_command` source hook.
+- Server + web UI list Noise and Library as built-in sources on every device.
+- Built for room routines (bedtime song → sleep noise) driven by Home Assistant and a wall panel; the HA bridge is next.

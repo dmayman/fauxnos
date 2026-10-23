@@ -444,6 +444,16 @@ class FauxnosAPIServer:
         def serve_client_file(filepath):
             return self.handle_serve_client_file(filepath)
 
+        # ── Library (MP3s the devices' MPD players stream) ────────────────────
+
+        @app.route('/library/<path:filepath>')
+        def library_file(filepath):
+            return self.handle_library_file(filepath)
+
+        @app.route('/api/library', methods=['GET'])
+        def list_library():
+            return self.handle_list_library()
+
         # ── Server-driven install (Add Device wizard) ─────────────────────────
 
         @app.route('/api/install/server-pubkey', methods=['GET'])
@@ -1684,6 +1694,20 @@ class FauxnosAPIServer:
          "category": "default", "sink": "airplaysink",
          "starting_volume": 50, "volume_controller": "external",
          "on_leave_command": "systemctl --user restart shairport-sync-fauxnos.service"},
+        # Local sources (docs/LOCAL_SOURCES.md). Both play on the device
+        # itself — noise is generated there (sox) so it survives a server
+        # or Wi-Fi drop; library is the device's own MPD streaming files
+        # from this server's /library/. Neither is multiroom, same as
+        # AirPlay. Must match the noise/library entries in the client's
+        # client_config.yaml.template, which is what the daemon routes on.
+        {"id": "noise", "label": "Noise", "type": "internal",
+         "category": "default", "sink": "noisesink",
+         "starting_volume": 30, "volume_controller": "self",
+         "icon": "outline:wave-sine"},
+        {"id": "library", "label": "Library", "type": "internal",
+         "category": "default", "sink": "librarysink",
+         "starting_volume": 40, "volume_controller": "self",
+         "icon": "outline:playlist"},
     ]
     _DEFAULT_ANALOG_SOURCE = {
         "id": "analog", "label": "Analog In", "type": "internal",
@@ -3491,6 +3515,44 @@ rm -- "$0"
             mimetype="text/plain",
             headers={"Content-Disposition": "attachment; filename=client-install.sh"}
         )
+
+    # ── Library handlers ───────────────────────────────────────────────────────
+    # The Library source plays on each device's own MPD, which streams files
+    # from here over plain HTTP (see docs/LOCAL_SOURCES.md). Drop audio into
+    # the folder (subfolders fine) and it is playable — no scan, no database.
+
+    LIBRARY_EXTENSIONS = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav"}
+
+    def _library_dir(self) -> Path:
+        """server.paths.library_dir in server_config.json, default ~/fauxnos-library."""
+        paths = self.config_manager.server_config.get("server", {}).get("paths", {})
+        return Path(os.path.expanduser(paths.get("library_dir", "~/fauxnos-library")))
+
+    def handle_library_file(self, filepath: str):
+        """GET /library/<path> — serve one audio file (Range requests supported)."""
+        root = self._library_dir()
+        try:
+            target = (root / filepath).resolve()
+            target.relative_to(root.resolve())
+        except (ValueError, RuntimeError):
+            abort(403)
+        if not target.is_file():
+            abort(404)
+        return send_from_directory(str(root), filepath, conditional=True)
+
+    def handle_list_library(self):
+        """GET /api/library — every playable file, as paths for library/play."""
+        root = self._library_dir()
+        items = []
+        if root.is_dir():
+            for p in sorted(root.rglob("*")):
+                if p.is_file() and p.suffix.lower() in self.LIBRARY_EXTENSIONS:
+                    items.append({
+                        "path": p.relative_to(root).as_posix(),
+                        "name": p.stem,
+                        "size": p.stat().st_size,
+                    })
+        return jsonify({"library_dir": str(root), "items": items})
 
     def handle_serve_client_file(self, filepath: str):
         """Handle GET /api/install/files/client/<path> — serve individual client files"""

@@ -15,6 +15,13 @@ Multi-stage attenuation (PA × snapcast × hardware × …) multiplies, gets con
 |--------------|--------------------|----------------------|-------------------------------------|
 | **Spotify**  | snapcast client    | PA snapsink @ 100%, go-librespot has `external_volume:true` (it reports, doesn't apply) | `volume_controller: snapcast` |
 | **Analog In**| PA `analogsink`    | PA loopback `analog_input → analogsink` runs at 100% | `volume_controller: self` |
+| **Noise**    | PA `noisesink`     | sox output has a fixed per-colour gain (not user-facing) | `volume_controller: self` |
+| **Library**  | PA `librarysink`   | MPD software volume left at 100% | `volume_controller: self` |
+
+Noise and Library play on the device itself, not over snapcast — see
+[LOCAL_SOURCES.md](LOCAL_SOURCES.md). A crossfade (`fade_ms`) ramps the PA
+sinks of the two sources involved; it is not an extra stage — at the end
+every sink sits exactly where this table says.
 
 The `volume_controller` field on each `source` in `client_config.yaml` is the **only** place this is encoded. Everything else (source_manager, mqtt_client, the UI) reads from there.
 

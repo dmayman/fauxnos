@@ -7,6 +7,8 @@ Handles audio source switching with smart volume control routing
 
 import logging
 import subprocess
+import threading
+import time
 import requests
 from typing import Callable, Dict, Optional
 from .config_manager import ConfigManager, SourceConfig
@@ -18,6 +20,9 @@ from .state_manager import StateManager
 
 class SourceManager:
     """Manages audio source switching and volume control"""
+
+    # Crossfade granularity: one pair of PA sink writes per step.
+    FADE_STEP_MS = 100
 
     def __init__(
         self,
@@ -80,6 +85,16 @@ class SourceManager:
         # None = "we haven't applied anything yet", so the first retained
         # EVC message always writes the mixer even if the pad is 0.
         self.output_pad_db: Optional[int] = None
+
+        # In-flight crossfade, started by switch_source(fade_ms=...) and
+        # stepped by a background thread so the switch itself returns at
+        # once. `_fade` is {"from": SourceConfig, "to": SourceConfig} while
+        # one runs. Bumping `_fade_gen` (under `_fade_lock`) retires the
+        # running thread; every step re-checks it under the same lock, so
+        # no stale step can land after a newer switch has taken over.
+        self._fade_lock = threading.Lock()
+        self._fade_gen = 0
+        self._fade: Optional[Dict[str, SourceConfig]] = None
 
         # Initialize volumes from config
         for source_id, source in config_manager.sources.items():
@@ -259,12 +274,20 @@ class SourceManager:
         """Save current state to disk"""
         self.state_manager.save_state(self.current_source, self.source_volumes)
 
-    def switch_source(self, source_id: str) -> bool:
+    def switch_source(self, source_id: str, fade_ms: int = 0) -> bool:
         """
         Switch to a different audio source
 
         Args:
             source_id: ID of source to switch to
+            fade_ms: If > 0, crossfade from the current source over this
+                many milliseconds instead of cutting over. The switch
+                returns at once (current_source is already the new one);
+                a background thread ramps the two PA sinks and runs the
+                outgoing source's leave hooks when the ramp ends. Only
+                applies between two internal sources on different sinks
+                — anything else falls back to an instant switch. UI taps
+                send no fade; routines (e.g. bedtime → sleep) do.
 
         Returns:
             True if successful, False otherwise
@@ -275,31 +298,24 @@ class SourceManager:
             self.logger.error(f"Source not found: {source_id}")
             return False
 
+        # A new switch always lands any fade still running first.
+        self._settle_fade(next_source_id=source_id)
+
         # Check if already on this source
         if self.current_source == source_id:
             self.logger.debug(f"Already on source {source_id}, skipping switch")
             return True
 
-        # Leaving a go_librespot-controlled source? Pause it so the
-        # daemon doesn't keep streaming Spotify audio into the now-
-        # unselected snapcast stream (which would also keep the
-        # Spotify "Now Playing" running on the user's phone). Idempotent:
-        # pause when already paused is a soft no-op inside the controller.
-        if self.current_source is not None:
-            prev_source = self.config_manager.get_source(self.current_source)
-            if (
-                prev_source is not None
-                and prev_source.volume_controller == 'go_librespot'
-                and self.go_librespot is not None
-            ):
-                self.go_librespot.pause()
-            # Run the outgoing source's on_leave_command, if any. For
-            # airplay this restarts shairport-sync, which drops the
-            # iPhone's active RTSP session — otherwise the phone keeps
-            # streaming audio into a muted void, indefinitely. Fire-
-            # and-forget; output discarded.
-            if prev_source is not None and prev_source.on_leave_command:
-                self._run_on_leave_command(prev_source.id, prev_source.on_leave_command)
+        prev_source = (
+            self.config_manager.get_source(self.current_source)
+            if self.current_source is not None else None
+        )
+
+        if fade_ms > 0 and self._can_fade(prev_source, source):
+            return self._start_fade(prev_source, source, fade_ms)
+
+        if prev_source is not None:
+            self._run_leave_hooks(prev_source)
 
         self.logger.info(f"Switching to source: {source.label} ({source_id})")
 
@@ -340,6 +356,8 @@ class SourceManager:
             self.logger.error(f"Source not found: {source_id}")
             return False
 
+        self._settle_fade(next_source_id=source_id)
+
         if self.current_source != source_id:
             # Coming from a different source — let switch_source own the
             # leave hooks and the pause of the outgoing go_librespot stream.
@@ -364,6 +382,21 @@ class SourceManager:
         Returns:
             True if successful
         """
+        # Steps 1-2: mute every other sink, apply this source's volume.
+        self._assert_route(source)
+
+        # Step 3: external switch + on_enter_command
+        self._run_enter_hooks(source)
+
+        # Update current source and save state
+        self.current_source = source.id
+        self._save_state()
+
+        self.logger.info(f"Switched to {source.label}")
+        return True
+
+    def _assert_route(self, source: SourceConfig):
+        """Make `source` the only audible internal sink, at its stored volume."""
         # Step 1: Mute all other internal sources
         self.logger.debug("Muting other sources...")
         for other_id, other_source in self.config_manager.get_internal_sources().items():
@@ -372,22 +405,148 @@ class SourceManager:
 
         # Step 2: Apply the new source's stored volume via its
         # configured controller (self/snapcast/go_librespot). Direct
-        # set, no fade — the fade ramp was a step-loop that blocked
-        # this thread for ~1s on every switch, making the UI lag
-        # behind every action with no audible benefit.
+        # set, no fade — the old always-on fade ramp was a step-loop
+        # that blocked this thread for ~1s on every switch, making the
+        # UI lag behind every action. Fades are now opt-in per switch
+        # (switch_source fade_ms) and run on a background thread.
         target_volume = self.source_volumes[source.id]
         self._set_source_volume(source, target_volume)
 
-        # Step 3: Trigger external switch if configured
+    def _run_enter_hooks(self, source: SourceConfig):
+        """Side effects of a source becoming active: external switch, on_enter_command."""
         if source.external_switch and source.external_switch.enabled:
             self._trigger_external_switch(source.external_switch.url, source.external_switch.payload, source.external_switch.content_type)
+        if source.on_enter_command:
+            self._spawn_hook(source.id, "on_enter_command", source.on_enter_command)
 
-        # Update current source and save state
-        self.current_source = source.id
+    def _run_leave_hooks(self, source: SourceConfig):
+        """Side effects of a source going inactive."""
+        # Leaving a go_librespot-controlled source? Pause it so the
+        # daemon doesn't keep streaming Spotify audio into the now-
+        # unselected snapcast stream (which would also keep the
+        # Spotify "Now Playing" running on the user's phone). Idempotent:
+        # pause when already paused is a soft no-op inside the controller.
+        if source.volume_controller == 'go_librespot' and self.go_librespot is not None:
+            self.go_librespot.pause()
+        # Run the outgoing source's on_leave_command, if any. For
+        # airplay this restarts shairport-sync, which drops the
+        # iPhone's active RTSP session — otherwise the phone keeps
+        # streaming audio into a muted void, indefinitely. For noise it
+        # stops the generator; for library it stops MPD. Fire-and-forget;
+        # output discarded.
+        if source.on_leave_command:
+            self._spawn_hook(source.id, "on_leave_command", source.on_leave_command)
+
+    # ── Crossfade ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _can_fade(prev: Optional[SourceConfig], new: SourceConfig) -> bool:
+        """A fade needs two internal sources on separate PA sinks."""
+        return (
+            prev is not None
+            and prev.type == 'internal' and new.type == 'internal'
+            and bool(prev.sink) and bool(new.sink)
+            and prev.sink != new.sink
+        )
+
+    def _active_pa_level(self, source: SourceConfig) -> int:
+        """The PA sink level `source` sits at while it is the active source.
+
+        Only 'self' attenuates at the sink; every other controller pins
+        its sink at 100 and attenuates upstream (snapcast, go-librespot,
+        shairport). See _set_source_volume.
+        """
+        if source.volume_controller == 'self':
+            return self.source_volumes[source.id]
+        return 100
+
+    def _start_fade(self, prev: SourceConfig, new: SourceConfig, fade_ms: int) -> bool:
+        self.logger.info(f"Fading {prev.label} → {new.label} over {fade_ms} ms")
+
+        # Bring the incoming source up silent: its upstream stages
+        # (snapcast / go-librespot) get their stored level now, its PA
+        # sink starts at 0, and the ramp raises it. Enter hooks run first
+        # so e.g. the noise generator is already producing by the time
+        # the sink is audible.
+        self._run_enter_hooks(new)
+        self._set_source_volume(new, self.source_volumes[new.id], pa_volume=0)
+
+        from_level = self.pulse.get_sink_volume(prev.sink)
+        if from_level is None:
+            from_level = self._active_pa_level(prev)
+        to_level = self._active_pa_level(new)
+
+        self.current_source = new.id
         self._save_state()
 
-        self.logger.info(f"Switched to {source.label}")
+        with self._fade_lock:
+            self._fade_gen += 1
+            gen = self._fade_gen
+            self._fade = {"from": prev, "to": new}
+        threading.Thread(
+            target=self._run_fade,
+            args=(gen, prev, new, from_level, to_level, fade_ms),
+            name="source-fade",
+            daemon=True,
+        ).start()
         return True
+
+    def _run_fade(self, gen: int, prev: SourceConfig, new: SourceConfig,
+                  from_level: int, to_level: int, fade_ms: int):
+        steps = max(1, fade_ms // self.FADE_STEP_MS)
+        interval = fade_ms / steps / 1000.0
+        # Step on a fixed schedule, not sleep-after-write: each step costs
+        # two pactl calls, and sleeping a full interval after them would
+        # stretch a 3 s fade to ~3.5 s (measured on PA).
+        start = time.monotonic()
+        for i in range(1, steps + 1):
+            time.sleep(max(0.0, start + i * interval - time.monotonic()))
+            with self._fade_lock:
+                if gen != self._fade_gen:
+                    return  # settled by a newer switch / volume change
+                frac = i / steps
+                self.pulse.set_sink_volume(prev.sink, round(from_level * (1 - frac)))
+                self.pulse.set_sink_volume(new.sink, round(to_level * frac))
+        with self._fade_lock:
+            if gen != self._fade_gen:
+                return
+            self._finish_fade_locked()
+        self.logger.info(f"Fade to {new.label} complete")
+
+    def is_fading_from(self, source_id: str) -> bool:
+        """True while a crossfade away from `source_id` is still running."""
+        with self._fade_lock:
+            return self._fade is not None and self._fade["from"].id == source_id
+
+    def _settle_fade(self, next_source_id: Optional[str] = None):
+        """Jump any running fade to its end state before acting on the sinks.
+
+        Called first by switch_source, ensure_source_routed and set_volume
+        so they never race the fade thread. If the caller is heading back
+        to the source we were fading away from, its leave hooks are
+        skipped — pausing Spotify or stopping the noise generator you are
+        returning to would be wrong.
+        """
+        with self._fade_lock:
+            if self._fade is None:
+                return
+            skip_leave = next_source_id is not None and self._fade["from"].id == next_source_id
+            self._finish_fade_locked(skip_leave=skip_leave)
+
+    def _finish_fade_locked(self, skip_leave: bool = False):
+        """End state of a fade. Caller holds _fade_lock."""
+        fade, self._fade = self._fade, None
+        self._fade_gen += 1  # retire the fade thread, if it's still stepping
+        if fade is None:
+            return
+        prev, new = fade["from"], fade["to"]
+        self.pulse.mute_sink(prev.sink)
+        if not skip_leave:
+            self._run_leave_hooks(prev)
+        # Land exactly on the incoming source's normal route (re-mutes
+        # every other sink, re-applies its volume through its controller
+        # — including any slider change made mid-fade).
+        self._assert_route(new)
 
     def _switch_to_external_source(self, source: SourceConfig) -> bool:
         """
@@ -417,13 +576,18 @@ class SourceManager:
         self.logger.info(f"Switched to external source: {source.label}")
         return True
 
-    def _set_source_volume(self, source: SourceConfig, volume: int):
+    def _set_source_volume(self, source: SourceConfig, volume: int,
+                           pa_volume: Optional[int] = None):
         """
         Set volume for a source using appropriate controller
 
         Args:
             source: Source configuration
             volume: Target volume (0-100)
+            pa_volume: If given, write this to the PA sink instead of the
+                level the controller would normally put there. Used by
+                the crossfade to set up a source's upstream stages while
+                keeping its sink silent.
         """
         if source.type != 'internal':
             self.logger.warning(f"Cannot set volume for external source {source.id}")
@@ -432,14 +596,17 @@ class SourceManager:
         volume_controller = source.volume_controller
         sink_name = source.sink
 
+        def pa(level: int) -> int:
+            return level if pa_volume is None else pa_volume
+
         if volume_controller == 'self':
             # Use PulseAudio sink for volume control
-            self.pulse.set_sink_volume(sink_name, volume)
+            self.pulse.set_sink_volume(sink_name, pa(volume))
             self.logger.debug(f"Set {source.label} volume to {volume}% (PA sink control)")
 
         elif volume_controller == 'snapcast':
             # Keep PA sink at 100%, control via snapcast
-            self.pulse.set_sink_volume(sink_name, 100)
+            self.pulse.set_sink_volume(sink_name, pa(100))
 
             # Use the device name as the snapcast client_id. We always launch
             # snapclient with `--hostID <device.name>` (e.g. fauxnos000), so
@@ -469,7 +636,7 @@ class SourceManager:
             # the externally-attenuated audio would be silenced. The
             # 100 is intentional: any fauxnos-side attenuation would
             # double-attenuate against the iPhone's stage.
-            self.pulse.set_sink_volume(sink_name, 100)
+            self.pulse.set_sink_volume(sink_name, pa(100))
             self.logger.debug(
                 f"Set {source.label} sink to 100% (external authority "
                 f"owns attenuation); stored display value = {volume}%"
@@ -506,7 +673,7 @@ class SourceManager:
             # to "set" (the user set their phone slider; if we POST
             # back to go-librespot, it overwrites their gesture).
             client_id = self.config_manager.device_config.name
-            self.pulse.set_sink_volume(sink_name, 100)
+            self.pulse.set_sink_volume(sink_name, pa(100))
             snapcast_target = 100 if self.external_volume_enabled else volume
 
             if not self.snapcast.set_volume(snapcast_target, client_id):
@@ -559,6 +726,10 @@ class SourceManager:
         if not self.current_source:
             self.logger.error("No active source to set volume for")
             return False
+
+        # A slider move mid-fade ends the fade on the spot; the ramp
+        # would otherwise keep overwriting the level the user just set.
+        self._settle_fade()
 
         source = self.config_manager.get_source(self.current_source)
         if not source:
@@ -784,18 +955,31 @@ class SourceManager:
         """
         self.logger.info("Initializing audio system...")
 
-        # Mute all internal sources
+        saved_source = self.state_manager.get_current_source()
+
+        # Mute all internal sources — except the one we're about to
+        # restore, which goes straight to its normal level instead. Its
+        # producer (e.g. the noise generator, a separate systemd service)
+        # may well still be playing through a daemon restart or update,
+        # and a mute here would put a gap in overnight noise for nothing.
+        # Setting it (rather than leaving it alone) still covers a fresh
+        # boot, where PA brings every null sink up at 100%.
+        restore = None
+        if saved_source and saved_source in self.config_manager.sources:
+            restore = self.config_manager.sources[saved_source]
+        keep_sink = restore.sink if restore is not None and restore.type == 'internal' else None
         for source_id, source in self.config_manager.get_internal_sources().items():
-            self.pulse.mute_sink(source.sink)
+            if source.sink != keep_sink:
+                self.pulse.mute_sink(source.sink)
+        if keep_sink:
+            self.pulse.set_sink_volume(keep_sink, self._active_pa_level(restore))
 
         # Apply per-source PA loopback calibration ceilings (e.g. Spotify cap
         # at 50%, Analog at 100%) so volume normalization is in place before
         # we restore any source/volume state.
         self.apply_calibrations()
 
-        # Try to restore previous source or use first source
-        saved_source = self.state_manager.get_current_source()
-
+        # Restore previous source or use first source
         if saved_source and saved_source in self.config_manager.sources:
             self.logger.info(f"Restoring previous source: {saved_source}")
             self.switch_source(saved_source)
@@ -815,9 +999,9 @@ class SourceManager:
         # `active` WS event).
         self.resync_go_librespot_volume()
 
-    def _run_on_leave_command(self, source_id: str, command: str):
+    def _spawn_hook(self, source_id: str, hook: str, command: str):
         """
-        Run an outgoing source's `on_leave_command` asynchronously.
+        Run a source's `on_enter_command` / `on_leave_command` asynchronously.
 
         Fire-and-forget by design: we never want a slow cleanup
         (e.g. shairport-sync's restart of ~1-2s) to gate the source
@@ -841,11 +1025,11 @@ class SourceManager:
                 start_new_session=True,  # don't tie to our process group
             )
             self.logger.info(
-                f"on_leave_command for {source_id}: spawned `{command}`"
+                f"{hook} for {source_id}: spawned `{command}`"
             )
         except Exception as e:
             self.logger.warning(
-                f"on_leave_command for {source_id} failed to spawn: {e}"
+                f"{hook} for {source_id} failed to spawn: {e}"
             )
 
     def _trigger_external_switch(self, url: str, payload: Dict, content_type: str = 'json') -> bool:

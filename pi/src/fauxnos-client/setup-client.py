@@ -762,6 +762,66 @@ class FauxnosClientSetup:
             self.log(f"shairport-sync setup failed: {e}", "ERROR")
             return False
 
+    def setup_local_sources(self) -> bool:
+        """Install the user units behind the local Noise and Library sources.
+
+        - fauxnos-noise.service: sox → noisesink. NOT enabled — the source
+          manager starts it when `noise` becomes active and stops it on
+          leave. If it's running now (noise is playing), it is restarted
+          to pick up a changed script; that is a ~1 s blip, same as any
+          other update restart.
+        - fauxnos-mpd.service: MPD → librarysink, streaming from the
+          server. Enabled + (re)started, so Home Assistant's MPD
+          integration can reach <device>.local:6600 at any time.
+
+        sox / mpd / mpc themselves come from apt in install.sh, which also
+        disables the system mpd.service that would otherwise hold :6600.
+        """
+        self.log("Setting up local sources (noise generator, library player)...")
+
+        if self.dry_run or self.test_mode:
+            self.log("Would install fauxnos-noise + fauxnos-mpd user units")
+            return True
+
+        try:
+            import shutil
+            user_systemd_dir = Path.home() / ".config" / "systemd" / "user"
+            user_systemd_dir.mkdir(parents=True, exist_ok=True)
+            for unit in ("fauxnos-noise.service", "fauxnos-mpd.service"):
+                src = self.client_dir / "configs" / "systemd" / unit
+                if not src.exists():
+                    self.log(f"Unit template missing: {src}", "ERROR")
+                    return False
+                content = src.read_text().replace('{CLIENT_DIR}', str(self.client_dir))
+                (user_systemd_dir / unit).write_text(content)
+
+            mpd_src = self.client_dir / "configs" / "mpd" / "fauxnos.conf"
+            mpd_dir = Path.home() / ".config" / "mpd"
+            mpd_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy(mpd_src, mpd_dir / "fauxnos.conf")
+            (Path.home() / ".local" / "share" / "fauxnos-mpd").mkdir(parents=True, exist_ok=True)
+
+            noise_script = self.client_dir / "scripts" / "noise-generator.sh"
+            noise_script.chmod(0o755)
+
+            if not self.execute("systemctl --user daemon-reload",
+                                "Reloading user systemd daemon for local-source units"):
+                return False
+            if not self.execute("systemctl --user enable fauxnos-mpd.service",
+                                "Enabling fauxnos-mpd user service"):
+                return False
+            if not self.execute("systemctl --user restart fauxnos-mpd.service",
+                                "(Re)starting fauxnos-mpd user service"):
+                return False
+            # try-restart: only if it's running — never starts noise on its own.
+            self.execute("systemctl --user try-restart fauxnos-noise.service",
+                         "Restarting noise generator if it is playing")
+            return True
+
+        except Exception as e:
+            self.log(f"Local sources setup failed: {e}", "ERROR")
+            return False
+
     def setup_alsa_config(self) -> bool:
         """Configure ALSA to route through PulseAudio"""
         self.log("Setting up ALSA configuration...")
@@ -956,7 +1016,13 @@ ctl.!default {
             self.log("shairport-sync setup failed — AirPlay won't work on this device, "
                      "but the rest of the install will continue", "WARNING")
 
-        # Step 13: Success!
+        # Step 13: Local sources (noise generator + library MPD). Same
+        # soft-fail posture as AirPlay: the rest of the device still works.
+        if not self.setup_local_sources():
+            self.log("Local sources setup failed — Noise/Library won't play on this device, "
+                     "but the rest of the install will continue", "WARNING")
+
+        # Step 14: Success!
         self.log("Client setup completed successfully!", "SUCCESS")
         self.log(f"Client ID: {client_id}")
         self.log(f"Display Name: {display_name}")

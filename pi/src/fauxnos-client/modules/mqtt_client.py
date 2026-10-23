@@ -8,7 +8,16 @@ Publishes status updates and listens for control commands.
 Topic schema:
   Control (UI → client):
     set/clients/<deviceId>/volume     payload: "75"
-    set/clients/<deviceId>/mode       payload: "spotify"
+    set/clients/<deviceId>/mode       payload: "spotify", or JSON
+                                      {"source": "noise", "fade_ms": 8000}
+                                      to crossfade (routines; UI sends plain)
+    set/clients/<deviceId>/library/play  payload: {"items": ["lullabies/x.mp3"],
+                                                   "loop": false, "fade_ms": 0}
+                                      plays on this device's MPD and switches
+                                      to the `library` source. Items are
+                                      paths under the server's library
+                                      folder, or full URLs.
+    set/clients/<deviceId>/library/stop  payload: (ignored)
     set/clients/<deviceId>/eq         payload: {"enabled": true,
                                                 "bands": {"125": 6.0, ...}}
 
@@ -39,6 +48,12 @@ from .config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
+# The local-MPD source (see modules/library_player.py).
+LIBRARY_SOURCE_ID = "library"
+# Longest crossfade a command may ask for (10 min). Routines fade over
+# seconds to a minute or two; anything past this is a typo.
+MAX_FADE_MS = 10 * 60 * 1000
+
 
 class MQTTClient:
     def __init__(self, config_manager: ConfigManager,
@@ -57,6 +72,8 @@ class MQTTClient:
                  eq_getter: Optional[Callable[[], Dict]] = None,
                  evc_state_callback: Optional[Callable[[bool, int], None]] = None,
                  evc_mirror_callback: Optional[Callable[[int], None]] = None,
+                 library_play_callback: Optional[Callable[[List[str], bool, int], bool]] = None,
+                 library_stop_callback: Optional[Callable[[], bool]] = None,
                  broker_host: Optional[str] = None,
                  broker_port: int = 1883):
         """
@@ -83,6 +100,10 @@ class MQTTClient:
             ir_learn_cancel_callback: () → bool. Cancel an in-flight learn.
                 Wired to IRListener.cancel_learning. Returns False if no
                 learn was active.
+            library_play_callback: (items, loop, fade_ms) → bool. Queue items on
+                the local MPD and switch to the library source. Wired to
+                FauxnosClient._library_play.
+            library_stop_callback: () → bool. Stop local MPD playback.
             broker_host: MQTT broker hostname (defaults to server_host from config)
             broker_port: MQTT broker port
         """
@@ -111,6 +132,8 @@ class MQTTClient:
         self.eq_getter = eq_getter
         self.evc_state_callback = evc_state_callback
         self.evc_mirror_callback = evc_mirror_callback
+        self.library_play_callback = library_play_callback
+        self.library_stop_callback = library_stop_callback
 
         # MQTT client setup
         self.client = mqtt.Client(client_id=f"fauxnos-{self.device_id}")
@@ -177,6 +200,8 @@ class MQTTClient:
             f"set/clients/{self.device_id}/ir/feedback_volume",
             # EQ — JSON payload, see _handle_command's "eq" branch.
             f"set/clients/{self.device_id}/eq",
+            # Library player (local MPD): play / stop.
+            f"set/clients/{self.device_id}/library/+",
             # External volume controller config (retained, server-published).
             # Tells the client whether its local audio chain should be pinned
             # at unity (external authority owns attenuation), and how far to
@@ -321,6 +346,45 @@ class MQTTClient:
         with self._command_lock:
             self._handle_locked_command(command_type, action, payload, sub_action)
 
+    @staticmethod
+    def _fade_ms(value) -> int:
+        """Coerce a fade_ms field; anything unusable means no fade."""
+        try:
+            return max(0, min(int(value or 0), MAX_FADE_MS))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _parse_mode_payload(cls, payload: str):
+        """A mode payload is a bare source id, or JSON {"source", "fade_ms"}.
+
+        Returns (source_id, fade_ms). The UIs send bare ids; routines (Home
+        Assistant, the wall panel) send JSON to crossfade.
+        """
+        text = (payload or "").strip()
+        if text.startswith("{"):
+            try:
+                data = json.loads(text)
+            except Exception:
+                return text, 0
+            if isinstance(data, dict):
+                return str(data.get("source", "")), cls._fade_ms(data.get("fade_ms"))
+        return text, 0
+
+    def _publish_new_mode(self, source_id: str):
+        self.update_mode(source_id)
+        # Each source remembers its own volume; the UI is
+        # mode-aware and shows the active source's stored
+        # level. Without this re-publish, the slider keeps
+        # whatever value it had under the PREVIOUS source —
+        # e.g. set spotify=15, switch to analog=90, switch
+        # back to spotify, UI still reads 90 even though
+        # source_manager correctly restored 15.
+        if self.source_volume_getter is not None:
+            new_vol = self.source_volume_getter(source_id)
+            if new_vol is not None:
+                self.update_volume(new_vol)
+
     def _handle_locked_command(
         self,
         command_type: str,
@@ -331,23 +395,51 @@ class MQTTClient:
         try:
             if command_type == "set":
                 if action == "mode":
-                    if payload in self.sources_list:
-                        logger.info(f"MQTT mode command: {payload}")
-                        self.mode_callback(payload)
-                        self.update_mode(payload)
-                        # Each source remembers its own volume; the UI is
-                        # mode-aware and shows the active source's stored
-                        # level. Without this re-publish, the slider keeps
-                        # whatever value it had under the PREVIOUS source —
-                        # e.g. set spotify=15, switch to analog=90, switch
-                        # back to spotify, UI still reads 90 even though
-                        # source_manager correctly restored 15.
-                        if self.source_volume_getter is not None:
-                            new_vol = self.source_volume_getter(payload)
-                            if new_vol is not None:
-                                self.update_volume(new_vol)
+                    source_id, fade_ms = self._parse_mode_payload(payload)
+                    if source_id in self.sources_list:
+                        logger.info(f"MQTT mode command: {source_id}"
+                                    + (f" (fade {fade_ms} ms)" if fade_ms else ""))
+                        if fade_ms:
+                            self.mode_callback(source_id, fade_ms=fade_ms)
+                        else:
+                            self.mode_callback(source_id)
+                        self._publish_new_mode(source_id)
                     else:
                         logger.error(f"Invalid mode: {payload}. Available: {self.sources_list}")
+
+                elif action == "library" and sub_action == "play":
+                    # set/clients/<id>/library/play payload:
+                    #   {"items": [...], "loop": bool, "fade_ms": int}
+                    # ("item": "..." is accepted for a single track.)
+                    if self.library_play_callback is None or LIBRARY_SOURCE_ID not in self.sources_list:
+                        logger.warning("MQTT library/play but this device has no library source")
+                        return
+                    try:
+                        data = json.loads(payload or "{}")
+                    except Exception:
+                        logger.error(f"MQTT library/play: bad JSON payload: {payload!r}")
+                        return
+                    if not isinstance(data, dict):
+                        logger.error("MQTT library/play: payload must be an object")
+                        return
+                    items = data.get("items")
+                    if items is None and data.get("item"):
+                        items = [data["item"]]
+                    if not isinstance(items, list) or not items:
+                        logger.error(f"MQTT library/play: 'items' must be a non-empty list: {payload!r}")
+                        return
+                    loop = bool(data.get("loop", False))
+                    fade_ms = self._fade_ms(data.get("fade_ms"))
+                    logger.info(f"MQTT library/play: {len(items)} item(s), loop={loop}, fade={fade_ms}")
+                    if self.library_play_callback([str(i) for i in items], loop, fade_ms):
+                        self._publish_new_mode(LIBRARY_SOURCE_ID)
+
+                elif action == "library" and sub_action == "stop":
+                    if self.library_stop_callback is None:
+                        logger.warning("MQTT library/stop but no callback wired")
+                    else:
+                        logger.info("MQTT library/stop")
+                        self.library_stop_callback()
 
                 elif action == "calibration" and sub_action:
                     # set/clients/<id>/calibration/<source_id> payload: "75"
