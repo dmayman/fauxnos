@@ -101,6 +101,15 @@ STALL_WATCHDOG_INTERVAL = 5
 DISCOVER_TIMEOUT_SECONDS = 180
 DISCOVER_RETRY_SECONDS = 5
 SSH_CONNECT_TIMEOUT_SECONDS = 30
+SUDO_CHECK_TIMEOUT_SECONDS = 15
+SSH_KEEPALIVE_SECONDS = 15
+# No bytes from install.sh for this long means the channel is dead (Wi-Fi gone
+# without a TCP close), not a slow step. Generous: apt on a Zero 2 W is slow.
+INSTALL_IDLE_TIMEOUT_SECONDS = 15 * 60
+SUDO_FIX_COMMAND = 'echo "user ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/010_user-nopasswd'
+# install.sh counts down 30s before `sudo reboot`. Closing our channel sooner
+# would SIGHUP the pty and kill the script before it reboots.
+REBOOT_GRACE_SECONDS = 40
 VERIFY_TIMEOUT_SECONDS = 180  # post-reboot the Pi takes a while; be generous
 VERIFY_POLL_SECONDS = 4
 LOG_TAIL_MAXLEN = 20
@@ -121,9 +130,10 @@ class StepState:
     log_tail: deque = field(default_factory=lambda: deque(maxlen=LOG_TAIL_MAXLEN))
     note: Optional[str] = None  # short human note (e.g. why stalled, what failed)
     # Marker the UI checks to render a recovery panel for known-recoverable
-    # failures. Currently only "auth_key_missing" is used (set when paramiko
-    # raises AuthenticationException — i.e. the target Pi is reachable but the
-    # server's install key isn't in its authorized_keys).
+    # failures: "auth_key_missing" (paramiko raised AuthenticationException —
+    # the Pi is reachable but the server's install key isn't in its
+    # authorized_keys) and "sudo_password_required" (`sudo -n true` failed, so
+    # install.sh would hang at a password prompt nobody can see).
     fallback_kind: Optional[str] = None
 
     def snapshot(self) -> dict:
@@ -202,6 +212,8 @@ class InstallRunner:
         # _run can tag the failed `connect` step with a recovery-fallback marker
         # the UI listens for.
         self._auth_failed: bool = False
+        # Set by _stream_install when it gives up on a dead or silent channel.
+        self._stream_error: Optional[str] = None
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -392,6 +404,14 @@ class InstallRunner:
                 self._fail_step("connect", "SSH connection failed")
                 return self._finish("failed", "SSH connection failed")
             self._ssh_client = ssh
+            if not self._sudo_passwordless(ssh):
+                note = (
+                    f"sudo needs a password for {self.ssh_user} on this Pi, so "
+                    "install.sh would hang at a hidden prompt. SSH in, run "
+                    f"`{SUDO_FIX_COMMAND}` (enter your password once), then Retry."
+                )
+                self._fail_step("connect", note, fallback_kind="sudo_password_required")
+                return self._finish("failed", "sudo requires a password on the target Pi")
             self._succeed_step("connect")
 
             # Now run the client install one-liner. Stay in `apt-update` until
@@ -405,8 +425,9 @@ class InstallRunner:
             if not reboot_seen and rc != 0:
                 # SSH ended without ever reaching the reboot line.
                 cur = self.steps[self._current_step_idx]
-                self._fail_step(cur.id, f"install.sh exited with code {rc}")
-                return self._finish("failed", f"install.sh exited with code {rc}")
+                msg = self._stream_error or f"install.sh exited with code {rc}"
+                self._fail_step(cur.id, msg)
+                return self._finish("failed", msg)
 
             # If we did see the reboot line, mark `reboot` succeeded; the
             # SSH disconnect that followed is expected.
@@ -527,6 +548,19 @@ class InstallRunner:
                 pass
             return None
 
+    def _sudo_passwordless(self, ssh) -> bool:
+        """True when `sudo -n true` succeeds, that is, sudo won't prompt."""
+        try:
+            _stdin, stdout, _stderr = ssh.exec_command("sudo -n true", timeout=SUDO_CHECK_TIMEOUT_SECONDS)
+            chan = stdout.channel
+            rc = chan.recv_exit_status() if chan.status_event.wait(SUDO_CHECK_TIMEOUT_SECONDS) else -1
+        except Exception as e:
+            self._append_tail(f"sudo check failed: {e}")
+            return False
+        if rc != 0:
+            self._append_tail(f"sudo -n true exited {rc}: sudo requires a password")
+        return rc == 0
+
     def _clear_stale_host_keys(self, host: str):
         """Remove any existing known_hosts entries for `host` (and its IP).
         ssh-keygen -R is the canonical way; falling back to silent no-op if it
@@ -577,6 +611,9 @@ class InstallRunner:
         transport = ssh.get_transport()
         if transport is None:
             return (255, False)
+        # Keepalives make a dead link surface as an inactive transport instead
+        # of a channel that waits forever for an exit status.
+        transport.set_keepalive(SSH_KEEPALIVE_SECONDS)
         chan = transport.open_session()
         chan.get_pty()  # forces line-buffered output from bash + curl + pip
         chan.exec_command(cmd)
@@ -585,6 +622,8 @@ class InstallRunner:
         buf_out = b""
         buf_err = b""
         compiled = self._compile_step_matchers()
+        last_rx = time.time()
+        reboot_deadline: Optional[float] = None
 
         while True:
             if self._cancel.is_set():
@@ -601,26 +640,42 @@ class InstallRunner:
             if chan.recv_ready():
                 buf_out += chan.recv(4096)
                 buf_out = self._drain_lines(buf_out, compiled, is_stderr=False, ctx={"reboot": False})
+                last_rx = time.time()
             if chan.recv_stderr_ready():
                 buf_err += chan.recv_stderr(4096)
                 buf_err = self._drain_lines(buf_err, compiled, is_stderr=True, ctx={"reboot": False})
+                last_rx = time.time()
 
-            # Reboot line check — when seen, give bash 2s to actually reboot
-            # then close the channel so we can move on. install.sh prints
-            # "Rebooting in N seconds..." then "Rebooting now..." — either
-            # works because the regex is loose.
+            # Reboot line check. install.sh prints "Rebooting in N seconds..."
+            # then "Rebooting now..."; either starts the reboot step. Leave the
+            # channel open until the Pi drops it or the countdown window ends.
             if not reboot_seen and self._reboot_seen_in_steps():
                 reboot_seen = True
+                reboot_deadline = time.time() + REBOOT_GRACE_SECONDS
                 # Drop a marker line so the UI sees it.
                 self._enter_step("reboot")
                 self._append_tail("Reboot triggered; waiting for client to come back")
+
+            dead = (
+                (chan.closed or not transport.is_active())
+                and not chan.exit_status_ready() and not chan.recv_ready()
+            )
+            if reboot_deadline is not None:
+                if dead or time.time() > reboot_deadline:
+                    try:
+                        chan.close()
+                    except Exception:
+                        pass
+                    break
+            elif dead or time.time() - last_rx > INSTALL_IDLE_TIMEOUT_SECONDS:
+                why = "SSH connection dropped" if dead else f"no output for {INSTALL_IDLE_TIMEOUT_SECONDS // 60} min"
+                self._stream_error = f"install.sh stopped responding ({why})"
+                self._append_tail(self._stream_error)
                 try:
-                    # Don't wait forever — the channel may hang once sshd dies.
-                    time.sleep(2)
                     chan.close()
                 except Exception:
                     pass
-                break
+                return (255, False)
 
             time.sleep(0.05)
 
@@ -660,6 +715,11 @@ class InstallRunner:
             if not line:
                 continue
             self._handle_line(line, compiled)
+        # install.sh's countdown is `echo -ne "\rRebooting in N seconds... "`
+        # with no newline, and `sudo reboot` can drop the link before the next
+        # newline arrives. Match the reboot line in the partial buffer too.
+        if remainder and REBOOT_PATTERN.search(remainder):
+            self._enter_step("reboot")
         return remainder.encode("utf-8") if remainder else b""
 
     def _compile_step_matchers(self) -> list[tuple[str, list[re.Pattern], list[re.Pattern]]]:
