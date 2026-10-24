@@ -126,6 +126,11 @@ class FauxnosAPIServer:
         # dispatches are coalesced here (leading-edge + trailing-edge flush)
         # rather than in any UI client. Keyed by client_id, guarded by the lock.
         self._ext_vol_lock = _threading.Lock()
+        # client_id -> bool from the retained status/clients/<id>/online
+        # topic (client's MQTT last will). Snapserver keeps a dead client
+        # "connected" until its TCP connection times out, so presence wins
+        # wherever we have it; see _is_online().
+        self._mqtt_online: dict = {}
         self._ext_vol_state: dict = {}  # client_id -> {"timer": Timer|True|None, "pending": int|None}
         # Whether each room's external volume controller answers, so the apps
         # can say so. client_id -> {"responding": bool, "last_reply": float,
@@ -717,7 +722,7 @@ class FauxnosAPIServer:
                         "mac": client.mac,
                         "server_port": client.server_port,
                         "zeroconf_port": client.zeroconf_port,
-                        "connected": snapcast_status.get(client.id, False),
+                        "connected": self._is_online(client.id, snapcast_status.get(client.id, False)),
                         "has_adc": raw_map.get(client.id, {}).get("has_adc", False),
                         # dac_overlay: server is locked to SERVER_OVERLAY.
                         # Clients default to DEFAULT_OVERLAY when nothing has
@@ -754,6 +759,11 @@ class FauxnosAPIServer:
             if client.get("id") == client_id:
                 return client
         return None
+
+    def _is_online(self, client_id: str, snapcast_connected: bool) -> bool:
+        """MQTT presence if the client has ever published it, else snapcast's
+        flag (a room not yet updated to a client that publishes `online`)."""
+        return self._mqtt_online.get(client_id, snapcast_connected)
 
     def _get_snapcast_client_status(self) -> dict:
         """Query snapcast for connected clients. Returns {client_id: bool}."""
@@ -2435,10 +2445,14 @@ class FauxnosAPIServer:
             groups = server_data.get("groups", [])
             streams = server_data.get("streams", [])
 
-            # Hide offline snapclients. Drop empty groups.
+            # Hide offline snapclients (and rooms whose MQTT will fired while
+            # snapserver still thinks they're connected). Drop empty groups.
             visible_groups = []
             for g in groups:
-                g["clients"] = [c for c in g.get("clients", []) if c.get("connected")]
+                g["clients"] = [
+                    c for c in g.get("clients", [])
+                    if c.get("connected") and self._mqtt_online.get(c.get("id")) is not False
+                ]
                 if g["clients"]:
                     visible_groups.append(g)
             groups = visible_groups
@@ -2906,7 +2920,7 @@ class FauxnosAPIServer:
                     {
                         "client_id": c.id,
                         "name": c.name,
-                        "connected": snapcast_status.get(c.id, False),
+                        "connected": self._is_online(c.id, snapcast_status.get(c.id, False)),
                     }
                     for c in clients
                 ],
@@ -4157,6 +4171,9 @@ rm -- "$0"
                 # EQ mirroring: hello carries the eq block on
                 # (re)connect; status/.../eq fires on every change.
                 client.subscribe("status/clients/+/eq")
+                # Presence: retained online/offline, offline being the
+                # client's last will.
+                client.subscribe("status/clients/+/online")
                 # Library for Home Assistant: play by name, and the index.
                 client.subscribe("set/library/play")
                 threading.Thread(target=self._publish_library_index_on_connect, daemon=True).start()
@@ -4217,6 +4234,10 @@ rm -- "$0"
                         target=self._leave_group_on_source_change,
                         args=(client_id, source_id), daemon=True,
                     ).start()
+                return
+
+            if action == "online":
+                self._mqtt_online[client_id] = msg.payload.decode().strip() == "online"
                 return
 
             if action == "hello":

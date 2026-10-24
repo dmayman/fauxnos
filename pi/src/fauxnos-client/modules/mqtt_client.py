@@ -32,6 +32,8 @@ Topic schema:
     status/clients/<deviceId>/mode    payload: "spotify"
     status/clients/<deviceId>/activity payload: "playing"|"silent"
     status/clients/<deviceId>/hello   payload: {"id","name","sources"}
+    status/clients/<deviceId>/online  payload: "online"|"offline" (retained;
+                                      "offline" is the broker-sent last will)
     status/clients/<deviceId>/eq      payload: {"enabled": bool,
                                                 "bands": {hz_str: gain_db}}
     status/clients/<deviceId>/noise   payload: {"on", "color", "low_cut", "high_cut"}
@@ -66,6 +68,11 @@ NOISE_SOURCE_ID = "noise"
 # Longest crossfade a command may ask for (10 min). Routines fade over
 # seconds to a minute or two; anything past this is a typo.
 MAX_FADE_MS = 10 * 60 * 1000
+
+# The broker publishes the last will after 1.5x keepalive without a packet,
+# so a room that drops off the network shows offline within ~30s. Each idle
+# keepalive is one 2-byte PINGREQ, so shorter is cheap.
+KEEPALIVE_S = 20
 
 
 class MQTTClient:
@@ -170,6 +177,8 @@ class MQTTClient:
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
         self.client.on_message = self._on_message
+        # Set before connect: the broker stores the will at CONNECT time.
+        self.client.will_set(self._online_topic(), "offline", retain=True)
 
         self.connected = False
         self.should_run = True
@@ -199,10 +208,15 @@ class MQTTClient:
         """Get list of source IDs from config"""
         return list(self.config_manager.sources.keys())
 
+    def _online_topic(self) -> str:
+        return f"status/clients/{self.device_id}/online"
+
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             self.connected = True
             logger.info(f"Connected to MQTT broker at {self.broker_host}:{self.broker_port}")
+            # Overwrites the retained will from the last time we dropped.
+            client.publish(self._online_topic(), "online", retain=True)
             self._subscribe_to_control_topics()
             self._send_hello()
         else:
@@ -639,7 +653,7 @@ class MQTTClient:
 
         try:
             logger.info(f"Starting MQTT client for {self.display_name} -> {self.broker_host}:{self.broker_port}")
-            self.client.connect(self.broker_host, self.broker_port, 60)
+            self.client.connect(self.broker_host, self.broker_port, KEEPALIVE_S)
             self.client.loop_start()
 
             # Wait for connection (up to 10s)
@@ -661,8 +675,15 @@ class MQTTClient:
         self.should_run = False
         if self.connected:
             logger.info("Stopping MQTT client")
-            self.client.loop_stop()
+            # A clean DISCONNECT discards the will, so say offline ourselves.
+            # The loop must still be running to flush it.
+            info = self.client.publish(self._online_topic(), "offline", retain=True)
+            try:
+                info.wait_for_publish(timeout=2)
+            except Exception:
+                pass
             self.client.disconnect()
+            self.client.loop_stop()
 
     def _handle_ir_clear(self, command_id: str):
         """Handle set/clients/<id>/ir/clear/<command_id> — forget one mapping."""

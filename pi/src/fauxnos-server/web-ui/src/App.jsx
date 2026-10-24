@@ -52,6 +52,18 @@ export default function App() {
 
   const mqtt = useMqtt()
 
+  // Room presence comes from MQTT, not snapcast: snapserver keeps a dead
+  // client "connected" until its TCP connection times out, so a room that
+  // drops off the network kept a live card. mqtt.online only has rooms that
+  // publish presence; the rest keep the server's `connected`.
+  const liveClients = useMemo(() => clients.map(c => (
+    c.client_id in mqtt.online ? { ...c, connected: mqtt.online[c.client_id] } : c
+  )), [clients, mqtt.online])
+  const liveGroups = useMemo(() => groups.map(g => ({
+    ...g,
+    clients: (g.clients || []).filter(c => mqtt.online[c.id] !== false),
+  })), [groups, mqtt.online])
+
   const loadAll = useCallback(async () => {
     try {
       // Server version is in its own request because it includes a
@@ -139,7 +151,7 @@ export default function App() {
         icon: 'server',
       })
     }
-    const candidates = (clients || []).filter(c => c.connected)
+    const candidates = (liveClients || []).filter(c => c.connected)
     // When we're pulling, every connected client will lag after — include
     // all of them. Otherwise just the ones already flagged behind.
     const filtered = repoBehind
@@ -166,7 +178,7 @@ export default function App() {
       steps,
       waitForServerRestartAfterServerStep: repoBehind,
     })
-  }, [serverVersion, clients])
+  }, [serverVersion, liveClients])
 
   const openSingleClientUpdate = useCallback((client) => {
     const name = client?.name || client?.client_id || 'client'
@@ -219,8 +231,8 @@ export default function App() {
   // fresh data after a refresh tick — pulling from state instead of a
   // captured prop means a rename or status flip shows up immediately.
   const activeDeviceClient = useMemo(
-    () => clients.find(c => c.client_id === devicePanelClientId) || null,
-    [clients, devicePanelClientId]
+    () => liveClients.find(c => c.client_id === devicePanelClientId) || null,
+    [liveClients, devicePanelClientId]
   )
 
   // If the panel's target device vanishes (e.g. user removed it),
@@ -238,10 +250,10 @@ export default function App() {
     <LibraryContext.Provider value={library}>
     <LibraryJobToasts />
     <div className="fx-root">
-      <ArtBackdrop url={backdropArtUrl(groups, mqtt, library)} />
+      <ArtBackdrop url={backdropArtUrl(liveGroups, mqtt, library)} />
       {popoverOpen && (
         <DevicesPopover
-          clients={clients}
+          clients={liveClients}
           anchorRef={headerStatusRef}
           onClose={() => setPopoverOpen(false)}
           onOpenDevice={openDevice}
@@ -259,8 +271,8 @@ export default function App() {
       />
       <main className="fx-main">
         <GroupsTab
-          groups={groups}
-          clients={clients}
+          groups={liveGroups}
+          clients={liveClients}
           streams={streams}
           loading={!firstLoadDone}
           mqtt={mqtt}
@@ -273,7 +285,7 @@ export default function App() {
         <ThemeMenu />
         <UpdatePills
           serverVersion={serverVersion}
-          clients={clients}
+          clients={liveClients}
           onUpdateServer={openUpdateServer}
           onUpdateClients={openUpdateClients}
         />
