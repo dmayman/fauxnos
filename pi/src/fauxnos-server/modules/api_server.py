@@ -1694,12 +1694,20 @@ class FauxnosAPIServer:
          "category": "default", "sink": "airplaysink",
          "starting_volume": 50, "volume_controller": "external",
          "on_leave_command": "systemctl --user restart shairport-sync-fauxnos.service"},
-        # Local sources (docs/LOCAL_SOURCES.md). Both play on the device
-        # itself — noise is generated there (sox) so it survives a server
-        # or Wi-Fi drop; library is the device's own MPD streaming files
-        # from this server's /library/. Neither is multiroom, same as
-        # AirPlay. Must match the noise/library entries in the client's
-        # client_config.yaml.template, which is what the daemon routes on.
+    ]
+    # Optional built-ins: every device can play them, but they're only
+    # listed for a client once added from the device panel's + menu. Adding
+    # one is a PUT /api/clients/<id>/sources/<id> (which seeds the full
+    # entry below); removing it is a DELETE. So "added" just means the
+    # client's explicit `sources` array has an entry with that id.
+    #
+    # Local sources (docs/LOCAL_SOURCES.md). Both play on the device
+    # itself — noise is generated there (sox) so it survives a server
+    # or Wi-Fi drop; library is the device's own MPD streaming files
+    # from this server's /library/. Neither is multiroom, same as
+    # AirPlay. Must match the noise/library entries in the client's
+    # client_config.yaml.template, which is what the daemon routes on.
+    _OPTIONAL_BUILTIN_SOURCES = [
         {"id": "noise", "label": "Noise", "type": "internal",
          "category": "default", "sink": "noisesink",
          "starting_volume": 30, "volume_controller": "self",
@@ -1733,7 +1741,7 @@ class FauxnosAPIServer:
         that, once present, overrides the synthesized default by id and strips
         those fields.
         """
-        for src in self._DEFAULT_BUILTIN_SOURCES:
+        for src in self._DEFAULT_BUILTIN_SOURCES + self._OPTIONAL_BUILTIN_SOURCES:
             if src.get("id") == source_id:
                 return dict(src)
         if source_id == self._DEFAULT_ANALOG_SOURCE["id"]:
@@ -1769,6 +1777,7 @@ class FauxnosAPIServer:
 
         # Start with synthesized built-ins, in canonical order
         synthesized = list(self._DEFAULT_BUILTIN_SOURCES)
+        synthesized += [s for s in self._OPTIONAL_BUILTIN_SOURCES if s["id"] in explicit_by_id]
         if raw.get("has_adc"):
             synthesized.append(dict(self._DEFAULT_ANALOG_SOURCE))
 

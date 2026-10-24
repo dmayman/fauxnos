@@ -12,6 +12,12 @@ song, and then it drifts into sleep, which is lights off and noise all
 night. Home Assistant or a wall panel drives them; the iOS app and web UI
 show them as ordinary sources.
 
+Every device can play both, but the apps list them only for rooms you add
+them to. To add one, open the room's device panel in the web UI, click
+**+** next to **Sources**, and choose **Noise** or **Library**. The row's
+remove button takes it off again. The MQTT commands work on any updated
+device either way.
+
 ## Why local, not snapcast
 
 Overnight noise must not drop out. Through snapcast it would depend on the
