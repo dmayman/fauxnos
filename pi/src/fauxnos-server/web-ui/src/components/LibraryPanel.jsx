@@ -332,7 +332,7 @@ function YouTubeView({ onDone }) {
 
   const startImport = async () => {
     try {
-      await lib.importYoutube(preview.url, preview.title)
+      await lib.importYoutube(preview)
       onDone()
     } catch {
       toast.error("Couldn't start the import")
@@ -372,30 +372,46 @@ function YouTubeView({ onDone }) {
   )
 }
 
-/* Toasts for YouTube imports: a spinner while one runs, then the result.
-   Mounted once at the app level, so it reports even with the panel closed. */
+/* A toast when a YouTube import finishes or fails. While it runs, the song
+   shows in the list with a spinner (ImportingRow), so there's no toast for
+   that. Mounted once at the app level, so it reports with the panel closed. */
 export function LibraryJobToasts() {
   const lib = useLibrary()
   const toast = useToast()
-  const seen = useRef({}) // job id → toast id (or 'done')
+  const running = useRef(new Set())
   useEffect(() => {
     for (const j of lib.jobs) {
-      const known = seen.current[j.id]
-      if (known === 'done') continue
       const name = j.title || 'YouTube audio'
-      if (j.status === 'running' && known == null) {
-        seen.current[j.id] = toast.show(`Importing ${name}`, { busy: true })
-      } else if (j.status !== 'running') {
-        const patch = j.status === 'done'
-          ? { message: `Imported ${name}`, kind: 'success', busy: false }
-          : { message: `Couldn't import ${name}: ${j.error}`, kind: 'error', busy: false }
-        if (known != null) toast.update(known, patch)
-        // A job that finished before we saw it (page loaded later) stays quiet.
-        seen.current[j.id] = 'done'
+      if (j.status === 'running') {
+        running.current.add(j.id)
+      } else if (running.current.has(j.id)) {
+        // Only jobs we saw running: one that finished before the page loaded stays quiet.
+        running.current.delete(j.id)
+        if (j.status === 'done') toast.success(`Imported ${name}`)
+        else toast.error(`Couldn't import ${name}: ${j.error}`)
       }
     }
   }, [lib.jobs, toast])
   return null
+}
+
+/* A YouTube import still downloading: the preview's thumbnail and title,
+   with a spinner over the art, until the real song replaces it. */
+function ImportingRow({ job }) {
+  return (
+    <div className="fx-lib-row is-importing" aria-busy="true">
+      <span className="fx-lib-thumb">
+        <span className="fx-lib-art" style={{ width: 40, height: 40 }}>
+          {job.thumbnail && <img src={job.thumbnail} alt="" />}
+        </span>
+        <span className="fx-lib-thumb-overlay is-busy" aria-label="Importing"><span className="fx-spinner" /></span>
+      </span>
+      <div className="fx-lib-row-text">
+        <span className="fx-lib-row-title" title={job.title || job.url}>{job.title || job.url}</span>
+        <span className="fx-lib-row-sub">{job.artist ? `${job.artist} · Importing…` : 'Importing…'}</span>
+      </div>
+    </div>
+  )
 }
 
 export default function LibraryPanel({ groups, clients, mqtt, onClose }) {
@@ -533,6 +549,9 @@ export default function LibraryPanel({ groups, clients, mqtt, onClose }) {
   } else {
     body = (
       <div className="fx-lib-list">
+        {filter === 'songs' && lib.jobs.filter(j => j.status === 'running').map(j => (
+          <ImportingRow key={j.id} job={j} />
+        ))}
         {filter === 'songs' && lib.tracks.map((t, i) => (
           <TrackRow key={t.id} track={t} queue={lib.tracks.slice(i).map(x => x.id)} />
         ))}

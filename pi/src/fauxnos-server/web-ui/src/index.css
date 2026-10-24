@@ -4742,6 +4742,11 @@ label.fx-source-setting { cursor: pointer; }
   transition: opacity var(--fx-dur) var(--fx-ease);
 }
 .fx-lib-thumb-overlay.is-hover { opacity: 0; }
+.fx-lib-thumb-overlay.is-busy .fx-spinner {
+  border-color: rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+}
+.fx-lib-row.is-importing .fx-lib-row-title { color: var(--fx-text-2); }
 .fx-lib-row:hover .fx-lib-thumb-overlay.is-hover,
 .fx-lib-row:focus-visible .fx-lib-thumb-overlay.is-hover { opacity: 1; }
 .fx-lib-thumb-overlay.is-playing i {

@@ -78,7 +78,11 @@ export function useLibraryState() {
     addToPlaylist: (id, trackIds) => call(`/api/library/playlists/${id}`, 'PATCH', { add: trackIds }),
     removeFromPlaylist: (id, trackIds) => call(`/api/library/playlists/${id}`, 'PATCH', { remove: trackIds }),
     deletePlaylist: (id) => call(`/api/library/playlists/${id}`, 'DELETE'),
-    importYoutube: (url, title) => call('/api/library/youtube', 'POST', { url, title }),
+    // title/artist/thumbnail come from the preview, so the import can show in
+    // the song list (with a spinner) before the download finishes.
+    importYoutube: (preview) => call('/api/library/youtube', 'POST', {
+      url: preview.url, title: preview.title, artist: preview.artist, thumbnail: preview.thumbnail,
+    }),
     play: (clientId, trackIds) => apiFetch('/api/library/play', {
       method: 'POST', body: JSON.stringify({ client_id: clientId, track_ids: trackIds }),
     }),

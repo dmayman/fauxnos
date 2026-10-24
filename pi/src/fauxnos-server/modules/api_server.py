@@ -3747,11 +3747,13 @@ rm -- "$0"
         return jsonify(playlist)
 
     def handle_library_youtube(self):
-        """POST /api/library/youtube {url, title?} — start a background import job."""
+        """POST /api/library/youtube {url, title?, artist?, thumbnail?} — start a
+        background import job (the extras show it in the list while it runs)."""
         data = request.get_json(silent=True) or {}
         try:
             job = self.library.start_youtube_import(
-                (data.get("url") or "").strip(), title=data.get("title"))
+                (data.get("url") or "").strip(), title=data.get("title"),
+                artist=data.get("artist"), thumbnail=data.get("thumbnail"))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except RuntimeError as e:

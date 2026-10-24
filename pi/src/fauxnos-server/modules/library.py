@@ -33,6 +33,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -377,12 +379,34 @@ class Library:
             return sorted(self._jobs.values(), key=lambda j: j["started_at"], reverse=True)
 
     def youtube_preview(self, url: str) -> Dict:
-        """Title, artist, album, duration and thumbnail of a video, without
-        downloading it — what the UI shows before Import."""
+        """Title, channel and thumbnail of a video — what the UI shows before
+        Import. Uses YouTube's oEmbed endpoint (well under a second), not
+        yt-dlp's full extraction, which takes ~20 s on a Pi 3B+ because it
+        runs YouTube's JavaScript challenge. Falls back to yt-dlp for links
+        oEmbed can't read. The import reads full details and checks the
+        audio itself."""
         if not self.youtube_available():
             raise RuntimeError("yt-dlp isn't installed on the server")
         if not re.match(r"^https?://", url or ""):
             raise ValueError("Paste a full YouTube link")
+        try:
+            q = urllib.parse.urlencode({"url": url, "format": "json"})
+            with urllib.request.urlopen(f"https://www.youtube.com/oembed?{q}", timeout=8) as resp:
+                info = json.load(resp)
+            return {
+                "url": url,
+                "title": info.get("title"),
+                "artist": re.sub(r" - Topic$", "", info.get("author_name") or "") or None,
+                "album": None,
+                "duration_ms": None,
+                "thumbnail": info.get("thumbnail_url"),
+                "importable": True,
+            }
+        except Exception as e:
+            logger.info(f"oEmbed couldn't read {url} ({e}); asking yt-dlp")
+        return self._youtube_preview_ytdlp(url)
+
+    def _youtube_preview_ytdlp(self, url: str) -> Dict:
         r = subprocess.run(
             self._ytdlp("--no-playlist", "--skip-download", "--dump-json", "--no-warnings", url),
             capture_output=True, text=True, timeout=120,
@@ -403,14 +427,16 @@ class Library:
             "importable": has_m4a,
         }
 
-    def start_youtube_import(self, url: str, title: Optional[str] = None) -> Dict:
+    def start_youtube_import(self, url: str, title: Optional[str] = None,
+                             artist: Optional[str] = None, thumbnail: Optional[str] = None) -> Dict:
         if not self.youtube_available():
             raise RuntimeError("yt-dlp isn't installed on the server")
         if not re.match(r"^https?://", url or ""):
             raise ValueError("Paste a full YouTube link")
-        # `title` (from the preview) names the job until the download says.
+        # title/artist/thumbnail (from the preview) show the job in the list
+        # until the download finishes and the real song replaces it.
         job = {"id": uuid.uuid4().hex[:12], "url": url, "status": "running",
-               "title": title or None, "error": None, "track_id": None, "started_at": time.time()}
+               "title": title or None, "artist": artist or None, "thumbnail": thumbnail or None, "error": None, "track_id": None, "started_at": time.time()}
         with self._lock:
             self._jobs[job["id"]] = job
         threading.Thread(target=self._run_youtube, args=(job,), daemon=True).start()
