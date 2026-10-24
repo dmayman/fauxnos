@@ -737,11 +737,20 @@ private struct LinkImportView: View {
 struct LibraryBrowseSheet: View {
     @EnvironmentObject private var store: FauxnosStore
     @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var artStore = AlbumArtColorStore.shared
+    @Environment(\.colorScheme) private var colorScheme
     let clientId: String
     @State private var filter: LibraryFilter = .songs
 
     private var collections: LibraryCollections { LibraryCollections(store: store) }
     private var currentId: String? { store.libraryTrack(forClient: clientId)?.id }
+
+    /// The playing song's highlight: the room card's accent, from its cover.
+    private var currentAccent: Color {
+        let art = store.api.libraryArtURL(store.libraryTrack(forClient: clientId)?.art)?.absoluteString
+        guard let raw = artStore.color(for: art) else { return FX.text }
+        return buildArtPalette(from: raw, dark: colorScheme == .dark).accent
+    }
 
     var body: some View {
         NavigationStack {
@@ -812,7 +821,7 @@ struct LibraryBrowseSheet: View {
                     LibraryArtView(art: t.art, size: 44, playing: t.id == currentId && store.libraryNow[clientId]?.isPlaying == true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(t.title).font(FxFont.fustat(17, .semibold))
-                            .foregroundStyle(t.id == currentId ? FX.ok : FX.text).lineLimit(1)
+                            .foregroundStyle(t.id == currentId ? currentAccent : FX.text).lineLimit(1)
                         Text(t.artist ?? unknownArtist).font(FxFont.fustat(14, .medium)).foregroundStyle(FX.text2).lineLimit(1)
                     }
                     Spacer(minLength: 0)
