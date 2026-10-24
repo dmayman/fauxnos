@@ -35,6 +35,8 @@ enum LibraryPage: Hashable {
     case playlist(String)       // playlist id
     case youtube
     case spotify
+    /// Which room to play these songs in (`title` names what's playing).
+    case rooms(queue: [String], title: String)
 }
 
 private let unknownArtist = "Unknown artist"
@@ -65,6 +67,7 @@ struct LibraryCollections {
         case .playlist(let id): return playlist(id)?.name ?? "Playlist"
         case .youtube: return "Add from YouTube"
         case .spotify: return "Add from Spotify"
+        case .rooms(_, let title): return "Play \(title) in"
         }
     }
 
@@ -73,7 +76,7 @@ struct LibraryCollections {
         case .artist(let name): return store.library.tracks.filter { ($0.artist ?? unknownArtist) == name }
         case .album(let key): return albums.first { $0.0 == key }?.1 ?? []
         case .playlist(let id): return (playlist(id)?.trackIds ?? []).compactMap { store.libraryTrack(id: $0) }
-        case .youtube, .spotify: return []
+        case .youtube, .spotify, .rooms: return []
         }
     }
 
@@ -96,7 +99,7 @@ struct LibraryFilterPills: View {
                     } label: {
                         Text(f.label)
                             .font(FxFont.fustat(15, .semibold))
-                            .foregroundStyle(filter == f ? FX.surface1 : FX.text2)
+                            .foregroundStyle(filter == f ? FX.surface1 : FX.text)
                             .padding(.horizontal, 16)
                             .frame(height: 36)
                             .background(Capsule().fill(filter == f ? FX.text : .clear))
@@ -201,8 +204,9 @@ private extension View {
 
 // MARK: - Song row
 
-/// One song. Tapping asks which room to play it in (with the rest of `queue`
-/// after it); the ⋯ menu has the management actions.
+/// One song. Tapping calls `onPlay` with the song and the rest of `queue`
+/// after it (the screen then asks which room); the ⋯ menu has the management
+/// actions.
 struct LibraryTrackRow: View {
     @EnvironmentObject private var store: FauxnosStore
     let track: LibraryTrack
@@ -210,8 +214,8 @@ struct LibraryTrackRow: View {
     var playlist: LibraryPlaylist? = nil
     var onEdit: (LibraryTrack) -> Void
     var onNewPlaylist: ([String]) -> Void
+    var onPlay: ([String], String) -> Void
 
-    @State private var askRoom = false
     @State private var confirmDelete = false
 
     var body: some View {
@@ -253,15 +257,8 @@ struct LibraryTrackRow: View {
         }
         .padding(.vertical, 6)
         .contentShape(Rectangle())
-        .onTapGesture { Haptics.tap(); askRoom = true }
+        .onTapGesture { Haptics.tap(); onPlay(queue, track.title) }
         .accessibilityAddTraits(.isButton)
-        .confirmationDialog("Play \(track.title) in", isPresented: $askRoom, titleVisibility: .visible) {
-            ForEach(store.libraryRooms, id: \.id) { room in
-                Button(room.name) { Task { await store.playLibrary(queue, in: room.id) } }
-            }
-        } message: {
-            if store.libraryRooms.isEmpty { Text("Add Library to a room in the web app's device panel first.") }
-        }
         .confirmationDialog("Delete \(track.title)?", isPresented: $confirmDelete, titleVisibility: .visible) {
             Button("Delete", role: .destructive) { Task { await store.deleteTrack(track) } }
         } message: {
@@ -311,6 +308,7 @@ struct LibraryScreen: View {
     @State private var newPlaylistTracks: [String]?
     @State private var newPlaylistName = ""
     @State private var editing: LibraryTrack?
+    @State private var detent: PresentationDetent = .large
 
     private var collections: LibraryCollections { LibraryCollections(store: store) }
 
@@ -338,12 +336,23 @@ struct LibraryScreen: View {
                 switch page {
                 case .youtube: LinkImportView(spotify: false)
                 case .spotify: LinkImportView(spotify: true)
-                default: LibraryPageView(page: page, onEdit: { editing = $0 }, onNewPlaylist: askNewPlaylist)
+                case .rooms(let queue, let title):
+                    LibraryRoomPicker(title: title) { room in
+                        Task { await store.playLibrary(queue, in: room) }
+                        dismiss()
+                    }
+                default: LibraryPageView(page: page, onEdit: { editing = $0 },
+                                         onNewPlaylist: askNewPlaylist, onPlay: askRoom)
                 }
             }
             .refreshable { await store.refreshLibrary() }
         }
         .tint(FX.text)
+        // Picking a room shrinks the sheet to a short room list; back grows it again.
+        .presentationDetents([.large, roomsDetent], selection: $detent)
+        .onChange(of: path) { _, p in
+            if case .rooms = p.last { detent = roomsDetent } else { detent = .large }
+        }
         .libraryToast(store.libraryToast)
         .task { await store.refreshLibrary() }
         .fileImporter(isPresented: $showImporter,
@@ -370,6 +379,14 @@ struct LibraryScreen: View {
         var line = songsLabel(store.library.tracks.count)
         if let s = store.library.storage { line += " • \(bytesLabel(s.free)) free" }
         return line
+    }
+
+    private var roomsDetent: PresentationDetent {
+        .height(CGFloat(125 + max(store.libraryRooms.count, 1) * 56))
+    }
+
+    private func askRoom(_ queue: [String], _ title: String) {
+        path.append(.rooms(queue: queue, title: title))
     }
 
     private func askNewPlaylist(_ tracks: [String]) {
@@ -411,7 +428,7 @@ struct LibraryScreen: View {
                 let tracks = store.library.tracks
                 ForEach(Array(tracks.enumerated()), id: \.element.id) { i, t in
                     LibraryTrackRow(track: t, queue: tracks[i...].map(\.id),
-                                    onEdit: { editing = $0 }, onNewPlaylist: askNewPlaylist)
+                                    onEdit: { editing = $0 }, onNewPlaylist: askNewPlaylist, onPlay: askRoom)
                 }
                 if tracks.isEmpty && store.libraryLoaded && store.runningImports.isEmpty {
                     emptyNote("No songs yet. Use Add to upload files or import from YouTube or Spotify.")
@@ -468,8 +485,8 @@ private struct LibraryPageView: View {
     let page: LibraryPage
     var onEdit: (LibraryTrack) -> Void
     var onNewPlaylist: ([String]) -> Void
+    var onPlay: ([String], String) -> Void
 
-    @State private var askRoom = false
     @State private var renaming = false
     @State private var newName = ""
     @State private var confirmDelete = false
@@ -486,7 +503,7 @@ private struct LibraryPageView: View {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(tracks.enumerated()), id: \.element.id) { i, t in
                     LibraryTrackRow(track: t, queue: tracks[i...].map(\.id), playlist: playlist,
-                                    onEdit: onEdit, onNewPlaylist: onNewPlaylist)
+                                    onEdit: onEdit, onNewPlaylist: onNewPlaylist, onPlay: onPlay)
                 }
                 if tracks.isEmpty {
                     Text(playlist != nil ? "No songs yet. Add songs from their ⋯ menu." : "No songs here.")
@@ -502,7 +519,7 @@ private struct LibraryPageView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if !tracks.isEmpty {
-                    Button { askRoom = true } label: { Image(systemName: "play.fill") }
+                    Button { onPlay(tracks.map(\.id), collections.title(page)) } label: { Image(systemName: "play.fill") }
                         .accessibilityLabel("Play all")
                 }
                 if let playlist {
@@ -512,11 +529,6 @@ private struct LibraryPageView: View {
                     } label: { Image(systemName: "ellipsis.circle") }
                     .accessibilityLabel("Playlist options")
                 }
-            }
-        }
-        .confirmationDialog("Play all in", isPresented: $askRoom, titleVisibility: .visible) {
-            ForEach(store.libraryRooms, id: \.id) { room in
-                Button(room.name) { Task { await store.playLibrary(tracks.map(\.id), in: room.id) } }
             }
         }
         .alert("Rename playlist", isPresented: $renaming) {
@@ -534,6 +546,43 @@ private struct LibraryPageView: View {
         } message: {
             Text("Its songs stay in the library.")
         }
+    }
+}
+
+/// The rooms that can play the library; picking one plays and closes Library.
+private struct LibraryRoomPicker: View {
+    @EnvironmentObject private var store: FauxnosStore
+    let title: String
+    var onPick: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(store.libraryRooms, id: \.id) { room in
+                Button { Haptics.commit(); onPick(room.id) } label: {
+                    HStack(spacing: Space.md) {
+                        SourceIcon(icon: "outline:device-speaker", sourceId: nil, size: 22).foregroundStyle(FX.text2)
+                        Text(room.name).font(FxFont.fustat(18, .semibold)).foregroundStyle(FX.text)
+                        Spacer(minLength: 0)
+                        if store.libraryNow[room.id]?.isPlaying == true && store.modes[room.id] == "library" {
+                            PlayingBars().frame(width: 16, height: 14).colorMultiply(FX.text2)
+                        }
+                    }
+                    .frame(height: 56)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            if store.libraryRooms.isEmpty {
+                Text("No room can play the library yet. Add Library to a room in the web app's device panel.")
+                    .font(FxFont.fustat(15, .medium)).foregroundStyle(FX.text2)
+                    .padding(.vertical, Space.lg)
+            }
+        }
+        .padding(.horizontal, Space.lg)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(FX.bg.ignoresSafeArea())
+        .navigationTitle("Play \(title) in")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 
@@ -849,30 +898,32 @@ struct NoiseTuneSheet: View {
                             .onEnded { _ in commit() }
                     )
                 }
-                .frame(height: 180)
+                .frame(height: 160)
                 HStack {
                     label("Low cut", current.low)
                     Spacer()
                     label("High cut", current.high)
                 }
-                Button {
-                    Haptics.tap()
-                    store.setNoise(["low_cut": 0, "high_cut": 0], clientId: clientId)
-                } label: {
-                    Text("Reset cuts").font(FxFont.fustat(15, .semibold)).foregroundStyle(FX.text2)
-                }
-                .buttonStyle(.plain)
-                .disabled(stored.low == 0 && stored.high == 0)
-                Spacer(minLength: 0)
             }
-            .padding(Space.xl)
+            .padding(.horizontal, Space.xl)
+            .padding(.top, Space.sm)
+            .frame(maxHeight: .infinity, alignment: .top)
             .background(FX.bg.ignoresSafeArea())
             .navigationTitle("Tune")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Reset") {
+                        Haptics.tap()
+                        store.setNoise(["low_cut": 0, "high_cut": 0], clientId: clientId)
+                    }
+                    .disabled(stored.low == 0 && stored.high == 0)
+                }
+                ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } }
+            }
         }
         .tint(FX.text)
-        .presentationDetents([.medium])
+        .presentationDetents([.height(305)])
     }
 
     private func label(_ title: String, _ hz: Int) -> some View {
