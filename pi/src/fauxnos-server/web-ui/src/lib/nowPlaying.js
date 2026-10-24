@@ -1,3 +1,5 @@
+import { noiseArtUrl } from './noiseArt'
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * Shared now-playing derivations.
  *
@@ -25,15 +27,17 @@ export function sourceIdOf(group, mqtt, homeClientId = homeIdOf(group)) {
     || (group.stream_id ? group.stream_id.replace(/^source_fauxnos\d+_/, '') : null)
 }
 
-/* Cover of the first group playing Spotify with real track metadata — the art
-   the page backdrop renders. null when nothing is playing (iOS
-   GroupsListView.backdropArtSource). */
+/* Cover of the first group playing Spotify with real track metadata, or the
+   generated art of the first group on Noise — the art the page backdrop
+   renders. null when nothing is playing (iOS GroupsListView.backdropArtSource). */
 export function backdropArtUrl(groups, mqtt) {
   for (const group of groups) {
     const home = homeIdOf(group)
     const track = mqtt.tracks[home]
-    if (sourceIdOf(group, mqtt, home) === 'spotify'
+    const source = sourceIdOf(group, mqtt, home)
+    if (source === 'spotify'
         && track?.art_url && (track.title || track.artist)) return track.art_url
+    if (source === 'noise') return noiseArtUrl(mqtt.noise?.[home]?.color)
   }
   return null
 }

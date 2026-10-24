@@ -2066,6 +2066,141 @@ body {
   display: block;
 }
 
+/* Noise card (NoiseMediaCard): the title is the colour-menu button, Tune
+   (styled like the meta line) opens the band graph popover, and power sits
+   on the right in line with the rows' source icons. */
+.fx-group-media-text.fx-noise-head {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding-right: 0;
+}
+.fx-noise-title {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.fx-noise-power {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  /* Centre on the rows' source glyph: the source trigger below is glyph +
+     4px gap + 24px chevron, flush with the same right edge. */
+  margin-right: 28px;
+}
+.fx-noise-power.is-on,
+.fx-noise-power.is-on:hover {
+  background: var(--art-accent-soft, var(--fx-surface-2));
+  color: var(--art-accent, var(--fx-text));
+}
+.fx-noise-title-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.fx-noise-title-btn .fx-title-track { min-width: 0; }
+.fx-noise-title-chevron {
+  flex-shrink: 0;
+  color: var(--fx-text-2);
+  transition: color var(--fx-dur) var(--fx-ease);
+}
+.fx-noise-title-btn:hover .fx-noise-title-chevron,
+.fx-noise-title-btn[aria-expanded="true"] .fx-noise-title-chevron { color: var(--fx-text); }
+.fx-noise-status {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+.fx-group-media-text .fx-noise-text-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  background: none;
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+  transition: opacity var(--fx-dur) var(--fx-ease);
+}
+.fx-noise-text-btn:hover,
+.fx-noise-text-btn[aria-expanded="true"] { opacity: 0.75; }
+.fx-noise-title-btn:focus-visible,
+.fx-noise-text-btn:focus-visible {
+  outline: none;
+  border-radius: 4px;
+  box-shadow: 0 0 0 2px var(--fx-accent-ring);
+}
+.fx-noise-title-btn,
+.fx-noise-status { transition: opacity var(--fx-dur) var(--fx-ease); }
+.fx-noise-card.is-off .fx-noise-title-btn,
+.fx-noise-card.is-off .fx-noise-status { opacity: 0.45; }
+.fx-noise-card.is-off .fx-group-media-art img {
+  opacity: 0.45;
+  filter: saturate(0.5);
+  transition: opacity var(--fx-dur) var(--fx-ease), filter var(--fx-dur) var(--fx-ease);
+}
+.fx-source-popover.fx-noise-tune-popover { width: 320px; }
+.fx-noise-swatch {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  display: block;
+}
+.fx-noise-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.fx-noise-graph {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: none;
+  cursor: ew-resize;
+  overflow: visible;
+}
+.fx-noise-graph-grid {
+  stroke: var(--fx-line);
+  stroke-width: 1;
+}
+.fx-noise-graph-area {
+  fill: var(--art-accent, var(--fx-text));
+  fill-opacity: 0.14;
+}
+.fx-noise-graph-line {
+  fill: none;
+  stroke: var(--art-accent, var(--fx-text));
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+.fx-noise-graph-handle {
+  fill: var(--fx-surface-1);
+  stroke: var(--art-accent, var(--fx-text));
+  stroke-width: 2;
+  outline: none;
+}
+.fx-noise-graph-handle:focus-visible { stroke-width: 3; }
+.fx-noise-graph-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--fx-text-sm);
+  color: var(--fx-text-2);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Progress row */
 .fx-group-progress {
   display: flex;
@@ -2679,6 +2814,30 @@ button.fx-group-row-volume-icon:focus-visible {
   /* No anchored source-trigger on mobile (it lives inline in the All row), so
      the title can use the full column width. */
   .fx-group-media-text { padding-right: 0; }
+  /* Noise: power shares the title line, flush right (not on the icon
+     column, which would squeeze the title), sized like other icon buttons. */
+  .fx-group-media-text.fx-noise-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "title  power"
+      "status status";
+    column-gap: 4px;
+    row-gap: 2px;
+  }
+  .fx-noise-title { display: contents; }
+  .fx-noise-title-btn { grid-area: title; justify-self: start; gap: 2px; }
+  /* A touch under the 24px mobile title so "Brown noise" + chevron + power
+     fit a 375px phone. */
+  .fx-group-media-text .fx-noise-title-btn .fx-title-track { font-size: 22px; }
+  .fx-noise-title-chevron { width: 18px; height: 18px; }
+  .fx-noise-status { grid-area: status; }
+  .fx-noise-power {
+    grid-area: power;
+    width: 32px;
+    height: 32px;
+    margin-right: 0;
+  }
   .fx-group-media-text .fx-title-track { font-size: 24px; }
   .fx-group-media-text .fx-meta-track  { font-size: 16px; }
 
