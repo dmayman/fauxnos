@@ -59,9 +59,9 @@ export default function InstallTimeline({ onDone, onRetry }) {
   const terminal = snapshot.status === 'succeeded' || snapshot.status === 'failed' || snapshot.status === 'cancelled'
 
   // A failed step can carry a `fallback_kind` marker the runner attached when
-  // the failure has a known one-shot fix. The only one today is
-  // "auth_key_missing" (server's install key isn't in the Pi's
-  // authorized_keys). Surface it inline so the user can recover without
+  // the failure has a known one-shot fix: "auth_key_missing" (server's install
+  // key isn't in the Pi's authorized_keys) or "sudo_password_required" (sudo
+  // prompts for a password, so install.sh would hang). Surface it inline so the user can recover without
   // bouncing back through PreInstallView.
   const fallbackStep = snapshot.steps.find((s) => s.fallback_kind)
 
@@ -97,6 +97,12 @@ export default function InstallTimeline({ onDone, onRetry }) {
 
       {fallbackStep && fallbackStep.fallback_kind === 'auth_key_missing' && (
         <AuthKeyMissingFallback
+          targetHost={snapshot.target_host}
+          onRetry={onRetry}
+        />
+      )}
+      {fallbackStep && fallbackStep.fallback_kind === 'sudo_password_required' && (
+        <SudoPasswordFallback
           targetHost={snapshot.target_host}
           onRetry={onRetry}
         />
@@ -162,7 +168,6 @@ function TimelineStep({ step, active }) {
  * via the parent's onRetry callback.
  */
 function AuthKeyMissingFallback({ targetHost, onRetry }) {
-  const [copied, setCopied] = useState(false)
   // The wizard is served by the same Flask process that hosts
   // /api/install/server-pubkey, so window.location.host already points at the
   // right server:port for the curl call.
@@ -177,6 +182,32 @@ function AuthKeyMissingFallback({ targetHost, onRetry }) {
     `  'mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat - >> ~/.ssh/authorized_keys && sort -u ~/.ssh/authorized_keys -o ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys'`,
   ].join('\n')
 
+  return (
+    <FallbackCard title="Authorize the server's key" command={command} onRetry={onRetry} retryLabel="Retry SSH">
+      The server reached <code className="fx-mono">{targetHost}</code> but its install
+      key isn't in <code className="fx-mono">~/.ssh/authorized_keys</code> on the Pi.
+      Run this on the workstation that can already SSH to the Pi, then click Retry:
+    </FallbackCard>
+  )
+}
+
+function SudoPasswordFallback({ targetHost, onRetry }) {
+  const command = [
+    `ssh -t user@${targetHost} \\`,
+    `  'echo "user ALL=(ALL) NOPASSWD: ALL" | sudo tee /etc/sudoers.d/010_user-nopasswd'`,
+  ].join('\n')
+  return (
+    <FallbackCard title="Allow sudo without a password" command={command} onRetry={onRetry} retryLabel="Retry install">
+      <code className="fx-mono">sudo</code> on <code className="fx-mono">{targetHost}</code> asks
+      for a password, so the install would wait at a prompt the server can't answer.
+      Run this from a workstation that can SSH to the Pi, enter your Pi password once,
+      then click Retry:
+    </FallbackCard>
+  )
+}
+
+function FallbackCard({ title, command, onRetry, retryLabel, children }) {
+  const [copied, setCopied] = useState(false)
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(command)
@@ -191,13 +222,9 @@ function AuthKeyMissingFallback({ targetHost, onRetry }) {
     <div className="fx-card fx-auth-fallback">
       <div className="fx-row fx-auth-title">
         <AlertCircle size={16} style={{ color: 'var(--fx-warn)' }} />
-        <span className="fx-h3">Authorize the server's key</span>
+        <span className="fx-h3">{title}</span>
       </div>
-      <p className="fx-small">
-        The server reached <code className="fx-mono">{targetHost}</code> but its install
-        key isn't in <code className="fx-mono">~/.ssh/authorized_keys</code> on the Pi.
-        Run this on the workstation that can already SSH to the Pi, then click Retry:
-      </p>
+      <p className="fx-small">{children}</p>
       <div className="fx-codeblock">
         <pre>{command}</pre>
         <button className={`fx-codeblock-copy${copied ? ' copied' : ''}`} onClick={copy}>
@@ -206,7 +233,7 @@ function AuthKeyMissingFallback({ targetHost, onRetry }) {
       </div>
       {onRetry && (
         <button className="fx-btn primary" onClick={onRetry}>
-          <RefreshCw size={14} /> Retry SSH
+          <RefreshCw size={14} /> {retryLabel}
         </button>
       )}
     </div>
