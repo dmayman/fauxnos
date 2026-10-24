@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """
 Test the Library: uploads (MP3/M4A only, no overwrites, no path tricks),
-tags and cover art from ID3, playlists, and deleting a track also removes
-it from playlists.
+tags and cover art from ID3, playlists, deleting a track also removes it
+from playlists, lookup by id/path/title and playlist name, change
+notifications, and the set/library/play MQTT command.
 
 Run: python3 test_library.py   (needs mutagen for the tag checks)
 """
 
 import io
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -77,6 +79,48 @@ def demo():
         # Files under .fauxnos (index, art) are never listed as tracks.
         assert all(not t["path"].startswith(".") for t in lib.tracks())
         print("ok: uploads, playlists and deletes behave")
+
+    with tempfile.TemporaryDirectory() as d:
+        changes = []
+        lib = Library(Path(d) / "lib", on_change=lambda: changes.append(1))
+        a = lib.save_upload("Twinkle.mp3", io.BytesIO(MP3))
+        b = lib.save_upload("b.mp3", io.BytesIO(MP3))
+        assert changes, "an upload must notify"
+        n = len(changes)
+        p = lib.create_playlist("Bedtime", [b["id"], a["id"]])
+        assert len(changes) == n + 1, "a playlist change must notify"
+        lib.tracks()
+        assert len(changes) == n + 1, "an unchanged rescan must not notify"
+
+        got = lib.resolve_tracks([a["id"], "b.mp3", "TWINKLE", "nope"])
+        assert [t["id"] for t in got] == [a["id"], b["id"], a["id"]], got
+        assert lib.resolve_playlist("bedtime")["id"] == p["id"]
+        assert lib.resolve_playlist(p["id"])["name"] == "Bedtime"
+        assert lib.resolve_playlist("nope") is None
+        print("ok: lookup by id, path, title and playlist name; changes notify")
+
+        # set/library/play on the server: room by name, playlist by name.
+        from modules.api_server import FauxnosAPIServer
+        srv = FauxnosAPIServer.__new__(FauxnosAPIServer)
+        srv._library = lib
+        srv._library_dir = lambda: lib.root
+        srv.log = lambda *a, **k: None
+        srv.config_manager = type("CM", (), {"server_config": {"clients": [{"id": "fauxnos003", "name": "Office"}]}})()
+        sent = []
+        srv._publish_mqtt = lambda topic, payload, retain=False: sent.append((topic, json.loads(payload))) or True
+        srv._handle_library_mqtt_play(json.dumps({"room": "office", "playlist": "Bedtime", "loop": True}).encode())
+        assert sent == [("set/clients/fauxnos003/library/play",
+                         {"items": ["b.mp3", "Twinkle.mp3"], "loop": True})], sent
+        srv._handle_library_mqtt_play(json.dumps({"room": "fauxnos003", "tracks": ["twinkle"], "fade_ms": 3000}).encode())
+        assert sent[-1] == ("set/clients/fauxnos003/library/play",
+                            {"items": ["Twinkle.mp3"], "loop": False, "fade_ms": 3000}), sent[-1]
+        srv._handle_library_mqtt_play(json.dumps({"room": "Garage", "tracks": ["twinkle"]}).encode())
+        srv._handle_library_mqtt_play(json.dumps({"room": "Office", "tracks": ["nope"]}).encode())
+        assert len(sent) == 2, "unknown rooms and songs must not send anything"
+        srv._publish_library_index()
+        topic, index = sent[-1]
+        assert topic == "status/library/index" and len(index["tracks"]) == 2 and index["playlists"][0]["name"] == "Bedtime"
+        print("ok: set/library/play resolves rooms, playlists and titles; the index is published")
 
 
 if __name__ == "__main__":

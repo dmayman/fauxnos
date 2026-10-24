@@ -3575,8 +3575,76 @@ rm -- "$0"
         root = self._library_dir()
         lib = getattr(self, "_library", None)
         if lib is None or lib.root != root:
-            lib = self._library = Library(root)
+            lib = self._library = Library(root, on_change=self._publish_library_index)
         return lib
+
+    # ── Library over MQTT (Home Assistant) ──────────────────────────────────
+    #
+    #   status/library/index  (retained) {"tracks": [{id, path, title, artist,
+    #                         album, duration_ms}], "playlists": [{id, name,
+    #                         track_ids}]}, republished whenever it changes.
+    #   set/library/play      {"room": "<client id or room name>",
+    #                          "tracks": ["<id, path or title>", ...]
+    #                            or "playlist": "<name or id>",
+    #                          "loop": false, "fade_ms": 0}
+    #
+    # set/library/play resolves the names here and sends the room's player
+    # set/clients/<id>/library/play with the files.
+
+    def _publish_library_index(self):
+        lib = getattr(self, "_library", None)
+        if lib is None:
+            return
+        index = {
+            "tracks": [
+                {k: t[k] for k in ("id", "path", "title", "artist", "album", "duration_ms")}
+                for t in lib.tracks()
+            ],
+            "playlists": lib.playlists(),
+        }
+        self._publish_mqtt("status/library/index", json.dumps(index), retain=True)
+
+    def _publish_library_index_on_connect(self):
+        # Wait for on_connect to return so the publish isn't queued behind it.
+        time.sleep(1)
+        self.library  # builds the Library (with its on_change hook) if needed
+        self._publish_library_index()
+
+    def _resolve_room(self, ref: str) -> Optional[str]:
+        """A client id from its id or room name (case-insensitive)."""
+        ref = str(ref or "").strip()
+        for c in self.config_manager.server_config.get("clients", []):
+            if c.get("id") == ref or (c.get("name") or "").casefold() == ref.casefold():
+                return c.get("id")
+        return None
+
+    def _handle_library_mqtt_play(self, payload: bytes):
+        try:
+            data = json.loads(payload.decode() or "{}")
+        except Exception:
+            self.log(f"set/library/play: bad JSON: {payload!r}", "WARNING")
+            return
+        room = self._resolve_room(data.get("room") or data.get("client_id"))
+        if not room:
+            self.log(f"set/library/play: unknown room {data.get('room')!r}", "WARNING")
+            return
+        if data.get("playlist"):
+            playlist = self.library.resolve_playlist(data["playlist"])
+            if playlist is None:
+                self.log(f"set/library/play: no playlist {data['playlist']!r}", "WARNING")
+                return
+            tracks = self.library.resolve_tracks(playlist["track_ids"])
+        else:
+            refs = data.get("tracks") or ([data["track"]] if data.get("track") else [])
+            tracks = self.library.resolve_tracks(refs)
+        if not tracks:
+            self.log(f"set/library/play: no matching songs in {data}", "WARNING")
+            return
+        payload_out = {"items": [t["path"] for t in tracks], "loop": bool(data.get("loop", False))}
+        if data.get("fade_ms"):
+            payload_out["fade_ms"] = data["fade_ms"]
+        self.log(f"set/library/play: {len(tracks)} song(s) on {room}")
+        self._publish_mqtt(f"set/clients/{room}/library/play", json.dumps(payload_out))
 
     def handle_library_file(self, filepath: str):
         """GET /library/<path> — serve one audio file (Range requests supported)."""
@@ -4069,6 +4137,9 @@ rm -- "$0"
                 # EQ mirroring: hello carries the eq block on
                 # (re)connect; status/.../eq fires on every change.
                 client.subscribe("status/clients/+/eq")
+                # Library for Home Assistant: play by name, and the index.
+                client.subscribe("set/library/play")
+                threading.Thread(target=self._publish_library_index_on_connect, daemon=True).start()
                 # Nudge every client to re-hello so the server's mirror
                 # is fresh after a server restart. Clients handle this
                 # in mqtt_client.py via the "get/clients/all/status"
@@ -4097,6 +4168,13 @@ rm -- "$0"
             target_client_id = self._evc_topic_to_client.get(msg.topic)
             if target_client_id:
                 self._handle_external_volume_mqtt_inbound(target_client_id, msg.payload)
+                return
+
+            if msg.topic == "set/library/play":
+                # Off-thread: resolving can rescan the library folder.
+                threading.Thread(
+                    target=self._handle_library_mqtt_play, args=(msg.payload,), daemon=True,
+                ).start()
                 return
 
             parts = msg.topic.split("/")

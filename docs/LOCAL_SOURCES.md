@@ -138,6 +138,20 @@ set/clients/<id>/library/stop  ""
 - `loop: true` repeats a single item on its own, or several items as a
   playlist.
 
+**Play by name (Home Assistant).** The server keeps the library index on
+`status/library/index` (retained: every song's `id`, `path`, `title`,
+`artist`, `album`, `duration_ms`, and every playlist), republished whenever
+it changes. To play, publish to the server, which resolves the names:
+
+```
+set/library/play  {"room": "Office", "playlist": "Bedtime", "loop": true}
+set/library/play  {"room": "fauxnos003", "tracks": ["Twinkle Twinkle", "Hush Little Baby"], "fade_ms": 3000}
+```
+
+- `room` is a client id or room name. `tracks` are ids, paths or titles
+  (case-insensitive); `playlist` is a name or id.
+- Unknown rooms, playlists or songs are logged on the server and ignored.
+
 **Library transport and now-playing.** Each device reports its player,
 retained, on `status/clients/<id>/library` (`state`, `path`, `elapsed_ms`,
 `duration_ms`, …), and takes:

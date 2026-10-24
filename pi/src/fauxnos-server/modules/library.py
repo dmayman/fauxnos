@@ -18,6 +18,9 @@ room's MPD at /library/<path>. This module adds what the UI needs on top:
 
 A track's id is a hash of its path, so it's stable across rescans and
 restarts, and changes only if the file is renamed or moved.
+
+`on_change` (if given) is called whenever the songs or playlists change, so
+the server can republish the index on MQTT for Home Assistant.
 """
 
 import hashlib
@@ -71,8 +74,9 @@ def _first(tags, *keys) -> Optional[str]:
 
 
 class Library:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, on_change=None):
         self.root = Path(root).expanduser()
+        self.on_change = on_change
         self.meta_dir = self.root / ".fauxnos"
         self.art_dir = self.meta_dir / "art"
         self._lock = threading.RLock()
@@ -174,8 +178,47 @@ class Library:
                 })
             if fresh != cache:
                 self._write_json("index.json", fresh)
+                changed = True
+            else:
+                changed = False
             out.sort(key=lambda t: ((t["artist"] or "~").lower(), (t["album"] or "").lower(), t["title"].lower()))
-            return out
+        if changed:
+            self._changed()
+        return out
+
+    def _changed(self):
+        if self.on_change:
+            try:
+                self.on_change()
+            except Exception as e:
+                logger.warning(f"Library on_change failed: {e}")
+
+    # ── Lookup (for MQTT / Home Assistant) ───────────────────────────────
+
+    def resolve_tracks(self, refs: List[str]) -> List[Dict]:
+        """Songs by id, path, or title (case-insensitive), in the order given.
+        Unknown references are skipped."""
+        tracks = self.tracks()
+        by_id = {t["id"]: t for t in tracks}
+        by_path = {t["path"]: t for t in tracks}
+        by_title = {}
+        for t in tracks:
+            by_title.setdefault(t["title"].casefold(), t)
+        out = []
+        for ref in refs or []:
+            ref = str(ref).strip()
+            t = by_id.get(ref) or by_path.get(ref) or by_title.get(ref.casefold())
+            if t:
+                out.append(t)
+        return out
+
+    def resolve_playlist(self, ref: str) -> Optional[Dict]:
+        """A playlist by id or name (case-insensitive)."""
+        ref = str(ref or "").strip()
+        for p in self.playlists():
+            if p["id"] == ref or p["name"].casefold() == ref.casefold():
+                return p
+        return None
 
     def path_of(self, tid: str) -> Optional[str]:
         for t in self.tracks():
@@ -275,7 +318,8 @@ class Library:
                         "track_ids": list(track_ids or [])}
             playlists.append(playlist)
             self._write_json("playlists.json", playlists)
-            return playlist
+        self._changed()
+        return playlist
 
     def update_playlist(self, pid: str, name: Optional[str] = None,
                         track_ids: Optional[List[str]] = None,
@@ -295,7 +339,8 @@ class Library:
             if remove:
                 playlist["track_ids"] = [t for t in playlist["track_ids"] if t not in remove]
             self._write_json("playlists.json", playlists)
-            return playlist
+        self._changed()
+        return playlist
 
     def delete_playlist(self, pid: str) -> bool:
         with self._lock:
@@ -304,7 +349,8 @@ class Library:
             if len(kept) == len(playlists):
                 return False
             self._write_json("playlists.json", kept)
-            return True
+        self._changed()
+        return True
 
     # ── YouTube import ───────────────────────────────────────────────────
 
