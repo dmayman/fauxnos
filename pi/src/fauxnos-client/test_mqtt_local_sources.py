@@ -29,6 +29,7 @@ def make(sources=("spotify", "noise", "library")):
     c.source_volume_getter = lambda sid: {"noise": 30, "library": 40}.get(sid, 50)
     c.library_play_callback = lambda items, loop, fade: c.calls.append(("play", items, loop, fade)) or True
     c.library_stop_callback = lambda: c.calls.append(("stop",)) or True
+    c.noise_callback = None
     return c
 
 

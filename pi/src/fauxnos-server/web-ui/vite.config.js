@@ -29,7 +29,10 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/api': 'http://fauxnos000.local:8080',
+      // VITE_FAUXNOS_HOST overrides the server for local dev, e.g. its IPv4
+      // address when this machine can't route to the .local name's IPv6
+      // addresses. useMqtt reads the same variable for the broker.
+      '/api': `http://${process.env.VITE_FAUXNOS_HOST || 'fauxnos000.local'}:8080`,
     },
   },
 })
