@@ -438,7 +438,7 @@ function ImportingRow({ job }) {
   return (
     <div className="fx-lib-row is-importing" aria-busy="true">
       <span className="fx-lib-thumb">
-        <span className="fx-lib-art" style={{ width: 40, height: 40 }}>
+        <span className="fx-lib-art" style={{ width: 48, height: 48 }}>
           {job.thumbnail && <img src={job.thumbnail} alt="" />}
         </span>
         <span className="fx-lib-thumb-overlay is-busy" aria-label="Importing"><span className="fx-spinner" /></span>

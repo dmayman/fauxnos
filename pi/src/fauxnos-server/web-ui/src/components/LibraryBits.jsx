@@ -13,7 +13,7 @@ export const FILTERS = [
 ]
 export const songsLabel = (n) => `${n} song${n === 1 ? '' : 's'}`
 
-export function Art({ track, size = 40, Fallback = IconMusic }) {
+export function Art({ track, size = 48, Fallback = IconMusic }) {
   const url = artUrl(track)
   return (
     <span className="fx-lib-art" style={{ width: size, height: size }}>

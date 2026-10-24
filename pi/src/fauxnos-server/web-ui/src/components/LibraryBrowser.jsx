@@ -24,7 +24,7 @@ export default function LibraryBrowser({ currentTrackId, onPlay }) {
       className={`fx-library-browse-row${t.id === currentTrackId ? ' active' : ''}`}
       onClick={() => onPlay(tracks.slice(i).map(x => x.id))}
     >
-      <Art track={t} size={32} />
+      <Art track={t} size={40} />
       <span className="fx-library-browse-text">
         <span className="fx-library-browse-title">{t.title}</span>
         <span className="fx-library-browse-sub">{t.artist || UNKNOWN_ARTIST}</span>
@@ -34,7 +34,7 @@ export default function LibraryBrowser({ currentTrackId, onPlay }) {
 
   const collection = (key, title, sub, tracks, pageKey, Fallback) => (
     <button key={key} type="button" className="fx-library-browse-row" onClick={() => stack.push(pageKey)}>
-      <Art track={tracks.find(t => t.art)} size={32} Fallback={Fallback} />
+      <Art track={tracks.find(t => t.art)} size={40} Fallback={Fallback} />
       <span className="fx-library-browse-text">
         <span className="fx-library-browse-title">{title}</span>
         <span className="fx-library-browse-sub">{sub}</span>
@@ -48,14 +48,14 @@ export default function LibraryBrowser({ currentTrackId, onPlay }) {
     body = (
       <>
         <div className="fx-library-browse-head">
-          <button type="button" className="fx-icon-btn sm" aria-label="Back" onClick={stack.pop}>
-            <IconArrowLeft size={16} />
+          <button type="button" className="fx-icon-btn" aria-label="Back" onClick={stack.pop}>
+            <IconArrowLeft size={18} />
           </button>
           <span className="fx-library-browse-page-title">{page.title}</span>
           {page.tracks.length > 0 && (
-            <button type="button" className="fx-icon-btn sm" aria-label="Play all" title="Play all"
+            <button type="button" className="fx-icon-btn" aria-label="Play all" title="Play all"
               onClick={() => onPlay(page.tracks.map(t => t.id))}>
-              <IconPlayerPlayFilled size={14} />
+              <IconPlayerPlayFilled size={16} />
             </button>
           )}
         </div>
@@ -81,7 +81,7 @@ export default function LibraryBrowser({ currentTrackId, onPlay }) {
   const empty = !page && Array.isArray(body) && body.length === 0
   return (
     <div className="fx-library-browser">
-      {!page && <FilterPills value={filter} onChange={setFilter} className="compact" />}
+      {!page && <FilterPills value={filter} onChange={setFilter} />}
       <PushPage pageKey={stack.page ? `${stack.page.kind}:${stack.page.key}` : `list:${filter}`} dir={stack.dir}
         className="fx-library-browse-list">
         {body}
