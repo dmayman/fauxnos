@@ -26,6 +26,7 @@ from typing import Optional
 from .config_manager import ConfigManager, ClientConfig
 from .install_runner import InstallManager, InstallAlreadyRunning, DEFAULT_KEY_PATH
 from .update_runner import UpdateManager, UpdateAlreadyRunning
+from .library import Library
 from . import update_manager as um
 from .dac_overlays import (
     ALLOWED_OVERLAYS,
@@ -444,15 +445,49 @@ class FauxnosAPIServer:
         def serve_client_file(filepath):
             return self.handle_serve_client_file(filepath)
 
-        # ── Library (MP3s the devices' MPD players stream) ────────────────────
+        # ── Library (the server-wide music library; see modules/library.py) ──
 
         @app.route('/library/<path:filepath>')
         def library_file(filepath):
             return self.handle_library_file(filepath)
 
+        @app.route('/library-art/<name>')
+        def library_art(name):
+            return self.handle_library_art(name)
+
         @app.route('/api/library', methods=['GET'])
         def list_library():
             return self.handle_list_library()
+
+        @app.route('/api/library/upload', methods=['POST'])
+        def upload_library():
+            return self.handle_library_upload()
+
+        @app.route('/api/library/tracks/<tid>', methods=['PATCH', 'DELETE'])
+        def library_track(tid):
+            if request.method == 'PATCH':
+                return self.handle_library_update_track(tid)
+            return self.handle_library_delete_track(tid)
+
+        @app.route('/api/library/playlists', methods=['POST'])
+        def create_library_playlist():
+            return self.handle_library_create_playlist()
+
+        @app.route('/api/library/playlists/<pid>', methods=['PATCH', 'DELETE'])
+        def library_playlist(pid):
+            return self.handle_library_playlist(pid)
+
+        @app.route('/api/library/youtube', methods=['POST'])
+        def library_youtube():
+            return self.handle_library_youtube()
+
+        @app.route('/api/library/youtube/preview', methods=['POST'])
+        def library_youtube_preview():
+            return self.handle_library_youtube_preview()
+
+        @app.route('/api/library/play', methods=['POST'])
+        def library_play():
+            return self.handle_library_play()
 
         # ── Server-driven install (Add Device wizard) ─────────────────────────
 
@@ -3527,41 +3562,154 @@ rm -- "$0"
 
     # ── Library handlers ───────────────────────────────────────────────────────
     # The Library source plays on each device's own MPD, which streams files
-    # from here over plain HTTP (see docs/LOCAL_SOURCES.md). Drop audio into
-    # the folder (subfolders fine) and it is playable — no scan, no database.
-
-    LIBRARY_EXTENSIONS = {".mp3", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wav"}
+    # from here over plain HTTP (see docs/LOCAL_SOURCES.md). modules/library.py
+    # keeps the index (tags, art), playlists, uploads and YouTube imports.
 
     def _library_dir(self) -> Path:
         """server.paths.library_dir in server_config.json, default ~/fauxnos-library."""
         paths = self.config_manager.server_config.get("server", {}).get("paths", {})
         return Path(os.path.expanduser(paths.get("library_dir", "~/fauxnos-library")))
 
+    @property
+    def library(self) -> Library:
+        root = self._library_dir()
+        lib = getattr(self, "_library", None)
+        if lib is None or lib.root != root:
+            lib = self._library = Library(root)
+        return lib
+
     def handle_library_file(self, filepath: str):
         """GET /library/<path> — serve one audio file (Range requests supported)."""
         root = self._library_dir()
         try:
             target = (root / filepath).resolve()
-            target.relative_to(root.resolve())
+            rel = target.relative_to(root.resolve())
         except (ValueError, RuntimeError):
             abort(403)
-        if not target.is_file():
+        # The index, playlists and art live under .fauxnos/ — not audio.
+        if any(part.startswith(".") for part in rel.parts) or not target.is_file():
             abort(404)
         return send_from_directory(str(root), filepath, conditional=True)
 
+    def handle_library_art(self, name: str):
+        """GET /library-art/<track id>.<ext> — a track's cover art."""
+        return send_from_directory(str(self.library.art_dir), name, max_age=86400)
+
+    def _library_state(self) -> dict:
+        lib = self.library
+        tracks = lib.tracks()
+        return {
+            "library_dir": str(lib.root),
+            "tracks": tracks,
+            "playlists": lib.playlists(),
+            "storage": lib.storage(),
+            "jobs": lib.jobs(),
+            "youtube_available": lib.youtube_available(),
+            # Older shape ({path, name, size}), kept for existing callers.
+            "items": [{"path": t["path"], "name": t["title"], "size": t["size"]} for t in tracks],
+        }
+
     def handle_list_library(self):
-        """GET /api/library — every playable file, as paths for library/play."""
-        root = self._library_dir()
-        items = []
-        if root.is_dir():
-            for p in sorted(root.rglob("*")):
-                if p.is_file() and p.suffix.lower() in self.LIBRARY_EXTENSIONS:
-                    items.append({
-                        "path": p.relative_to(root).as_posix(),
-                        "name": p.stem,
-                        "size": p.stat().st_size,
-                    })
-        return jsonify({"library_dir": str(root), "items": items})
+        """GET /api/library — tracks, playlists, storage and import jobs."""
+        return jsonify(self._library_state())
+
+    def handle_library_upload(self):
+        """POST /api/library/upload — multipart field `file`, one or more MP3/M4A."""
+        files = request.files.getlist("file")
+        if not files:
+            return jsonify({"error": "No file in the upload"}), 400
+        added, errors = [], []
+        for f in files:
+            try:
+                added.append(self.library.save_upload(f.filename or "track", f.stream))
+            except ValueError as e:
+                errors.append({"file": f.filename, "error": str(e)})
+        self.log(f"Library upload: {len(added)} added, {len(errors)} rejected")
+        status = 201 if added else 400
+        return jsonify({"added": added, "errors": errors}), status
+
+    def handle_library_delete_track(self, tid: str):
+        if not self.library.delete_track(tid):
+            return jsonify({"error": "Track not found"}), 404
+        return jsonify({"status": "deleted"})
+
+    def handle_library_update_track(self, tid: str):
+        """PATCH /api/library/tracks/<id> {title?, artist?, album?} — edit tags."""
+        data = request.get_json(silent=True) or {}
+        try:
+            track = self.library.update_track(tid, data)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 503
+        if track is None:
+            return jsonify({"error": "Track not found"}), 404
+        return jsonify(track)
+
+    def handle_library_youtube_preview(self):
+        """POST /api/library/youtube/preview {url} — the video's details."""
+        data = request.get_json(silent=True) or {}
+        try:
+            return jsonify(self.library.youtube_preview((data.get("url") or "").strip()))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 503
+
+    def handle_library_create_playlist(self):
+        data = request.get_json(silent=True) or {}
+        name = (data.get("name") or "").strip()
+        if not name:
+            return jsonify({"error": "name is required"}), 400
+        return jsonify(self.library.create_playlist(name, data.get("track_ids"))), 201
+
+    def handle_library_playlist(self, pid: str):
+        """PATCH {name?, track_ids?, add?, remove?} or DELETE a playlist."""
+        if request.method == "DELETE":
+            if not self.library.delete_playlist(pid):
+                return jsonify({"error": "Playlist not found"}), 404
+            return jsonify({"status": "deleted"})
+        data = request.get_json(silent=True) or {}
+        playlist = self.library.update_playlist(
+            pid, name=data.get("name"), track_ids=data.get("track_ids"),
+            add=data.get("add"), remove=data.get("remove"),
+        )
+        if playlist is None:
+            return jsonify({"error": "Playlist not found"}), 404
+        return jsonify(playlist)
+
+    def handle_library_youtube(self):
+        """POST /api/library/youtube {url, title?} — start a background import job."""
+        data = request.get_json(silent=True) or {}
+        try:
+            job = self.library.start_youtube_import(
+                (data.get("url") or "").strip(), title=data.get("title"))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 503
+        self.log(f"Library: YouTube import started for {job['url']}")
+        return jsonify(job), 202
+
+    def handle_library_play(self):
+        """POST /api/library/play {client_id, track_ids, loop?} — play on a room.
+
+        Sends the room's MPD the tracks' library paths (set/clients/<id>/
+        library/play), which also switches the room to the Library source.
+        """
+        data = request.get_json(silent=True) or {}
+        client_id = data.get("client_id")
+        track_ids = data.get("track_ids") or []
+        if not client_id or not track_ids:
+            return jsonify({"error": "client_id and track_ids are required"}), 400
+        paths = {t["id"]: t["path"] for t in self.library.tracks()}
+        items = [paths[t] for t in track_ids if t in paths]
+        if not items:
+            return jsonify({"error": "None of those tracks are in the library"}), 404
+        payload = json.dumps({"items": items, "loop": bool(data.get("loop", False))})
+        if not self._publish_mqtt(f"set/clients/{client_id}/library/play", payload):
+            return jsonify({"error": "MQTT broker unavailable"}), 503
+        return jsonify({"status": "ok", "count": len(items)})
 
     def handle_serve_client_file(self, filepath: str):
         """Handle GET /api/install/files/client/<path> — serve individual client files"""

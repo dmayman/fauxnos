@@ -4670,3 +4670,268 @@ label.fx-source-setting { cursor: pointer; }
   font-size: var(--fx-text-sm);
   padding-left: var(--fx-2);
 }
+
+/* ── Library panel (LibraryPanel.jsx) ─────────────────────────────────────── */
+.fx-library-panel { display: flex; flex-direction: column; gap: var(--fx-3); }
+.fx-library-panel .fx-device-panel-head { margin-bottom: 0; }
+.fx-library-panel.is-dragging { outline: 2px dashed var(--fx-accent); outline-offset: -8px; }
+.fx-lib-filter-row { display: flex; align-items: center; gap: var(--fx-2); }
+.fx-lib-filter-row .fx-lib-filters { flex: 1; min-width: 0; }
+.fx-lib-add-btn { flex-shrink: 0; gap: 4px; }
+.fx-lib-storage {
+  margin-top: calc(-1 * var(--fx-1));
+  font-size: var(--fx-text-sm);
+  color: var(--fx-text-2);
+}
+.fx-lib-filters { display: flex; gap: var(--fx-2); flex-wrap: wrap; }
+.fx-lib-pill {
+  height: 30px;
+  padding: 0 14px;
+  border-radius: var(--fx-r-pill);
+  border: 1px solid var(--fx-line);
+  background: transparent;
+  color: var(--fx-text-2);
+  font: inherit;
+  font-size: var(--fx-text-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+.fx-lib-pill:hover { color: var(--fx-text); }
+.fx-lib-pill.active { background: var(--fx-text); border-color: var(--fx-text); color: var(--fx-surface-1); }
+.fx-lib-pill:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--fx-accent-ring); }
+.fx-lib-filters.compact { gap: 6px; }
+.fx-lib-filters.compact .fx-lib-pill { height: 26px; padding: 0 10px; font-size: var(--fx-text-xs); }
+.fx-lib-drill-head { display: flex; align-items: center; gap: var(--fx-2); margin-bottom: var(--fx-2); }
+.fx-lib-drill-title { flex: 1; min-width: 0; font-weight: 700; font-size: var(--fx-text-lg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-lib-list { display: flex; flex-direction: column; }
+.fx-lib-row {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-3);
+  padding: 6px var(--fx-2);
+  margin: 0 calc(-1 * var(--fx-2));
+  border-radius: var(--fx-r-sm);
+}
+.fx-lib-row:hover { background: var(--fx-surface-2); }
+.fx-lib-row.clickable { cursor: pointer; }
+.fx-lib-row.clickable:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--fx-accent-ring); }
+.fx-lib-art {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--fx-surface-3);
+  color: var(--fx-text-3);
+}
+.fx-lib-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.fx-lib-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+/* Song thumbnail: a play icon on row hover, animated bars while playing. */
+.fx-lib-thumb { position: relative; display: inline-flex; }
+.fx-lib-thumb-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  transition: opacity var(--fx-dur) var(--fx-ease);
+}
+.fx-lib-thumb-overlay.is-hover { opacity: 0; }
+.fx-lib-row:hover .fx-lib-thumb-overlay.is-hover,
+.fx-lib-row:focus-visible .fx-lib-thumb-overlay.is-hover { opacity: 1; }
+.fx-lib-thumb-overlay.is-playing i {
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: currentColor;
+  transform-origin: bottom;
+  animation: fx-lib-bars 0.9s ease-in-out infinite;
+}
+.fx-lib-thumb-overlay.is-playing i:nth-child(2) { animation-delay: -0.3s; }
+.fx-lib-thumb-overlay.is-playing i:nth-child(3) { animation-delay: -0.6s; }
+@keyframes fx-lib-bars { 0%, 100% { transform: scaleY(0.35); } 50% { transform: scaleY(1); } }
+@media (prefers-reduced-motion: reduce) {
+  .fx-lib-thumb-overlay.is-playing i { animation: none; transform: scaleY(0.7); }
+}
+.fx-lib-row-title,
+.fx-lib-row-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-lib-row-title { font-weight: 600; color: var(--fx-text); }
+.fx-lib-row-sub { font-size: var(--fx-text-sm); color: var(--fx-text-2); }
+.fx-lib-row-time { font-size: var(--fx-text-sm); color: var(--fx-text-2); font-variant-numeric: tabular-nums; }
+.fx-lib-row-actions { display: flex; align-items: center; gap: 2px; }
+.fx-lib-play { background: var(--fx-surface-2); color: var(--fx-text); }
+.fx-lib-play:hover,
+.fx-lib-play[aria-expanded="true"] { background: var(--fx-surface-3); }
+.fx-lib-empty { padding: var(--fx-5) 0; text-align: center; color: var(--fx-text-2); font-size: var(--fx-text-sm); }
+.fx-lib-dropzone {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--fx-2);
+  background: color-mix(in oklab, var(--fx-surface-1) 85%, transparent);
+  color: var(--fx-text);
+  font-weight: 600;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.fx-source-popover.fx-lib-menu { width: 240px; gap: 2px; padding: 8px; }
+.fx-lib-menu-caption { padding: 6px 8px 2px; font-size: var(--fx-text-xs); font-weight: 600; color: var(--fx-text-3); text-transform: uppercase; letter-spacing: 0.04em; }
+.fx-lib-menu-note { padding: 6px 8px; font-size: var(--fx-text-sm); color: var(--fx-text-2); }
+.fx-lib-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--fx-text);
+  font: inherit;
+  font-size: var(--fx-text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+.fx-lib-menu-item:hover { background: var(--fx-surface-2); }
+.fx-lib-menu-item.danger { color: var(--fx-err); }
+
+/* Add from YouTube page */
+.fx-lib-youtube { display: flex; flex-direction: column; gap: var(--fx-3); }
+.fx-lib-youtube-looking { display: flex; align-items: center; gap: var(--fx-2); font-size: var(--fx-text-sm); color: var(--fx-text-2); }
+.fx-lib-youtube-card {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-3);
+  padding: var(--fx-3);
+  border: 1px solid var(--fx-line);
+  border-radius: var(--fx-r-sm);
+}
+.fx-lib-youtube-card img { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+.fx-lib-youtube-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+/* Push transitions between list pages (panel and Browse). */
+@keyframes fx-push-forward { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes fx-push-back { from { transform: translateX(-24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.fx-push-page.forward { animation: fx-push-forward 220ms var(--fx-ease); }
+.fx-push-page.back { animation: fx-push-back 220ms var(--fx-ease); }
+@media (prefers-reduced-motion: reduce) {
+  .fx-push-page.forward, .fx-push-page.back { animation: none; }
+}
+
+@media (max-width: 600px) {
+  /* The ⋯ menu has "Add to playlist" too. */
+  .fx-lib-add-to { display: none; }
+  .fx-lib-row-time { display: none; }
+  /* Add floats at the bottom of the panel, over the list. */
+  .fx-lib-add-btn {
+    position: fixed;
+    left: var(--fx-4);
+    right: var(--fx-4);
+    bottom: var(--fx-4);
+    height: 44px;
+    z-index: 5;
+    box-shadow: var(--fx-shadow-3);
+  }
+  .fx-library-panel { padding-bottom: 80px; }
+}
+
+/* ── Toasts (Toasts.jsx) ──────────────────────────────────────────────────── */
+.fx-toasts {
+  position: fixed;
+  left: 50%;
+  bottom: var(--fx-5);
+  transform: translateX(-50%);
+  z-index: 700;
+  display: flex;
+  flex-direction: column;
+  gap: var(--fx-2);
+  width: min(420px, calc(100vw - 32px));
+  pointer-events: none;
+}
+@keyframes fx-toast-in { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+.fx-toast {
+  display: flex;
+  align-items: center;
+  gap: var(--fx-2);
+  padding: 10px 8px 10px 14px;
+  border-radius: var(--fx-r-sm);
+  background: var(--fx-text);
+  color: var(--fx-surface-1);
+  font-size: var(--fx-text-sm);
+  font-weight: 500;
+  box-shadow: var(--fx-shadow-3);
+  pointer-events: auto;
+  animation: fx-toast-in 180ms var(--fx-ease);
+}
+.fx-toast.error { background: var(--fx-err); color: #fff; }
+.fx-toast .fx-spinner {
+  border-color: color-mix(in oklab, currentColor 25%, transparent);
+  border-top-color: currentColor;
+}
+.fx-toast .fx-icon-btn { color: inherit; opacity: 0.7; }
+.fx-toast .fx-icon-btn:hover { background: transparent; opacity: 1; color: inherit; }
+.fx-toast-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-toast-progress { width: 80px; height: 4px; border-radius: var(--fx-r-pill); background: color-mix(in oklab, currentColor 25%, transparent); overflow: hidden; }
+.fx-toast-progress > span { display: block; height: 100%; background: currentColor; transition: width 0.2s; }
+
+/* ── Form modal (FormModal.jsx) ───────────────────────────────────────────── */
+.fx-form-modal-backdrop { z-index: 650; }
+.fx-form-modal { width: min(400px, 100%); padding: var(--fx-4); gap: var(--fx-3); }
+.fx-form-modal-head { display: flex; align-items: center; justify-content: space-between; }
+.fx-form-modal-field { display: flex; flex-direction: column; gap: 6px; font-size: var(--fx-text-sm); color: var(--fx-text-2); }
+.fx-form-modal-actions { display: flex; justify-content: flex-end; gap: var(--fx-2); margin-top: var(--fx-2); }
+
+/* ── Library media card + Browse (GroupCard, LibraryBrowser) ─────────────── */
+.fx-library-card .fx-library-sub { display: block; }
+/* The Library head stays a row on phones too (the Noise head turns into a
+   grid there), so the browse button keeps its spot beside the title. */
+.fx-library-card .fx-noise-head { display: flex; flex-direction: row; align-items: center; gap: 12px; }
+.fx-library-card .fx-noise-title { display: flex; flex-direction: column; gap: 4px; flex: 1; min-width: 0; }
+.fx-library-browse-btn { flex-shrink: 0; }
+.fx-library-card .fx-noise-title,
+.fx-library-card .fx-group-media-art img,
+.fx-library-card .fx-group-media-art > svg { transition: opacity var(--fx-dur) var(--fx-ease); }
+.fx-library-card.is-idle .fx-noise-title,
+.fx-library-card.is-idle .fx-group-media-art img,
+.fx-library-card.is-idle .fx-group-media-art > svg { opacity: 0.45; }
+.fx-source-popover.fx-library-browse { width: 320px; padding: 10px; gap: 0; }
+.fx-library-browser { display: flex; flex-direction: column; gap: 8px; }
+.fx-library-browse-list { max-height: 340px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.fx-library-browse-head { display: flex; align-items: center; gap: 6px; padding-bottom: 4px; }
+.fx-library-browse-page-title { flex: 1; min-width: 0; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-library-browse-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--fx-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.fx-library-browse-row:hover { background: var(--fx-surface-2); }
+.fx-library-browse-row.active { color: var(--art-accent, var(--fx-accent)); }
+.fx-library-browse-text { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.fx-library-browse-title,
+.fx-library-browse-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fx-library-browse-title { font-weight: 600; font-size: var(--fx-text-sm); }
+.fx-library-browse-sub { font-size: var(--fx-text-xs); color: var(--fx-text-2); }
+.fx-library-browse-chevron { color: var(--fx-text-3); flex-shrink: 0; }
+
+/* Appearance menu button (Header ThemeMenu) in the bottom-left tracker. */
+.fx-theme-menu-btn {
+  background: var(--fx-surface-1);
+  border-color: var(--fx-line);
+}

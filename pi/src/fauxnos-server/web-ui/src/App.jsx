@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { X } from 'lucide-react'
-import Header, { UpdatePills } from './components/Header'
+import Header, { UpdatePills, ThemeMenu } from './components/Header'
+import LibraryPanel, { LibraryJobToasts } from './components/LibraryPanel'
+import { ToastProvider } from './components/Toasts'
+import { LibraryContext, useLibraryState } from './hooks/useLibrary'
 import GroupsTab from './components/GroupsTab'
 import AddDeviceTab from './components/AddDeviceTab'
 import DevicesPopover from './components/DevicesPopover'
@@ -37,6 +40,8 @@ export default function App() {
   const [serverStatus, setServerStatus] = useState(null)
   const [serverVersion, setServerVersion] = useState(null)
   const [devicePanelClientId, setDevicePanelClientId] = useState(null)
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  const library = useLibraryState()
   const [popoverOpen, setPopoverOpen] = useState(false)
   const [addDeviceOpen, setAddDeviceOpen] = useState(false)
   // Update-pipeline modal: a single modal we reuse for both server-self-
@@ -190,13 +195,21 @@ export default function App() {
 
   const openDevice = useCallback((clientId) => {
     setAddDeviceOpen(false)
+    setLibraryOpen(false)
     setDevicePanelClientId(clientId)
+  }, [])
+
+  const toggleLibrary = useCallback(() => {
+    setAddDeviceOpen(false)
+    setDevicePanelClientId(null)
+    setLibraryOpen(v => !v)
   }, [])
 
   const closeDevice = useCallback(() => setDevicePanelClientId(null), [])
 
   const openAddDevice = useCallback(() => {
     setDevicePanelClientId(null)
+    setLibraryOpen(false)
     setAddDeviceOpen(true)
   }, [])
 
@@ -218,11 +231,14 @@ export default function App() {
     }
   }, [devicePanelClientId, activeDeviceClient])
 
-  const sidePanelOpen = !!activeDeviceClient || addDeviceOpen
+  const sidePanelOpen = !!activeDeviceClient || addDeviceOpen || libraryOpen
 
   return (
+    <ToastProvider>
+    <LibraryContext.Provider value={library}>
+    <LibraryJobToasts />
     <div className="fx-root">
-      <ArtBackdrop url={backdropArtUrl(groups, mqtt)} />
+      <ArtBackdrop url={backdropArtUrl(groups, mqtt, library)} />
       {popoverOpen && (
         <DevicesPopover
           clients={clients}
@@ -238,6 +254,8 @@ export default function App() {
         mqttConnected={mqtt.connected}
         popoverOpen={popoverOpen}
         onToggleDevices={() => setPopoverOpen(v => !v)}
+        onToggleLibrary={toggleLibrary}
+        libraryOpen={libraryOpen}
       />
       <main className="fx-main">
         <GroupsTab
@@ -252,6 +270,7 @@ export default function App() {
         />
       </main>
       <div className="fx-version-tracker">
+        <ThemeMenu />
         <UpdatePills
           serverVersion={serverVersion}
           clients={clients}
@@ -271,7 +290,17 @@ export default function App() {
       {sidePanelOpen && <div className="fx-overlay" onClick={() => {
         closeDevice()
         closeAddDevice()
+        setLibraryOpen(false)
       }} />}
+
+      {libraryOpen && (
+        <LibraryPanel
+          groups={groups}
+          clients={clients}
+          mqtt={mqtt}
+          onClose={() => setLibraryOpen(false)}
+        />
+      )}
 
       {activeDeviceClient && (
         <DevicePanel
@@ -310,5 +339,7 @@ export default function App() {
       {/* Temporary OKLCH tuning panel — delete with useTuning.js once values lock. */}
       <TuningPanel />
     </div>
+    </LibraryContext.Provider>
+    </ToastProvider>
   )
 }

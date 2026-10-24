@@ -122,6 +122,8 @@ install_system_dependencies() {
     # port-80→8080 redirect that makes `http://fauxnos.local/` work without a
     # port suffix. Both packages ship on default Debian images but listing them
     # explicitly avoids silent breakage if a future image trims its baseline.
+    # `python3-mutagen` reads the Library's tags and cover art
+    # (modules/library.py).
     # `caps` provides /usr/lib/ladspa/caps.so (Eq10X2) for the end-of-chain
     # 10-band graphic EQ that default.pa's module-ladspa-sink loads. fauxnos000
     # is a first-class audio endpoint and uses the same EQ chain as clients.
@@ -150,7 +152,8 @@ install_system_dependencies() {
         pulseaudio \
         pulseaudio-utils \
         caps \
-        iw
+        iw \
+        python3-mutagen
 
     # Install snapserver — check if apt version is recent enough
     local apt_snap_ver
@@ -172,6 +175,10 @@ install_system_dependencies() {
     #    not propagate to fauxnos"
     # appears in fauxnos-client logs at startup.
     pip3 install --user flask flask-cors requests websockets websocket-client paho-mqtt paramiko --break-system-packages
+    # yt-dlp: the Library's YouTube import (modules/library.py). From pip,
+    # not apt, because YouTube changes often and apt's copy falls behind;
+    # -U keeps it current on every install.
+    pip3 install --user -U yt-dlp --break-system-packages
 
     log_success "System dependencies installed"
 }

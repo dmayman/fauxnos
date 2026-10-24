@@ -56,6 +56,7 @@ def demo():
     c.noise_callback = lambda data: got.append(data) or True
     c.publish_noise_state = lambda: published.append(True)
     c.mode_callback = lambda sid, fade_ms=0: True
+    c.source_volume_getter = lambda sid: None
     c.current_mode = "spotify"
     c._handle_command("set", "mode", "noise")
     assert got == [{"on": True}], "switching to Noise must turn it on"

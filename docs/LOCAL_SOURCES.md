@@ -81,10 +81,31 @@ doc). They're stored in `~/.config/fauxnos/noise.env` on the device:
 
 **Library files** live on the server in `~/fauxnos-library/`. Override this
 with `server.paths.library_dir` in `server_config.json`. Subfolders are
-fine. Drop a file in and it is playable, with no scan and no database.
+fine. Manage it from **Library** at the top of the web UI:
 
-- `GET /library/<path>` serves a file, with Range requests supported.
-- `GET /api/library` lists the playable files as `{path, name, size}`.
+- Upload MP3 or M4A files by dropping them on the panel, or from **Add**.
+- **Add → From YouTube** looks up a link and imports its audio as M4A,
+  with the thumbnail as cover art (needs `yt-dlp` on the server).
+- Browse by song, artist, album or playlist. Click a song to play it, with
+  the rest of the list after it, in a room you pick.
+- Edit a song's title, artist and album (written into the file's tags),
+  make and rename playlists, and delete songs.
+
+`modules/library.py` keeps an index in `.fauxnos/` inside the library
+folder: tags and duration read with mutagen (without it, titles are file
+names), cover art, and playlists. A file copied in by hand shows up on the
+next listing.
+
+| Endpoint | Does |
+|---|---|
+| `GET /library/<path>` | Serves a file, with Range requests |
+| `GET /library-art/<id>.<ext>` | A song's cover art |
+| `GET /api/library` | Songs, playlists, free space, import jobs |
+| `POST /api/library/upload` | Upload (multipart `file`, MP3 or M4A) |
+| `PATCH`/`DELETE /api/library/tracks/<id>` | Edit title/artist/album, or delete |
+| `POST /api/library/playlists`, `PATCH`/`DELETE …/<id>` | Playlists |
+| `POST /api/library/youtube/preview`, `POST /api/library/youtube` | YouTube look-up and import |
+| `POST /api/library/play` | `{client_id, track_ids}`: play on a room |
 
 ## Commands (MQTT, on the fauxnos broker)
 
@@ -116,6 +137,16 @@ set/clients/<id>/library/stop  ""
   radio works too).
 - `loop: true` repeats a single item on its own, or several items as a
   playlist.
+
+**Library transport and now-playing.** Each device reports its player,
+retained, on `status/clients/<id>/library` (`state`, `path`, `elapsed_ms`,
+`duration_ms`, …), and takes:
+
+```
+set/clients/<id>/library/toggle  ""      # play/pause
+set/clients/<id>/library/next    ""
+set/clients/<id>/library/prev    ""
+```
 
 ### Crossfades
 
@@ -151,8 +182,6 @@ publishing straight to this broker.
 
 ## Not done yet
 
-- **Now playing for Library.** MPD's track is not published to
-  `status/clients/<id>/track`, so the apps show the source but not the song.
 - **Home Assistant bridge.** See above.
 
 ## Verifying on a device
