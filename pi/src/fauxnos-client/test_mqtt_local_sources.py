@@ -30,6 +30,8 @@ def make(sources=("spotify", "noise", "library")):
     c.library_play_callback = lambda items, loop, fade: c.calls.append(("play", items, loop, fade)) or True
     c.library_stop_callback = lambda: c.calls.append(("stop",)) or True
     c.noise_callback = None
+    c.library_control_callback = lambda action: c.calls.append(("control", action)) or True
+    c.library_seek_callback = lambda ms: c.calls.append(("seek", ms)) or True
     return c
 
 
@@ -81,8 +83,35 @@ def test_library_play_without_library_source():
     print("ok: library/play is ignored on a device without the library source")
 
 
+def test_library_transport_and_now_playing():
+    c = make()
+    for action in ("toggle", "next", "prev", "bogus"):
+        c._handle_command("set", "library", "", action)
+    assert [x for x in c.calls if x[0] == "control"] == [
+        ("control", "toggle"), ("control", "next"), ("control", "prev")], c.calls
+
+    from modules import library_player as lp
+    p = lp.LibraryPlayer(server_host="fauxnos000.local")
+    out = "http://fauxnos000.local:8080/library/Mom%20-%20Twinkle.mp3\n[paused]  #2/3   0:14/2:00 (11%)\nvolume: n/a\n"
+    lp.subprocess.run = lambda cmd, **kw: type("R", (), {"returncode": 0, "stdout": out})()
+    np = p.now_playing()
+    assert (np["state"], np["path"], np["position"], np["queue_length"], np["elapsed_ms"], np["duration_ms"]) == \
+        ("pause", "Mom - Twinkle.mp3", 2, 3, 14000, 120000), np
+    lp.subprocess.run = lambda cmd, **kw: type("R", (), {"returncode": 0, "stdout": "volume: n/a\n"})()
+    assert p.now_playing()["state"] == "stop"
+    c._handle_command("set", "library", "104000", "seek")
+    c._handle_command("set", "library", "soon", "seek")
+    assert [x for x in c.calls if x[0] == "seek"] == [("seek", 104000)], c.calls
+    seeks = []
+    lp.subprocess.run = lambda cmd, **kw: seeks.append(cmd) or type("R", (), {"returncode": 0, "stderr": ""})()
+    p.seek(104900)
+    assert seeks[-1][-2:] == ["seek", "104"], seeks[-1]
+    print("ok: library transport and seek reach the player; now-playing is parsed from mpc")
+
+
 if __name__ == "__main__":
     test_parse_mode_payload()
     test_mode_with_and_without_fade()
     test_library_play()
     test_library_play_without_library_source()
+    test_library_transport_and_now_playing()

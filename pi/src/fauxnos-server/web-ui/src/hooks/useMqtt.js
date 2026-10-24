@@ -19,6 +19,9 @@ export function useMqtt() {
   // noise: { [deviceId]: { color, low_cut, high_cut } } — retained
   // status/clients/<id>/noise from the client's NoiseSettings.
   const [noise, setNoise] = useState({})
+  // library: { [deviceId]: { state, path, elapsed_ms, duration_ms, updated_at, ... } }
+  // — retained status/clients/<id>/library from the client's LibraryPlayer.
+  const [library, setLibrary] = useState({})
   const clientRef = useRef(null)
 
   // Track last publish time per client to suppress echoes
@@ -48,6 +51,7 @@ export function useMqtt() {
       client.subscribe('status/clients/+/track')
       client.subscribe('status/clients/+/playback')
       client.subscribe('status/clients/+/noise')
+      client.subscribe('status/clients/+/library')
       // Ask every connected client to broadcast hello so we get
       // initial state (including pa_calibrations) without waiting.
       client.publish('get/clients/all/status', '')
@@ -113,6 +117,11 @@ export function useMqtt() {
         try {
           const payload = JSON.parse(body)
           setTracks(prev => ({ ...prev, [deviceId]: payload }))
+        } catch (e) { /* ignore malformed */ }
+      } else if (action === 'library') {
+        try {
+          const payload = JSON.parse(msg.toString())
+          setLibrary(prev => ({ ...prev, [deviceId]: payload }))
         } catch (e) { /* ignore malformed */ }
       } else if (action === 'noise') {
         try {
@@ -244,6 +253,14 @@ export function useMqtt() {
     }
   }, [])
 
+  /** Library transport on a room: 'toggle' | 'next' | 'prev', or 'seek'
+   *  with a position in ms as the payload. */
+  const publishLibraryControl = useCallback((clientId, action, payload = '') => {
+    if (clientRef.current?.connected) {
+      clientRef.current.publish(`set/clients/${clientId}/library/${action}`, String(payload))
+    }
+  }, [])
+
   return {
     connected,
     volumes,
@@ -252,9 +269,11 @@ export function useMqtt() {
     tracks,
     playback,
     noise,
+    library,
     publishVolume,
     setMode,
     publishCalibration,
     publishNoise,
+    publishLibraryControl,
   }
 }

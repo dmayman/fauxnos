@@ -27,10 +27,11 @@ export function sourceIdOf(group, mqtt, homeClientId = homeIdOf(group)) {
     || (group.stream_id ? group.stream_id.replace(/^source_fauxnos\d+_/, '') : null)
 }
 
-/* Cover of the first group playing Spotify with real track metadata, or the
-   generated art of the first group on Noise — the art the page backdrop
-   renders. null when nothing is playing (iOS GroupsListView.backdropArtSource). */
-export function backdropArtUrl(groups, mqtt) {
+/* Cover of the first group playing something with art — a Spotify track, the
+   generated art of Noise, or a Library track's cover — the art the page
+   backdrop renders. null when nothing is playing (iOS
+   GroupsListView.backdropArtSource). */
+export function backdropArtUrl(groups, mqtt, library) {
   for (const group of groups) {
     const home = homeIdOf(group)
     const track = mqtt.tracks[home]
@@ -38,6 +39,17 @@ export function backdropArtUrl(groups, mqtt) {
     if (source === 'spotify'
         && track?.art_url && (track.title || track.artist)) return track.art_url
     if (source === 'noise') return noiseArtUrl(mqtt.noise?.[home]?.color)
+    if (source === 'library') {
+      const art = libraryTrackOf(mqtt, home, library)?.art
+      if (art) return `/library-art/${art}`
+    }
   }
   return null
+}
+
+/* The library track a room's player is on, or null (nothing loaded, or a
+   URL from outside the library, like a radio stream). */
+export function libraryTrackOf(mqtt, clientId, library) {
+  const path = mqtt.library?.[clientId]?.path
+  return path ? library?.byPath?.get(path) || null : null
 }

@@ -16,6 +16,7 @@ import {
   IconCheckFilled,
   IconChevronDown,
   IconAdjustmentsHorizontal,
+  IconMusicSearch,
   IconPower,
 } from '@tabler/icons-react'
 
@@ -35,13 +36,16 @@ import VolumeSlider, { VolumeIcon } from './VolumeSlider'
 import SourcePopover from './SourcePopover'
 import CustomIcon from './CustomIcon'
 import AddDevicesPopover from './AddDevicesPopover'
+import AnchoredPopover from './AnchoredPopover'
+import LibraryBrowser from './LibraryBrowser'
 import useAlbumArtColor from '../hooks/useAlbumArtColor'
 import { useTuning } from '../hooks/useTuning'
 import { useTheme } from '../hooks/useTheme'
 import { useSliderHover } from '../hooks/useSliderHover'
 import { buildArtTokens } from '../lib/artTokens'
-import { homeIdOf, sourceIdOf } from '../lib/nowPlaying'
+import { homeIdOf, sourceIdOf, libraryTrackOf } from '../lib/nowPlaying'
 import { noiseArtUrl } from '../lib/noiseArt'
+import { useLibrary, artUrl } from '../hooks/useLibrary'
 import { sendPlayback } from '../api'
 
 /* Volume glyph ramps with the level: mute (X) is reserved for v === 0
@@ -714,51 +718,6 @@ function NoiseBandGraph({ lowCut, highCut, onCommit }) {
   )
 }
 
-// Popover portaled to <body> (the card clips overflow), hung below its
-// anchor. It copies the card's --art-* tokens so it matches the card's tint.
-function NoisePopover({ anchorRef, onClose, className = '', role, children }) {
-  const ref = useRef(null)
-  const [style, setStyle] = useState(null)
-  useEffect(() => {
-    const place = () => {
-      const el = anchorRef.current
-      if (!el) return
-      const r = el.getBoundingClientRect()
-      const cs = getComputedStyle(el)
-      const tokens = {}
-      for (const t of ['--art-accent', '--art-accent-soft']) {
-        const v = cs.getPropertyValue(t).trim()
-        if (v) tokens[t] = v
-      }
-      // Hang from whichever side keeps it on screen.
-      const side = r.left > window.innerWidth / 2
-        ? { right: Math.max(8, window.innerWidth - r.right), left: 'auto' }
-        : { left: r.left, right: 'auto' }
-      setStyle({ top: r.bottom + 8, ...side, ...tokens })
-    }
-    place()
-    const onDown = (e) => {
-      if (ref.current?.contains(e.target) || anchorRef.current?.contains(e.target)) return
-      onClose()
-    }
-    document.addEventListener('mousedown', onDown)
-    window.addEventListener('resize', place)
-    window.addEventListener('scroll', place, true)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', place, true)
-    }
-  }, [anchorRef, onClose])
-  if (!style) return null
-  return createPortal(
-    <div ref={ref} className={`fx-popover fx-source-popover ${className}`} role={role} style={style}>
-      {children}
-    </div>,
-    document.body,
-  )
-}
-
 function NoiseMediaCard({ noise, onNoiseChange }) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [tuneOpen, setTuneOpen] = useState(false)
@@ -815,7 +774,7 @@ function NoiseMediaCard({ noise, onNoiseChange }) {
         </div>
       </div>
       {menuOpen && (
-        <NoisePopover anchorRef={titleRef} onClose={closeMenu} role="menu">
+        <AnchoredPopover anchorRef={titleRef} onClose={closeMenu} role="menu">
           {NOISE_COLORS.map(c => (
             <button
               key={c}
@@ -836,16 +795,145 @@ function NoiseMediaCard({ noise, onNoiseChange }) {
               )}
             </button>
           ))}
-        </NoisePopover>
+        </AnchoredPopover>
       )}
       {tuneOpen && (
-        <NoisePopover anchorRef={tuneRef} onClose={closeTune} role="dialog" className="fx-noise-tune-popover">
+        <AnchoredPopover anchorRef={tuneRef} onClose={closeTune} role="dialog" className="fx-noise-tune-popover">
           <NoiseBandGraph
             lowCut={noise?.low_cut || 0}
             highCut={noise?.high_cut || 0}
             onCommit={onNoiseChange}
           />
-        </NoisePopover>
+        </AnchoredPopover>
+      )}
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * LibraryMediaCard — the media card while a room plays the Library. The
+ * room's MPD reports what it's on (status/clients/<id>/library); the server's
+ * library index supplies the title, artist and cover, which drives the card
+ * tint and page backdrop like a Spotify cover. The browse button on the
+ * right (where Noise has power) opens the library (LibraryBrowser) to play
+ * something else in this room. The title and art
+ * dim only while nothing is loaded (not while paused).
+ * ────────────────────────────────────────────────────────────────────────── */
+function LibraryMediaCard({ clientId, libraryState, onLibraryControl }) {
+  const lib = useLibrary()
+  const [browseOpen, setBrowseOpen] = useState(false)
+  const browseRef = useRef(null)
+  const closeBrowse = useCallback(() => setBrowseOpen(false), [])
+  const track = libraryState?.path ? lib?.byPath.get(libraryState.path) : null
+  const isPlaying = libraryState?.state === 'play'
+  const hasQueue = !!libraryState?.file
+  const fallbackTitle = libraryState?.file
+    ? decodeURIComponent(libraryState.file.split('/').pop() || '').replace(/\.[^.]+$/, '')
+    : 'Nothing playing'
+  const title = track?.title || fallbackTitle
+  const sub = track ? [track.artist, track.album].filter(Boolean).join(' · ') : ''
+  const duration = libraryState?.duration_ms || track?.duration_ms || 0
+  const livePos = useInterpolatedPosition(libraryState ? {
+    is_playing: isPlaying,
+    position_ms: libraryState.elapsed_ms || 0,
+    updated_at: libraryState.updated_at,
+  } : null)
+  // While dragging the scrubber, show the drag (scrub, 0-100); seek on release.
+  const [scrub, setScrub] = useState(null)
+  const progressHover = useSliderHover()
+  const pos = scrub != null && duration
+    ? (scrub / 100) * duration
+    : Math.max(0, Math.min(livePos, duration || livePos))
+  const pct = duration > 0 ? (pos / duration) * 100 : 0
+  const commitSeek = () => {
+    if (scrub == null || !duration) return
+    onLibraryControl('seek', Math.round((scrub / 100) * duration))
+    setScrub(null)
+  }
+  const art = artUrl(track)
+
+  return (
+    <div className={`fx-group-media-card fx-library-card${hasQueue ? '' : ' is-idle'}`}>
+      <div className="fx-group-media-art">
+        {art
+          ? <img src={art} alt="" loading="lazy" draggable={false} />
+          : <SourceIcon sourceId="library" icon="outline:playlist" size={56} />}
+      </div>
+      <div className="fx-group-media-body">
+        <div className="fx-group-media-text fx-noise-head">
+          <div className="fx-noise-title">
+            <span className="fx-title-track" title={title}>{title}</span>
+            {sub && <span className="fx-meta-track fx-library-sub" title={sub}>{sub}</span>}
+          </div>
+          {/* Same glyph + chevron as the rows' source picker, flush with it. */}
+          <button
+            ref={browseRef}
+            type="button"
+            className={`fx-source-trigger fx-library-browse-btn${browseOpen ? ' open' : ''}`}
+            aria-label="Browse the library"
+            title="Browse"
+            aria-haspopup="dialog"
+            aria-expanded={browseOpen}
+            onClick={() => setBrowseOpen(o => !o)}
+          >
+            <IconMusicSearch size={24} aria-hidden />
+            <IconChevronDownFilled size={24} aria-hidden />
+          </button>
+        </div>
+        {hasQueue && (
+          <div className="fx-group-progress">
+            <div className="fx-group-progress-bar">
+              <span className="fx-time-track">{fmtTime(pos)}</span>
+              <div
+                className="fx-group-progress-track"
+                ref={progressHover.ref}
+                onPointerMove={progressHover.onPointerMove}
+                onPointerLeave={progressHover.onPointerLeave}
+              >
+                <div className="fx-group-progress-hover" />
+                <div className="fx-group-progress-fill" style={{ width: `${pct}%` }} />
+                <div className="fx-group-progress-thumb" style={{ left: `${pct}%` }} />
+                {duration > 0 && (
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={0.1}
+                    value={pct}
+                    className="fx-group-progress-input"
+                    aria-label="Seek"
+                    onChange={(e) => setScrub(parseFloat(e.target.value))}
+                    onPointerUp={commitSeek}
+                    onKeyUp={commitSeek}
+                    onBlur={commitSeek}
+                  />
+                )}
+              </div>
+              <span className="fx-time-track">{duration ? fmtTime(duration) : ''}</span>
+            </div>
+            <div className="fx-group-progress-actions">
+              <button type="button" className="fx-icon-btn" onClick={() => onLibraryControl('prev')} aria-label="Previous">
+                <IconPlayerTrackPrevFilled size={16} stroke={0} />
+              </button>
+              <button type="button" className="fx-icon-btn" onClick={() => onLibraryControl('toggle')} aria-label={isPlaying ? 'Pause' : 'Play'}>
+                {isPlaying
+                  ? <IconPlayerPauseFilled size={18} stroke={0} />
+                  : <IconPlayerPlayFilled size={18} stroke={0} />}
+              </button>
+              <button type="button" className="fx-icon-btn" onClick={() => onLibraryControl('next')} aria-label="Next">
+                <IconPlayerTrackNextFilled size={16} stroke={0} />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      {browseOpen && (
+        <AnchoredPopover anchorRef={browseRef} onClose={closeBrowse} role="dialog" className="fx-library-browse">
+          <LibraryBrowser
+            currentTrackId={track?.id}
+            onPlay={(ids) => { lib.play(clientId, ids); setBrowseOpen(false) }}
+          />
+        </AnchoredPopover>
       )}
     </div>
   )
@@ -1108,8 +1196,11 @@ export default function GroupCard({
   const currentSourceId = sourceIdOf(group, mqtt, homeClientId)
   const isSpotify = currentSourceId === 'spotify'
   const isNoise = currentSourceId === 'noise'
+  const isLibrary = currentSourceId === 'library'
   const hasTrack = isSpotify && !!track && (track.title || track.artist)
-  const hasMedia = hasTrack || isNoise
+  const hasMedia = hasTrack || isNoise || isLibrary
+  const library = useLibrary()
+  const libraryTrack = isLibrary ? libraryTrackOf(mqtt, homeClientId, library) : null
   const isAirplayHome = mqtt.modes[homeClient?.id] === 'airplay'
 
   // Extract album-art dominant color and project it onto the card's --art-*
@@ -1117,7 +1208,10 @@ export default function GroupCard({
   // Noise has no cover, so its generated art (lib/noiseArt) stands in.
   const noiseColor = mqtt.noise?.[homeClientId]?.color
   const artColor = useAlbumArtColor(
-    hasTrack ? track?.art_url : isNoise ? noiseArtUrl(noiseColor) : null
+    hasTrack ? track?.art_url
+      : isNoise ? noiseArtUrl(noiseColor)
+      : isLibrary ? artUrl(libraryTrack)
+      : null
   )
   const { effective } = useTheme()
   const tuning = useTuning()
@@ -1166,6 +1260,8 @@ export default function GroupCard({
       playback,
       noise: mqtt.noise?.[homeClientId],
       onNoiseChange: (changes) => mqtt.publishNoise?.(homeClientId, changes),
+      libraryState: mqtt.library?.[homeClientId],
+      onLibraryControl: (action, payload) => mqtt.publishLibraryControl?.(homeClientId, action, payload),
       empty: isEmptyMedia,
       groupName: nameMap[homeClientId] || homeClient?.host?.name || homeClientId,
     }
@@ -1380,7 +1476,9 @@ export default function GroupCard({
                   instead of changing MediaCard's hook order. */}
               {mediaPropsRef.current.sourceId === 'noise'
                 ? <NoiseMediaCard {...mediaPropsRef.current} />
-                : <MediaCard {...mediaPropsRef.current} />}
+                : mediaPropsRef.current.sourceId === 'library'
+                  ? <LibraryMediaCard {...mediaPropsRef.current} />
+                  : <MediaCard {...mediaPropsRef.current} />}
             </div>
           </div>
         )}

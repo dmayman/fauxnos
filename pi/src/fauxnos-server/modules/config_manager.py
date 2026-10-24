@@ -523,20 +523,23 @@ class ConfigManager:
 [server]
 threads = -1
 
+# "::" listens on IPv6 and IPv4 (Linux dual-stack). IPv4-only "0.0.0.0"
+# stranded clients: avahi advertises us on both, and a snapclient that
+# discovers the IPv6 address first gets refused forever (2026-10-24).
 [http]
 enabled = true
-bind_to_address = 0.0.0.0
+bind_to_address = ::
 port = 1780
 doc_root = /usr/share/snapserver/snapweb
 host = <hostname>
 
 [tcp]
 enabled = true
-bind_to_address = 0.0.0.0
+bind_to_address = ::
 port = {snapcast_config['port']}
 
 [stream]
-bind_to_address = 0.0.0.0
+bind_to_address = ::
 port = 1704
 
 # Generated sources for Fauxnos clients

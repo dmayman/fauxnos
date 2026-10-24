@@ -122,6 +122,8 @@ install_system_dependencies() {
     # port-80→8080 redirect that makes `http://fauxnos.local/` work without a
     # port suffix. Both packages ship on default Debian images but listing them
     # explicitly avoids silent breakage if a future image trims its baseline.
+    # `python3-mutagen` reads the Library's tags and cover art
+    # (modules/library.py).
     # `caps` provides /usr/lib/ladspa/caps.so (Eq10X2) for the end-of-chain
     # 10-band graphic EQ that default.pa's module-ladspa-sink loads. fauxnos000
     # is a first-class audio endpoint and uses the same EQ chain as clients.
@@ -150,7 +152,8 @@ install_system_dependencies() {
         pulseaudio \
         pulseaudio-utils \
         caps \
-        iw
+        iw \
+        python3-mutagen
 
     # Install snapserver — check if apt version is recent enough
     local apt_snap_ver
@@ -172,8 +175,43 @@ install_system_dependencies() {
     #    not propagate to fauxnos"
     # appears in fauxnos-client logs at startup.
     pip3 install --user flask flask-cors requests websockets websocket-client paho-mqtt paramiko --break-system-packages
+    # yt-dlp: the Library's YouTube import (modules/library.py). From pip,
+    # not apt, because YouTube changes often and apt's copy falls behind;
+    # -U keeps it current on every install. [default] includes yt-dlp-ejs,
+    # the scripts it runs to answer YouTube's JavaScript challenge.
+    pip3 install --user -U "yt-dlp[default]" --break-system-packages
+    _install_deno
 
     log_success "System dependencies installed"
+}
+
+# Deno: the JavaScript runtime yt-dlp needs for most YouTube videos (they
+# come back "not available" without one). A single binary in ~/.deno/bin, no
+# sudo; library.py points yt-dlp at it, since the service's PATH lacks it.
+_install_deno() {
+    local deno="$HOME/.deno/bin/deno"
+    if [ -x "$deno" ]; then
+        log "Updating Deno..."
+        "$deno" upgrade >/dev/null 2>&1 || log_warning "Deno upgrade failed; keeping $("$deno" --version | head -1)"
+        return
+    fi
+    local target
+    case "$(uname -m)" in
+        aarch64) target="aarch64-unknown-linux-gnu" ;;
+        x86_64)  target="x86_64-unknown-linux-gnu" ;;
+        *) log_warning "No Deno build for $(uname -m); YouTube import will fail for most videos"; return ;;
+    esac
+    log "Installing Deno (for the Library's YouTube import)..."
+    local tmp
+    tmp=$(mktemp -d)
+    if curl -fsSL -o "$tmp/deno.zip" "https://github.com/denoland/deno/releases/latest/download/deno-$target.zip"; then
+        mkdir -p "$HOME/.deno/bin"
+        python3 -m zipfile -e "$tmp/deno.zip" "$HOME/.deno/bin/" && chmod +x "$deno"
+        log_success "Deno installed: $("$deno" --version | head -1)"
+    else
+        log_warning "Couldn't download Deno; YouTube import will fail for most videos"
+    fi
+    rm -rf "$tmp"
 }
 
 _install_snapserver_from_github() {

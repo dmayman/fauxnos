@@ -18,6 +18,9 @@ Topic schema:
                                       paths under the server's library
                                       folder, or full URLs.
     set/clients/<deviceId>/library/stop  payload: (ignored)
+    set/clients/<deviceId>/library/{toggle,next,prev}  payload: (ignored)
+                                      transport for the Library player
+    set/clients/<deviceId>/library/seek  payload: "104000" (ms)
     set/clients/<deviceId>/eq         payload: {"enabled": true,
                                                 "bands": {"125": 6.0, ...}}
     set/clients/<deviceId>/noise      payload: {"on": true, "color": "pink",
@@ -32,6 +35,9 @@ Topic schema:
     status/clients/<deviceId>/eq      payload: {"enabled": bool,
                                                 "bands": {hz_str: gain_db}}
     status/clients/<deviceId>/noise   payload: {"on", "color", "low_cut", "high_cut"}
+    status/clients/<deviceId>/library payload: {"state", "path", "file",
+                                      "elapsed_ms", "duration_ms", ...}
+                                      what the Library player is doing
 
   Discovery:
     get/clients/<deviceId>/volume     → client publishes volume
@@ -81,6 +87,8 @@ class MQTTClient:
                  evc_mirror_callback: Optional[Callable[[int], None]] = None,
                  library_play_callback: Optional[Callable[[List[str], bool, int], bool]] = None,
                  library_stop_callback: Optional[Callable[[], bool]] = None,
+                 library_control_callback: Optional[Callable[[str], bool]] = None,
+                 library_seek_callback: Optional[Callable[[int], bool]] = None,
                  noise_callback: Optional[Callable[[Dict], bool]] = None,
                  noise_getter: Optional[Callable[[], Dict]] = None,
                  broker_host: Optional[str] = None,
@@ -113,6 +121,10 @@ class MQTTClient:
                 the local MPD and switch to the library source. Wired to
                 FauxnosClient._library_play.
             library_stop_callback: () → bool. Stop local MPD playback.
+            library_control_callback: (action) → bool. Library transport:
+                toggle, next or prev. Wired to LibraryPlayer.control.
+            library_seek_callback: (position_ms) → bool. Wired to
+                LibraryPlayer.seek.
             noise_callback: (changes) → bool. Merge + apply noise settings.
                 Wired to NoiseSettings.set.
             noise_getter: () → {"color","low_cut","high_cut"}. Wired to
@@ -147,6 +159,9 @@ class MQTTClient:
         self.evc_mirror_callback = evc_mirror_callback
         self.library_play_callback = library_play_callback
         self.library_stop_callback = library_stop_callback
+        self.library_control_callback = library_control_callback
+        self.library_seek_callback = library_seek_callback
+        self._library_state = None
         self.noise_callback = noise_callback
         self.noise_getter = noise_getter
 
@@ -264,6 +279,7 @@ class MQTTClient:
             self.publish_ir_state()
             self.publish_eq_state()
             self.publish_noise_state()
+            self.publish_library_state()
             return
 
         # Parse topic: {command_type}/clients/{device_id}/{action}[/{sub_action}[/{cmd_id}]]
@@ -457,6 +473,25 @@ class MQTTClient:
                     logger.info(f"MQTT library/play: {len(items)} item(s), loop={loop}, fade={fade_ms}")
                     if self.library_play_callback([str(i) for i in items], loop, fade_ms):
                         self._publish_new_mode(LIBRARY_SOURCE_ID)
+
+                elif action == "library" and sub_action in ("toggle", "next", "prev"):
+                    if self.library_control_callback is None:
+                        logger.warning(f"MQTT library/{sub_action} but no callback wired")
+                    else:
+                        logger.info(f"MQTT library/{sub_action}")
+                        self.library_control_callback(sub_action)
+
+                elif action == "library" and sub_action == "seek":
+                    if self.library_seek_callback is None:
+                        logger.warning("MQTT library/seek but no callback wired")
+                    else:
+                        try:
+                            position_ms = int(float(payload))
+                        except ValueError:
+                            logger.error(f"MQTT library/seek: bad position {payload!r}")
+                            return
+                        logger.info(f"MQTT library/seek {position_ms} ms")
+                        self.library_seek_callback(position_ms)
 
                 elif action == "library" and sub_action == "stop":
                     if self.library_stop_callback is None:
@@ -726,6 +761,19 @@ class MQTTClient:
             return
         self.client.publish(
             f"status/clients/{self.device_id}/noise", json.dumps(state), retain=True
+        )
+
+    def publish_library_state(self, state: Optional[Dict] = None):
+        """Publish status/clients/<id>/library — retained. Called by the
+        LibraryPlayer watcher on each change (with `state`), and on a UI's
+        status request (without, to republish the last one)."""
+        if state is not None:
+            self._library_state = state
+        if not self.connected or self._library_state is None:
+            return
+        self.client.publish(
+            f"status/clients/{self.device_id}/library",
+            json.dumps(self._library_state), retain=True,
         )
 
     def _collect_ir_state(self) -> dict:
