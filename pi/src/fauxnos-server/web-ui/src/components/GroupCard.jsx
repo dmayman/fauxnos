@@ -16,7 +16,7 @@ import {
   IconCheckFilled,
   IconChevronDown,
   IconAdjustmentsHorizontal,
-  IconPlaylist,
+  IconMusicSearch,
   IconPower,
 } from '@tabler/icons-react'
 
@@ -817,7 +817,7 @@ function NoiseMediaCard({ noise, onNoiseChange }) {
  * tint and page backdrop like a Spotify cover. The browse button on the
  * right (where Noise has power) opens the library (LibraryBrowser) to play
  * something else in this room. The title and art
- * dim while nothing is playing.
+ * dim only while nothing is loaded (not while paused).
  * ────────────────────────────────────────────────────────────────────────── */
 function LibraryMediaCard({ clientId, libraryState, onLibraryControl }) {
   const lib = useLibrary()
@@ -843,7 +843,7 @@ function LibraryMediaCard({ clientId, libraryState, onLibraryControl }) {
   const art = artUrl(track)
 
   return (
-    <div className={`fx-group-media-card fx-library-card${isPlaying ? '' : ' is-idle'}`}>
+    <div className={`fx-group-media-card fx-library-card${hasQueue ? '' : ' is-idle'}`}>
       <div className="fx-group-media-art">
         {art
           ? <img src={art} alt="" loading="lazy" draggable={false} />
@@ -866,7 +866,7 @@ function LibraryMediaCard({ clientId, libraryState, onLibraryControl }) {
             aria-expanded={browseOpen}
             onClick={() => setBrowseOpen(o => !o)}
           >
-            <IconPlaylist size={24} aria-hidden />
+            <IconMusicSearch size={24} aria-hidden />
             <IconChevronDownFilled size={24} aria-hidden />
           </button>
         </div>
