@@ -293,7 +293,8 @@ struct GroupCard: View {
             if let home = homeId { store.setNoise(["on": !noiseOn], clientId: home) }
         } label: {
             SourceIcon(icon: "outline:power", sourceId: nil, size: 20)
-                .foregroundStyle(noiseOn ? FX.text : FX.text2)
+                .foregroundStyle(noiseOn ? palette.accent : FX.text2)
+                .brightness(noiseOn ? -0.28 : 0)      // a deeper shade of the art tint
                 .frame(width: 40, height: 40)
                 .background(Circle().fill(noiseOn ? palette.accent.opacity(0.18) : .clear))
                 .contentShape(Circle())
