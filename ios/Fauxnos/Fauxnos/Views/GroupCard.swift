@@ -243,7 +243,7 @@ struct GroupCard: View {
     /// Title (the colour menu) with power on the right, and Tune under it,
     /// which opens the band graph. Title and Tune dim while noise is off.
     private var noiseHeader: some View {
-        VStack(alignment: .leading, spacing: Space.sm) {
+        VStack(alignment: .leading, spacing: Space.xs) {
             HStack(alignment: .center, spacing: Space.sm) {
                 Menu {
                     ForEach(NoiseColor.allCases) { c in
@@ -265,7 +265,8 @@ struct GroupCard: View {
                 .opacity(noiseOn ? 1 : 0.45)
                 .accessibilityLabel("Noise colour: \(noiseColor)")
                 Spacer(minLength: 0)
-                noisePowerButton
+                // Overhangs the title row so its 40pt target doesn't push Tune down.
+                noisePowerButton.padding(.vertical, -8)
             }
             Button {
                 Haptics.tap()
@@ -292,7 +293,7 @@ struct GroupCard: View {
             if let home = homeId { store.setNoise(["on": !noiseOn], clientId: home) }
         } label: {
             SourceIcon(icon: "outline:power", sourceId: nil, size: 20)
-                .foregroundStyle(noiseOn ? palette.accent : FX.text2)
+                .foregroundStyle(noiseOn ? FX.text : FX.text2)
                 .frame(width: 40, height: 40)
                 .background(Circle().fill(noiseOn ? palette.accent.opacity(0.18) : .clear))
                 .contentShape(Circle())
