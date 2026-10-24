@@ -10,6 +10,7 @@ import json
 import logging
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -19,8 +20,9 @@ from modules import logger as logger_module
 from modules.eq_controller import EqController
 from modules.go_librespot import GoLibrespotController
 from modules.library_player import LibraryPlayer
+from modules.noise_settings import NoiseSettings
 from modules.source_manager import SourceManager
-from modules.mqtt_client import MQTTClient, LIBRARY_SOURCE_ID
+from modules.mqtt_client import MQTTClient, LIBRARY_SOURCE_ID, NOISE_SOURCE_ID
 from modules.ir_listener import IRListener, COMMAND_IDS as IR_COMMAND_IDS
 from modules.gpio_buttons import GPIOButtonHandler
 
@@ -89,6 +91,11 @@ class FauxnosClient:
         self.library_player = None
         if self.config_manager.get_source(LIBRARY_SOURCE_ID) is not None:
             self.library_player = LibraryPlayer(server_host=self.config_manager.server_host)
+
+        # Noise source: colour + cuts in ~/.config/fauxnos/noise.env.
+        self.noise_settings = None
+        if self.config_manager.get_source(NOISE_SOURCE_ID) is not None:
+            self.noise_settings = NoiseSettings()
 
         # NOTE: AirPlay has NO fauxnos-side volume mirror. shairport-sync
         # owns the volume entirely (iPhone slider drives its software
@@ -160,6 +167,10 @@ class FauxnosClient:
             evc_mirror_callback=self.source_manager.apply_external_mirror,
             library_play_callback=self._library_play if self.library_player else None,
             library_stop_callback=self.library_player.stop if self.library_player else None,
+            library_control_callback=self.library_player.control if self.library_player else None,
+            library_seek_callback=self.library_player.seek if self.library_player else None,
+            noise_callback=self.noise_settings.set if self.noise_settings else None,
+            noise_getter=self.noise_settings.get if self.noise_settings else None,
         )
 
         # Flag for graceful shutdown
@@ -528,6 +539,14 @@ class FauxnosClient:
         # daemon isn't reachable yet (reconnect loop handles it).
         if self.go_librespot:
             self.go_librespot.start()
+
+        # Report what the Library player is doing, for the apps' now-playing.
+        if self.library_player:
+            threading.Thread(
+                target=self.library_player.watch,
+                args=(self.mqtt_client.publish_library_state,),
+                name="library-watch", daemon=True,
+            ).start()
 
         # Publish initial state
         current = self.source_manager.get_current_source()

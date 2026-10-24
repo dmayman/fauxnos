@@ -694,6 +694,7 @@ download_client_code() {
         "modules/gpio_buttons.py"
         "modules/ir_listener.py"
         "modules/library_player.py"
+        "modules/noise_settings.py"
         "modules/logger.py"
         "modules/mqtt_client.py"
         "modules/pulse_controller.py"

@@ -1,11 +1,15 @@
-import { forwardRef } from 'react'
+import { forwardRef, useCallback, useRef, useState } from 'react'
 import { ChevronDown, ArrowDownToLine, GitBranch } from 'lucide-react'
-import { IconSunFilled, IconMoonFilled, IconDeviceDesktopFilled } from '@tabler/icons-react'
+import {
+  IconSunFilled, IconMoonFilled, IconDeviceDesktopFilled, IconPlaylist, IconCheckFilled,
+} from '@tabler/icons-react'
 import { useTheme } from '../hooks/useTheme'
+import AnchoredPopover from './AnchoredPopover'
 
 /**
- * Page header — fauxnos wordmark on the left, two update pills + devices
- * pill on the right.
+ * Page header — fauxnos wordmark on the left; the Library button and the
+ * devices pill on the right. (Update pills and the theme menu sit in the
+ * bottom-left version tracker.)
  *
  * Phase F1 (2026-05-13): server and client updates are independent
  * concerns. Two pills surface them separately, each visible only when
@@ -27,7 +31,7 @@ import { useTheme } from '../hooks/useTheme'
  * per-device update button) lives in DevicePanel.
  */
 const Header = forwardRef(function Header(
-  { status, mqttConnected, onToggleDevices, popoverOpen },
+  { status, mqttConnected, onToggleDevices, popoverOpen, onToggleLibrary, libraryOpen },
   ref,
 ) {
   const ok = status?.status === 'running'
@@ -39,7 +43,15 @@ const Header = forwardRef(function Header(
     <header className="fx-header">
       <h1 className="fx-header-wordmark">fauxnos</h1>
       <div className="fx-row" style={{ gap: 'var(--fx-2)', alignItems: 'center' }}>
-        <ThemeToggle />
+        <button
+          type="button"
+          className={`fx-btn ghost fx-header-pill${libraryOpen ? ' active' : ''}`}
+          onClick={onToggleLibrary}
+          aria-expanded={libraryOpen}
+        >
+          <IconPlaylist size={18} aria-hidden />
+          <span>Library</span>
+        </button>
         <button
           ref={ref}
           type="button"
@@ -194,32 +206,55 @@ function buildClientsTooltip(clientsNeedingUpdate, total, repoNeedsPull) {
   return lines.join('\n')
 }
 
-/* Three-state segmented toggle: system / light / dark. Sits in the header
-   next to the devices pill. Persists via useTheme. */
-function ThemeToggle() {
+/* Appearance: one icon button showing the current choice, with a menu of
+   light / follow system / dark. Lives in the bottom-left version tracker.
+   Persists via useTheme. */
+export function ThemeMenu() {
   const { theme, setTheme } = useTheme()
+  const [open, setOpen] = useState(false)
+  const btnRef = useRef(null)
+  const close = useCallback(() => setOpen(false), [])
   const options = [
     { id: 'light',  Icon: IconSunFilled,           label: 'Light' },
     { id: 'system', Icon: IconDeviceDesktopFilled, label: 'Follow system' },
     { id: 'dark',   Icon: IconMoonFilled,          label: 'Dark' },
   ]
+  const current = options.find(o => o.id === theme) || options[1]
   return (
-    <div className="fx-theme-toggle" role="radiogroup" aria-label="Theme">
-      {options.map(o => (
-        <button
-          key={o.id}
-          type="button"
-          role="radio"
-          aria-checked={theme === o.id}
-          className={theme === o.id ? 'active' : ''}
-          title={o.label}
-          aria-label={o.label}
-          onClick={() => setTheme(o.id)}
-        >
-          <o.Icon size={14} stroke={2} />
-        </button>
-      ))}
-    </div>
+    <>
+      <button
+        ref={btnRef}
+        type="button"
+        className="fx-icon-btn fx-theme-menu-btn"
+        aria-label={`Appearance: ${current.label}`}
+        title="Appearance"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+      >
+        <current.Icon size={16} />
+      </button>
+      {open && (
+        <AnchoredPopover anchorRef={btnRef} onClose={close} role="menu">
+          {options.map(o => (
+            <button
+              key={o.id}
+              type="button"
+              role="menuitemradio"
+              aria-checked={theme === o.id}
+              className={`fx-source-popover-row${theme === o.id ? ' active' : ''}`}
+              onClick={() => { setTheme(o.id); setOpen(false) }}
+            >
+              <span className="fx-source-popover-row-icon"><o.Icon size={20} aria-hidden /></span>
+              <span className="fx-source-popover-row-label">{o.label}</span>
+              {theme === o.id && (
+                <span className="fx-source-popover-row-check" aria-hidden><IconCheckFilled size={24} /></span>
+              )}
+            </button>
+          ))}
+        </AnchoredPopover>
+      )}
+    </>
   )
 }
 
