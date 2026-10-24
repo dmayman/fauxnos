@@ -13,6 +13,11 @@ import {
   IconPlayerPauseFilled,
   IconPlayerTrackPrevFilled,
   IconPlayerTrackNextFilled,
+  IconCheckFilled,
+  IconChevronDown,
+  IconAdjustmentsHorizontal,
+  IconMusicSearch,
+  IconPower,
 } from '@tabler/icons-react'
 
 /* Drag-grip glyph — two short vertical bars. This is the original handle the
@@ -31,12 +36,16 @@ import VolumeSlider, { VolumeIcon } from './VolumeSlider'
 import SourcePopover from './SourcePopover'
 import CustomIcon from './CustomIcon'
 import AddDevicesPopover from './AddDevicesPopover'
+import AnchoredPopover from './AnchoredPopover'
+import LibraryBrowser from './LibraryBrowser'
 import useAlbumArtColor from '../hooks/useAlbumArtColor'
 import { useTuning } from '../hooks/useTuning'
 import { useTheme } from '../hooks/useTheme'
 import { useSliderHover } from '../hooks/useSliderHover'
 import { buildArtTokens } from '../lib/artTokens'
-import { homeIdOf, sourceIdOf } from '../lib/nowPlaying'
+import { homeIdOf, sourceIdOf, libraryTrackOf } from '../lib/nowPlaying'
+import { noiseArtUrl } from '../lib/noiseArt'
+import { useLibrary, artUrl } from '../hooks/useLibrary'
 import { sendPlayback } from '../api'
 
 /* Volume glyph ramps with the level: mute (X) is reserved for v === 0
@@ -115,7 +124,7 @@ function cleanupDeviceDragGhost() {
    only interactive child (the chevron button) opts out via the `button` rule. */
 const DRAG_OPT_OUT =
   '.fx-group-row-volume, .fx-source-trigger, ' +
-  '.fx-group-progress, button, input, a, [role="slider"]'
+  '.fx-group-progress, .fx-noise-controls, button, input, a, [role="slider"]'
 
 /* Arm/disarm the native drag on the pointerdown that precedes it. Setting
    `draggable` synchronously here — before the browser's mousemove drag
@@ -557,6 +566,380 @@ function MediaCard({ clientId, sourceId, source, track, playback, empty = false,
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
+ * NoiseMediaCard — the media card while a room plays Noise. Generated art
+ * (lib/noiseArt) stands in for a cover, so the card tint and page backdrop
+ * work as they do for Spotify. The title opens the colour menu; under it,
+ * Tune opens the band graph (low/high cuts) in a popover. Power sits on the
+ * right, in line with the rows' source icons. Settings live on the device
+ * (NoiseSettings, status/clients/<id>/noise). Every change restarts the
+ * generator for about a second, so the graph sends on release.
+ * ────────────────────────────────────────────────────────────────────────── */
+const NOISE_COLORS = ['white', 'pink', 'brown']
+const capitalize = (s) => s[0].toUpperCase() + s.slice(1)
+
+// Band graph: log frequency axis, 20 Hz–20 kHz. Each cut has its own range;
+// dragging past the end of it turns that cut off.
+const F_MIN = 20, F_MAX = 20000
+const LOW_CUT = { min: 20, max: 2000 }
+const HIGH_CUT = { min: 200, max: 20000 }
+const G = { w: 320, h: 88, padX: 8, top: 10, floorDb: 30 }
+const fToX = (f) => G.padX + (Math.log10(f / F_MIN) / 3) * (G.w - 2 * G.padX)
+const xToF = (x) => F_MIN * Math.pow(10, (3 * (x - G.padX)) / (G.w - 2 * G.padX))
+// 2-pole Butterworth magnitude in dB — the same filters sox applies.
+const responseDb = (f, low, high) => {
+  let db = 0
+  if (low) db += 10 * Math.log10(Math.pow(f / low, 4) / (1 + Math.pow(f / low, 4)))
+  if (high) db -= 10 * Math.log10(1 + Math.pow(f / high, 4))
+  return db
+}
+const dbToY = (db) => G.top + (Math.min(G.floorDb, -db) / G.floorDb) * (G.h - G.top)
+const roundHz = (hz) => {
+  const step = hz < 100 ? 5 : hz < 1000 ? 10 : 100
+  return Math.round(hz / step) * step
+}
+const fmtHz = (hz) => (!hz ? 'Off' : hz >= 1000 ? `${(hz / 1000).toFixed(1)} kHz` : `${hz} Hz`)
+
+// Clamp a dragged cut into its range, keep the band at least ~half an
+// octave wide, and turn the cut off when dragged past the outer end.
+function clampCut(which, hz, other) {
+  if (which === 'low') {
+    if (hz < LOW_CUT.min * 1.1) return 0
+    const max = Math.min(LOW_CUT.max, other ? other / 1.5 : Infinity)
+    return roundHz(Math.min(hz, max))
+  }
+  if (hz > HIGH_CUT.max / 1.1) return 0
+  const min = Math.max(HIGH_CUT.min, other ? other * 1.5 : 0)
+  return roundHz(Math.max(hz, min))
+}
+
+function NoiseBandGraph({ lowCut, highCut, onCommit }) {
+  const svgRef = useRef(null)
+  // Draft values while dragging/keying; the device only hears the commit.
+  const [draft, setDraft] = useState(null)
+  const dragRef = useRef(null)
+  const low = draft ? draft.low : lowCut
+  const high = draft ? draft.high : highCut
+
+  const points = []
+  for (let i = 0; i <= 96; i++) {
+    const f = F_MIN * Math.pow(10, (3 * i) / 96)
+    points.push(`${fToX(f).toFixed(1)},${dbToY(responseDb(f, low, high)).toFixed(1)}`)
+  }
+  const line = `M${points.join(' L')}`
+  const area = `${line} L${fToX(F_MAX)},${G.h} L${fToX(F_MIN)},${G.h} Z`
+  const handleX = { low: fToX(low || F_MIN), high: fToX(high || F_MAX) }
+  const handleY = { low: dbToY(low ? -3 : 0), high: dbToY(high ? -3 : 0) }
+
+  const toSvgX = (clientX) => {
+    const r = svgRef.current.getBoundingClientRect()
+    return ((clientX - r.left) / r.width) * G.w
+  }
+  const update = (which, hz, base) => {
+    const next = { ...base }
+    next[which] = clampCut(which, hz, which === 'low' ? base.high : base.low)
+    setDraft(next)
+    return next
+  }
+  const commit = (next) => {
+    setDraft(null)
+    const changes = {}
+    if (next.low !== (lowCut || 0)) changes.low_cut = next.low
+    if (next.high !== (highCut || 0)) changes.high_cut = next.high
+    if (Object.keys(changes).length) onCommit(changes)
+  }
+
+  const onPointerDown = (e) => {
+    const x = toSvgX(e.clientX)
+    // Grab whichever edge is nearer; the band middle splits the two.
+    const which = Math.abs(x - handleX.low) <= Math.abs(x - handleX.high) ? 'low' : 'high'
+    dragRef.current = { which, base: { low: lowCut || 0, high: highCut || 0 } }
+    e.currentTarget.setPointerCapture(e.pointerId)
+    dragRef.current.last = update(which, xToF(x), dragRef.current.base)
+  }
+  const onPointerMove = (e) => {
+    const d = dragRef.current
+    if (!d) return
+    d.last = update(d.which, xToF(toSvgX(e.clientX)), d.base)
+  }
+  const onPointerUp = () => {
+    const d = dragRef.current
+    dragRef.current = null
+    if (d?.last) commit(d.last)
+  }
+  // Arrow keys move a focused edge by a sixth of an octave.
+  const onKeyDown = (which) => (e) => {
+    const dir = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? 1
+      : e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -1 : 0
+    if (!dir) return
+    e.preventDefault()
+    const base = draft || { low: lowCut || 0, high: highCut || 0 }
+    const cur = base[which] || (which === 'low' ? LOW_CUT.min : HIGH_CUT.max)
+    update(which, cur * Math.pow(2, dir / 6), base)
+  }
+  const onKeyUp = () => draft && commit(draft)
+
+  return (
+    <div className="fx-noise-controls">
+      <svg
+        ref={svgRef}
+        className="fx-noise-graph"
+        viewBox={`0 0 ${G.w} ${G.h}`}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+      >
+        {[100, 1000, 10000].map(f => (
+          <line key={f} className="fx-noise-graph-grid" x1={fToX(f)} x2={fToX(f)} y1={G.top} y2={G.h} />
+        ))}
+        <path className="fx-noise-graph-area" d={area} />
+        <path className="fx-noise-graph-line" d={line} />
+        {['low', 'high'].map(which => (
+          <circle
+            key={which}
+            className="fx-noise-graph-handle"
+            cx={handleX[which]}
+            cy={handleY[which]}
+            r={5}
+            tabIndex={0}
+            role="slider"
+            aria-label={which === 'low' ? 'Low cut' : 'High cut'}
+            aria-valuetext={fmtHz(which === 'low' ? low : high)}
+            onKeyDown={onKeyDown(which)}
+            onKeyUp={onKeyUp}
+          />
+        ))}
+      </svg>
+      <div className="fx-noise-graph-labels">
+        <span>Low cut {fmtHz(low)}</span>
+        <span>High cut {fmtHz(high)}</span>
+      </div>
+    </div>
+  )
+}
+
+function NoiseMediaCard({ noise, onNoiseChange }) {
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [tuneOpen, setTuneOpen] = useState(false)
+  const titleRef = useRef(null)
+  const tuneRef = useRef(null)
+  const closeMenu = useCallback(() => setMenuOpen(false), [])
+  const closeTune = useCallback(() => setTuneOpen(false), [])
+  const color = noise?.color || 'brown'
+  const isOn = noise?.on !== false
+  const label = `${capitalize(color)} noise`
+  return (
+    <div className={`fx-group-media-card fx-noise-card${isOn ? '' : ' is-off'}`}>
+      <div className="fx-group-media-art">
+        <img src={noiseArtUrl(color)} alt="" draggable={false} />
+      </div>
+      <div className="fx-group-media-body">
+        <div className="fx-group-media-text fx-noise-head">
+          <div className="fx-noise-title">
+            <button
+              ref={titleRef}
+              type="button"
+              className="fx-noise-title-btn"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              onClick={() => setMenuOpen(o => !o)}
+            >
+              <span className="fx-title-track" title={label}>{label}</span>
+              <IconChevronDown className="fx-noise-title-chevron" size={22} aria-hidden />
+            </button>
+            <div className="fx-noise-status">
+              <button
+                ref={tuneRef}
+                type="button"
+                className="fx-meta-track fx-noise-text-btn"
+                aria-haspopup="dialog"
+                aria-expanded={tuneOpen}
+                onClick={() => setTuneOpen(o => !o)}
+              >
+                <IconAdjustmentsHorizontal size={18} aria-hidden />
+                Tune
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            className={`fx-icon-btn fx-noise-power${isOn ? ' is-on' : ''}`}
+            aria-label={isOn ? 'Turn noise off' : 'Turn noise on'}
+            aria-pressed={isOn}
+            title={isOn ? 'Turn off' : 'Turn on'}
+            onClick={() => onNoiseChange({ on: !isOn })}
+          >
+            <IconPower size={20} />
+          </button>
+        </div>
+      </div>
+      {menuOpen && (
+        <AnchoredPopover anchorRef={titleRef} onClose={closeMenu} role="menu">
+          {NOISE_COLORS.map(c => (
+            <button
+              key={c}
+              type="button"
+              role="menuitemradio"
+              aria-checked={color === c}
+              className={`fx-source-popover-row${color === c ? ' active' : ''}`}
+              onClick={() => { setMenuOpen(false); if (c !== color) onNoiseChange({ color: c }) }}
+            >
+              <span className="fx-source-popover-row-icon">
+                <img className="fx-noise-swatch" src={noiseArtUrl(c)} alt="" />
+              </span>
+              <span className="fx-source-popover-row-label">{capitalize(c)}</span>
+              {color === c && (
+                <span className="fx-source-popover-row-check" aria-hidden>
+                  <IconCheckFilled size={24} />
+                </span>
+              )}
+            </button>
+          ))}
+        </AnchoredPopover>
+      )}
+      {tuneOpen && (
+        <AnchoredPopover anchorRef={tuneRef} onClose={closeTune} role="dialog" className="fx-noise-tune-popover">
+          <NoiseBandGraph
+            lowCut={noise?.low_cut || 0}
+            highCut={noise?.high_cut || 0}
+            onCommit={onNoiseChange}
+          />
+        </AnchoredPopover>
+      )}
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * LibraryMediaCard — the media card while a room plays the Library. The
+ * room's MPD reports what it's on (status/clients/<id>/library); the server's
+ * library index supplies the title, artist and cover, which drives the card
+ * tint and page backdrop like a Spotify cover. The browse button on the
+ * right (where Noise has power) opens the library (LibraryBrowser) to play
+ * something else in this room. The title and art
+ * dim only while nothing is loaded (not while paused).
+ * ────────────────────────────────────────────────────────────────────────── */
+function LibraryMediaCard({ clientId, libraryState, onLibraryControl }) {
+  const lib = useLibrary()
+  const [browseOpen, setBrowseOpen] = useState(false)
+  const browseRef = useRef(null)
+  const closeBrowse = useCallback(() => setBrowseOpen(false), [])
+  const track = libraryState?.path ? lib?.byPath.get(libraryState.path) : null
+  const isPlaying = libraryState?.state === 'play'
+  const hasQueue = !!libraryState?.file
+  const fallbackTitle = libraryState?.file
+    ? decodeURIComponent(libraryState.file.split('/').pop() || '').replace(/\.[^.]+$/, '')
+    : 'Nothing playing'
+  const title = track?.title || fallbackTitle
+  const sub = track ? [track.artist, track.album].filter(Boolean).join(' · ') : ''
+  const duration = libraryState?.duration_ms || track?.duration_ms || 0
+  const livePos = useInterpolatedPosition(libraryState ? {
+    is_playing: isPlaying,
+    position_ms: libraryState.elapsed_ms || 0,
+    updated_at: libraryState.updated_at,
+  } : null)
+  // While dragging the scrubber, show the drag (scrub, 0-100); seek on release.
+  const [scrub, setScrub] = useState(null)
+  const progressHover = useSliderHover()
+  const pos = scrub != null && duration
+    ? (scrub / 100) * duration
+    : Math.max(0, Math.min(livePos, duration || livePos))
+  const pct = duration > 0 ? (pos / duration) * 100 : 0
+  const commitSeek = () => {
+    if (scrub == null || !duration) return
+    onLibraryControl('seek', Math.round((scrub / 100) * duration))
+    setScrub(null)
+  }
+  const art = artUrl(track)
+
+  return (
+    <div className={`fx-group-media-card fx-library-card${hasQueue ? '' : ' is-idle'}`}>
+      <div className="fx-group-media-art">
+        {art
+          ? <img src={art} alt="" loading="lazy" draggable={false} />
+          : <SourceIcon sourceId="library" icon="outline:playlist" size={56} />}
+      </div>
+      <div className="fx-group-media-body">
+        <div className="fx-group-media-text fx-noise-head">
+          <div className="fx-noise-title">
+            <span className="fx-title-track" title={title}>{title}</span>
+            {sub && <span className="fx-meta-track fx-library-sub" title={sub}>{sub}</span>}
+          </div>
+          {/* Same glyph + chevron as the rows' source picker, flush with it. */}
+          <button
+            ref={browseRef}
+            type="button"
+            className={`fx-source-trigger fx-library-browse-btn${browseOpen ? ' open' : ''}`}
+            aria-label="Browse the library"
+            title="Browse"
+            aria-haspopup="dialog"
+            aria-expanded={browseOpen}
+            onClick={() => setBrowseOpen(o => !o)}
+          >
+            <IconMusicSearch size={24} aria-hidden />
+            <IconChevronDownFilled size={24} aria-hidden />
+          </button>
+        </div>
+        {hasQueue && (
+          <div className="fx-group-progress">
+            <div className="fx-group-progress-bar">
+              <span className="fx-time-track">{fmtTime(pos)}</span>
+              <div
+                className="fx-group-progress-track"
+                ref={progressHover.ref}
+                onPointerMove={progressHover.onPointerMove}
+                onPointerLeave={progressHover.onPointerLeave}
+              >
+                <div className="fx-group-progress-hover" />
+                <div className="fx-group-progress-fill" style={{ width: `${pct}%` }} />
+                <div className="fx-group-progress-thumb" style={{ left: `${pct}%` }} />
+                {duration > 0 && (
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={0.1}
+                    value={pct}
+                    className="fx-group-progress-input"
+                    aria-label="Seek"
+                    onChange={(e) => setScrub(parseFloat(e.target.value))}
+                    onPointerUp={commitSeek}
+                    onKeyUp={commitSeek}
+                    onBlur={commitSeek}
+                  />
+                )}
+              </div>
+              <span className="fx-time-track">{duration ? fmtTime(duration) : ''}</span>
+            </div>
+            <div className="fx-group-progress-actions">
+              <button type="button" className="fx-icon-btn" onClick={() => onLibraryControl('prev')} aria-label="Previous">
+                <IconPlayerTrackPrevFilled size={16} stroke={0} />
+              </button>
+              <button type="button" className="fx-icon-btn" onClick={() => onLibraryControl('toggle')} aria-label={isPlaying ? 'Pause' : 'Play'}>
+                {isPlaying
+                  ? <IconPlayerPauseFilled size={18} stroke={0} />
+                  : <IconPlayerPlayFilled size={18} stroke={0} />}
+              </button>
+              <button type="button" className="fx-icon-btn" onClick={() => onLibraryControl('next')} aria-label="Next">
+                <IconPlayerTrackNextFilled size={16} stroke={0} />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+      {browseOpen && (
+        <AnchoredPopover anchorRef={browseRef} onClose={closeBrowse} role="dialog" className="fx-library-browse">
+          <LibraryBrowser
+            currentTrackId={track?.id}
+            onPlay={(ids) => { lib.play(clientId, ids); setBrowseOpen(false) }}
+          />
+        </AnchoredPopover>
+      )}
+    </div>
+  )
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
  * AllRow — accent-colored "All" entry that controls every device in a
  * multi-room group. Display value = average of member volumes; dragging
  * preserves each member's offset from the average (ratio-preserving), so
@@ -779,7 +1162,7 @@ export default function GroupCard({
   const handleCardPress = (e) => {
     if (!window.matchMedia('(max-width: 600px)').matches) return
     if (e.target.closest(
-      'button, input, a, [role="slider"], .fx-group-row-volume, .fx-group-progress, .fx-source-trigger, .fx-edit-group-btn'
+      'button, input, a, [role="slider"], .fx-group-row-volume, .fx-group-progress, .fx-noise-controls, .fx-source-trigger, .fx-edit-group-btn'
     )) return
     setPressed(true)
     const release = () => {
@@ -808,14 +1191,28 @@ export default function GroupCard({
   // Analog, custom) have no transport, and a stale Spotify track lingers in
   // mqtt.tracks after switching away — so gate the media surface on Spotify
   // mode and let other sources fall back to the plain device-row layout.
+  // Noise is the exception: it has no track, but its media card carries the
+  // noise colour + cut controls (NoiseMediaCard).
   const currentSourceId = sourceIdOf(group, mqtt, homeClientId)
   const isSpotify = currentSourceId === 'spotify'
-  const hasMedia = isSpotify && !!track && (track.title || track.artist)
+  const isNoise = currentSourceId === 'noise'
+  const isLibrary = currentSourceId === 'library'
+  const hasTrack = isSpotify && !!track && (track.title || track.artist)
+  const hasMedia = hasTrack || isNoise || isLibrary
+  const library = useLibrary()
+  const libraryTrack = isLibrary ? libraryTrackOf(mqtt, homeClientId, library) : null
   const isAirplayHome = mqtt.modes[homeClient?.id] === 'airplay'
 
   // Extract album-art dominant color and project it onto the card's --art-*
   // tokens. Hook is a no-op when art_url is missing or extraction fails.
-  const artColor = useAlbumArtColor(hasMedia ? track?.art_url : null)
+  // Noise has no cover, so its generated art (lib/noiseArt) stands in.
+  const noiseColor = mqtt.noise?.[homeClientId]?.color
+  const artColor = useAlbumArtColor(
+    hasTrack ? track?.art_url
+      : isNoise ? noiseArtUrl(noiseColor)
+      : isLibrary ? artUrl(libraryTrack)
+      : null
+  )
   const { effective } = useTheme()
   const tuning = useTuning()
   const artStyle = artColor ? buildArtTokens(artColor, effective === 'dark', tuning) : undefined
@@ -859,8 +1256,12 @@ export default function GroupCard({
       clientId: homeClientId,
       sourceId: currentSourceId,
       source: (group.sources || []).find(s => s.id === currentSourceId),
-      track,
+      track: isNoise ? null : track,
       playback,
+      noise: mqtt.noise?.[homeClientId],
+      onNoiseChange: (changes) => mqtt.publishNoise?.(homeClientId, changes),
+      libraryState: mqtt.library?.[homeClientId],
+      onLibraryControl: (action, payload) => mqtt.publishLibraryControl?.(homeClientId, action, payload),
       empty: isEmptyMedia,
       groupName: nameMap[homeClientId] || homeClient?.host?.name || homeClientId,
     }
@@ -939,7 +1340,7 @@ export default function GroupCard({
   // gesture. A drag suppresses the trailing click, so a hold-drag never toggles.
   const handleCardClick = (e) => {
     if (e.target.closest(
-      'button, input, a, [role="slider"], .fx-group-row-volume, .fx-group-progress'
+      'button, input, a, [role="slider"], .fx-group-row-volume, .fx-group-progress, .fx-noise-controls'
     )) return
     onToggleExpand?.()
   }
@@ -1070,7 +1471,14 @@ export default function GroupCard({
             style={mediaAppear ? { '--appear-delay': `${appearDelayMs}ms` } : undefined}
           >
             <div className="fx-media-reveal-inner">
-              <MediaCard {...mediaPropsRef.current} />
+              {/* Separate components, not a branch inside MediaCard: a room
+                  switching Spotify → Noise while the card is open remounts
+                  instead of changing MediaCard's hook order. */}
+              {mediaPropsRef.current.sourceId === 'noise'
+                ? <NoiseMediaCard {...mediaPropsRef.current} />
+                : mediaPropsRef.current.sourceId === 'library'
+                  ? <LibraryMediaCard {...mediaPropsRef.current} />
+                  : <MediaCard {...mediaPropsRef.current} />}
             </div>
           </div>
         )}

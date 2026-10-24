@@ -1,0 +1,15 @@
+[Unit]
+Description=Fauxnos library player (MPD → librarysink, streams from the server)
+# pulseaudio must own librarysink before MPD opens its output.
+After=pulseaudio.service network-online.target
+Wants=pulseaudio.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/mkdir -p %h/.local/share/fauxnos-mpd
+ExecStart=/usr/bin/mpd --no-daemon %h/.config/mpd/fauxnos.conf
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

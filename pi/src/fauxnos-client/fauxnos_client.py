@@ -10,6 +10,7 @@ import json
 import logging
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -18,8 +19,10 @@ from modules.config_manager import ConfigManager
 from modules import logger as logger_module
 from modules.eq_controller import EqController
 from modules.go_librespot import GoLibrespotController
+from modules.library_player import LibraryPlayer
+from modules.noise_settings import NoiseSettings
 from modules.source_manager import SourceManager
-from modules.mqtt_client import MQTTClient
+from modules.mqtt_client import MQTTClient, LIBRARY_SOURCE_ID, NOISE_SOURCE_ID
 from modules.ir_listener import IRListener, COMMAND_IDS as IR_COMMAND_IDS
 from modules.gpio_buttons import GPIOButtonHandler
 
@@ -82,6 +85,17 @@ class FauxnosClient:
             go_librespot=self.go_librespot,
             on_external_volume_change=self._on_source_external_volume,
         )
+
+        # Library source: this device's own MPD, streaming MP3s from the
+        # server's /library/ folder. Only built if the source is configured.
+        self.library_player = None
+        if self.config_manager.get_source(LIBRARY_SOURCE_ID) is not None:
+            self.library_player = LibraryPlayer(server_host=self.config_manager.server_host)
+
+        # Noise source: colour + cuts in ~/.config/fauxnos/noise.env.
+        self.noise_settings = None
+        if self.config_manager.get_source(NOISE_SOURCE_ID) is not None:
+            self.noise_settings = NoiseSettings()
 
         # NOTE: AirPlay has NO fauxnos-side volume mirror. shairport-sync
         # owns the volume entirely (iPhone slider drives its software
@@ -151,6 +165,12 @@ class FauxnosClient:
             # turn, UI-slider round-trip echo). source_manager pushes
             # that value to go-librespot so Spotify phone slider tracks.
             evc_mirror_callback=self.source_manager.apply_external_mirror,
+            library_play_callback=self._library_play if self.library_player else None,
+            library_stop_callback=self.library_player.stop if self.library_player else None,
+            library_control_callback=self.library_player.control if self.library_player else None,
+            library_seek_callback=self.library_player.seek if self.library_player else None,
+            noise_callback=self.noise_settings.set if self.noise_settings else None,
+            noise_getter=self.noise_settings.get if self.noise_settings else None,
         )
 
         # Flag for graceful shutdown
@@ -240,6 +260,14 @@ class FauxnosClient:
         """
         spotify_source_id = self._go_librespot_source_id()
         if spotify_source_id is None:
+            return
+        # Mid-fade away from Spotify (e.g. a routine fading Spotify into
+        # noise), Spotify keeps playing until the fade ends, and a track
+        # change there fires `playing`. That is not the user reaching for
+        # Spotify — re-routing to it would cancel the routine and stop
+        # the noise. Spotify is paused when the fade lands.
+        if self.source_manager.is_fading_from(spotify_source_id):
+            self.logger.info(f"{reason} — ignored, fading away from {spotify_source_id}")
             return
         already = self.source_manager.get_current_source() == spotify_source_id
         self.logger.info(
@@ -385,7 +413,13 @@ class FauxnosClient:
 
     def _ir_source_cycle(self):
         """Cycle through this client's internal sources in config order."""
-        sources = list(self.config_manager.get_internal_sources().keys())
+        # Library is skipped: it only has something to play after a
+        # library/play command picks a track, so cycling onto it from the
+        # remote would just be silence.
+        sources = [
+            sid for sid in self.config_manager.get_internal_sources().keys()
+            if sid != LIBRARY_SOURCE_ID
+        ]
         if not sources:
             return
         cur = self.source_manager.get_current_source()
@@ -429,6 +463,17 @@ class FauxnosClient:
         self._play_feedback_sound('source_switch.wav')
         if self.source_manager.switch_source(self.ANALOG_SOURCE_ID):
             self.mqtt_client.update_mode(self.ANALOG_SOURCE_ID)
+
+    def _library_play(self, items, loop: bool, fade_ms: int) -> bool:
+        """MQTT library/play: queue on the local MPD, then switch to it.
+
+        Playback starts before the switch, into the still-muted
+        librarysink, so the track is already flowing when the sink comes
+        up (instantly, or over fade_ms).
+        """
+        if not self.library_player.play(items, loop=loop):
+            return False
+        return self.source_manager.switch_source(LIBRARY_SOURCE_ID, fade_ms=fade_ms)
 
     def _set_ir_feedback_volume(self, volume_pct: int):
         """
@@ -494,6 +539,14 @@ class FauxnosClient:
         # daemon isn't reachable yet (reconnect loop handles it).
         if self.go_librespot:
             self.go_librespot.start()
+
+        # Report what the Library player is doing, for the apps' now-playing.
+        if self.library_player:
+            threading.Thread(
+                target=self.library_player.watch,
+                args=(self.mqtt_client.publish_library_state,),
+                name="library-watch", daemon=True,
+            ).start()
 
         # Publish initial state
         current = self.source_manager.get_current_source()

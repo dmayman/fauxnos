@@ -38,13 +38,20 @@ const FALLBACK_DAC_OVERLAYS = [
 
 // Built-in source definitions. Spotify + AirPlay are always shown
 // (shairport-sync is installed on every fauxnos device by install.sh,
-// so AirPlay is a first-class default). Analog is gated by has_adc
-// and can be added/removed via the + menu — clicking + Analog In
-// flips has_adc=true server-side and re-renders.
+// so AirPlay is a first-class default). Noise + Library, the on-device
+// local sources (docs/LOCAL_SOURCES.md), are optional: every device can
+// play them, but they're only listed once added from the + menu, which
+// PUTs /sources/<id> (the server seeds the full entry) — removing one
+// DELETEs it. Analog is gated by has_adc and can be added/removed via
+// the + menu — clicking + Analog In flips has_adc=true server-side and
+// re-renders. Mirrors the server's _DEFAULT_BUILTIN_SOURCES and
+// _OPTIONAL_BUILTIN_SOURCES.
 const BUILTIN_DEFS = [
-  { id: 'spotify', label: 'Spotify',   vc: 'snapcast', alwaysOn: true },
-  { id: 'airplay', label: 'AirPlay',   vc: 'external', alwaysOn: true },
-  { id: 'analog',  label: 'Analog In', vc: 'self',     gatedBy: 'has_adc' },
+  { id: 'spotify', label: 'Spotify',   vc: 'snapcast', sink: 'snapsink',    alwaysOn: true },
+  { id: 'airplay', label: 'AirPlay',   vc: 'external', sink: 'airplaysink', alwaysOn: true },
+  { id: 'noise',   label: 'Noise',     vc: 'self',     sink: 'noisesink',   optional: true, icon: 'outline:wave-sine' },
+  { id: 'library', label: 'Library',   vc: 'self',     sink: 'librarysink', optional: true, icon: 'outline:playlist' },
+  { id: 'analog',  label: 'Analog In', vc: 'self',     sink: 'analogsink',  gatedBy: 'has_adc' },
 ]
 const BUILTIN_IDS = new Set(BUILTIN_DEFS.map(d => d.id))
 
@@ -220,24 +227,42 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdate
   // list and rendering a phantom second row (FX-67).
   const customSources = sources.filter(s => !BUILTIN_IDS.has(s.id))
 
-  // Build the visible built-in list. Each def is either "always on" or
-  // gated by a per-client flag (currently only has_adc → analog). Match the
-  // server's source by id so an edited built-in's custom label/icon flows
-  // through; fall back to a synthesized stub only if the server omits it.
+  // Build the visible built-in list. Each def is "always on", optional
+  // (listed once the server returns it for this client), or gated by a
+  // per-client flag (currently only has_adc → analog). Match the server's
+  // source by id so an edited built-in's custom label/icon flows through;
+  // fall back to a synthesized stub only if the server omits it.
+  const isAdded = (def) => sources.some(s => s.id === def.id)
   const visibleBuiltIns = BUILTIN_DEFS
-    .filter(def => def.alwaysOn || (def.gatedBy === 'has_adc' && hasAdc))
+    .filter(def => def.alwaysOn || (def.optional && isAdded(def)) || (def.gatedBy === 'has_adc' && hasAdc))
     .map(def => sources.find(s => s.id === def.id) || {
       id: def.id, label: def.label, type: 'internal', category: 'default',
-      sink: def.id === 'analog' ? 'analogsink' : 'snapsink',
+      sink: def.sink,
       starting_volume: 50, volume_controller: def.vc,
     })
 
   // Built-ins not yet added — drives the + menu's built-in entries.
   const addableBuiltIns = BUILTIN_DEFS.filter(def => {
     if (def.alwaysOn) return false
+    if (def.optional) return !isAdded(def)
     if (def.gatedBy === 'has_adc') return !hasAdc
     return true
   })
+
+  // Add/remove an optional built-in by upserting/deleting its entry in the
+  // client's explicit sources. The server seeds the structural fields
+  // (sink, volume_controller, icon) from its default on the upsert.
+  const setOptionalBuiltIn = useCallback(async (def, add) => {
+    try {
+      await apiFetch(`/api/clients/${client.client_id}/sources/${def.id}`, add
+        ? { method: 'PUT', body: JSON.stringify({ label: def.label }) }
+        : { method: 'DELETE' })
+      await loadSources()
+      onRefresh?.()
+    } catch (e) {
+      alert(`Failed: ${e.message}`)
+    }
+  }, [client.client_id, loadSources, onRefresh])
 
   // Flip has_adc via the same /api/clients/<id> PUT used by the old
   // Devices tab. The client record (not /sources) owns this flag.
@@ -259,7 +284,8 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdate
   const handleAddBuiltIn = useCallback((def) => {
     setAddMenuOpen(false)
     if (def.gatedBy === 'has_adc') setHasAdcRemote(true)
-  }, [setHasAdcRemote])
+    else if (def.optional) setOptionalBuiltIn(def, true)
+  }, [setHasAdcRemote, setOptionalBuiltIn])
 
   const handleAddCustom = useCallback(() => {
     setAddMenuOpen(false)
@@ -267,11 +293,12 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdate
   }, [])
 
   const handleRemoveBuiltIn = useCallback((sourceId) => {
-    // Only analog is removable today — it's the only gated built-in.
-    if (sourceId !== 'analog') return
-    if (!confirm('Remove Analog In from this device?')) return
-    setHasAdcRemote(false)
-  }, [setHasAdcRemote])
+    const def = BUILTIN_DEFS.find(d => d.id === sourceId)
+    if (!def || def.alwaysOn) return
+    if (!confirm(`Remove ${def.label} from this device?`)) return
+    if (def.optional) setOptionalBuiltIn(def, false)
+    else setHasAdcRemote(false)
+  }, [setHasAdcRemote, setOptionalBuiltIn])
 
   return (
     <div className="fx-side-panel fx-device-panel">
@@ -334,7 +361,7 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdate
                 source={s}
                 clientId={client.client_id}
                 mqtt={mqtt}
-                removable={s.id === 'analog'}
+                removable={!BUILTIN_DEFS.find(d => d.id === s.id)?.alwaysOn}
                 editableLabel={s.id === 'analog'}
                 onRemove={() => handleRemoveBuiltIn(s.id)}
                 onUpdate={loadSources}

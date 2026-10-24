@@ -8,9 +8,24 @@ Publishes status updates and listens for control commands.
 Topic schema:
   Control (UI → client):
     set/clients/<deviceId>/volume     payload: "75"
-    set/clients/<deviceId>/mode       payload: "spotify"
+    set/clients/<deviceId>/mode       payload: "spotify", or JSON
+                                      {"source": "noise", "fade_ms": 8000}
+                                      to crossfade (routines; UI sends plain)
+    set/clients/<deviceId>/library/play  payload: {"items": ["lullabies/x.mp3"],
+                                                   "loop": false, "fade_ms": 0}
+                                      plays on this device's MPD and switches
+                                      to the `library` source. Items are
+                                      paths under the server's library
+                                      folder, or full URLs.
+    set/clients/<deviceId>/library/stop  payload: (ignored)
+    set/clients/<deviceId>/library/{toggle,next,prev}  payload: (ignored)
+                                      transport for the Library player
+    set/clients/<deviceId>/library/seek  payload: "104000" (ms)
     set/clients/<deviceId>/eq         payload: {"enabled": true,
                                                 "bands": {"125": 6.0, ...}}
+    set/clients/<deviceId>/noise      payload: {"on": true, "color": "pink",
+                                                "low_cut": 80, "high_cut": 0}
+                                      any subset; cuts in Hz, 0 = off
 
   Status (client → UI):
     status/clients/<deviceId>/volume  payload: "75"
@@ -19,10 +34,15 @@ Topic schema:
     status/clients/<deviceId>/hello   payload: {"id","name","sources"}
     status/clients/<deviceId>/eq      payload: {"enabled": bool,
                                                 "bands": {hz_str: gain_db}}
+    status/clients/<deviceId>/noise   payload: {"on", "color", "low_cut", "high_cut"}
+    status/clients/<deviceId>/library payload: {"state", "path", "file",
+                                      "elapsed_ms", "duration_ms", ...}
+                                      what the Library player is doing
 
   Discovery:
     get/clients/<deviceId>/volume     → client publishes volume
     get/clients/<deviceId>/eq         → client publishes eq state
+    get/clients/<deviceId>/noise      → client publishes noise settings
     get/clients/<deviceId>/status     → client publishes hello + mode
     get/clients/all/status            → all clients publish hello
 """
@@ -38,6 +58,14 @@ import paho.mqtt.client as mqtt
 from .config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
+
+# The local-MPD source (see modules/library_player.py).
+LIBRARY_SOURCE_ID = "library"
+# The on-device noise generator (see modules/noise_settings.py).
+NOISE_SOURCE_ID = "noise"
+# Longest crossfade a command may ask for (10 min). Routines fade over
+# seconds to a minute or two; anything past this is a typo.
+MAX_FADE_MS = 10 * 60 * 1000
 
 
 class MQTTClient:
@@ -57,6 +85,12 @@ class MQTTClient:
                  eq_getter: Optional[Callable[[], Dict]] = None,
                  evc_state_callback: Optional[Callable[[bool, int], None]] = None,
                  evc_mirror_callback: Optional[Callable[[int], None]] = None,
+                 library_play_callback: Optional[Callable[[List[str], bool, int], bool]] = None,
+                 library_stop_callback: Optional[Callable[[], bool]] = None,
+                 library_control_callback: Optional[Callable[[str], bool]] = None,
+                 library_seek_callback: Optional[Callable[[int], bool]] = None,
+                 noise_callback: Optional[Callable[[Dict], bool]] = None,
+                 noise_getter: Optional[Callable[[], Dict]] = None,
                  broker_host: Optional[str] = None,
                  broker_port: int = 1883):
         """
@@ -83,6 +117,18 @@ class MQTTClient:
             ir_learn_cancel_callback: () → bool. Cancel an in-flight learn.
                 Wired to IRListener.cancel_learning. Returns False if no
                 learn was active.
+            library_play_callback: (items, loop, fade_ms) → bool. Queue items on
+                the local MPD and switch to the library source. Wired to
+                FauxnosClient._library_play.
+            library_stop_callback: () → bool. Stop local MPD playback.
+            library_control_callback: (action) → bool. Library transport:
+                toggle, next or prev. Wired to LibraryPlayer.control.
+            library_seek_callback: (position_ms) → bool. Wired to
+                LibraryPlayer.seek.
+            noise_callback: (changes) → bool. Merge + apply noise settings.
+                Wired to NoiseSettings.set.
+            noise_getter: () → {"color","low_cut","high_cut"}. Wired to
+                NoiseSettings.get.
             broker_host: MQTT broker hostname (defaults to server_host from config)
             broker_port: MQTT broker port
         """
@@ -111,6 +157,13 @@ class MQTTClient:
         self.eq_getter = eq_getter
         self.evc_state_callback = evc_state_callback
         self.evc_mirror_callback = evc_mirror_callback
+        self.library_play_callback = library_play_callback
+        self.library_stop_callback = library_stop_callback
+        self.library_control_callback = library_control_callback
+        self.library_seek_callback = library_seek_callback
+        self._library_state = None
+        self.noise_callback = noise_callback
+        self.noise_getter = noise_getter
 
         # MQTT client setup
         self.client = mqtt.Client(client_id=f"fauxnos-{self.device_id}")
@@ -177,6 +230,10 @@ class MQTTClient:
             f"set/clients/{self.device_id}/ir/feedback_volume",
             # EQ — JSON payload, see _handle_command's "eq" branch.
             f"set/clients/{self.device_id}/eq",
+            # Library player (local MPD): play / stop.
+            f"set/clients/{self.device_id}/library/+",
+            # Noise colour + cuts — JSON payload, see the "noise" branch.
+            f"set/clients/{self.device_id}/noise",
             # External volume controller config (retained, server-published).
             # Tells the client whether its local audio chain should be pinned
             # at unity (external authority owns attenuation), and how far to
@@ -195,6 +252,7 @@ class MQTTClient:
             f"get/clients/{self.device_id}/calibration",
             f"get/clients/{self.device_id}/ir",
             f"get/clients/{self.device_id}/eq",
+            f"get/clients/{self.device_id}/noise",
             "get/clients/all/status",
         ]
         for topic in topics:
@@ -220,6 +278,8 @@ class MQTTClient:
             self.publish_calibrations()
             self.publish_ir_state()
             self.publish_eq_state()
+            self.publish_noise_state()
+            self.publish_library_state()
             return
 
         # Parse topic: {command_type}/clients/{device_id}/{action}[/{sub_action}[/{cmd_id}]]
@@ -321,6 +381,45 @@ class MQTTClient:
         with self._command_lock:
             self._handle_locked_command(command_type, action, payload, sub_action)
 
+    @staticmethod
+    def _fade_ms(value) -> int:
+        """Coerce a fade_ms field; anything unusable means no fade."""
+        try:
+            return max(0, min(int(value or 0), MAX_FADE_MS))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _parse_mode_payload(cls, payload: str):
+        """A mode payload is a bare source id, or JSON {"source", "fade_ms"}.
+
+        Returns (source_id, fade_ms). The UIs send bare ids; routines (Home
+        Assistant, the wall panel) send JSON to crossfade.
+        """
+        text = (payload or "").strip()
+        if text.startswith("{"):
+            try:
+                data = json.loads(text)
+            except Exception:
+                return text, 0
+            if isinstance(data, dict):
+                return str(data.get("source", "")), cls._fade_ms(data.get("fade_ms"))
+        return text, 0
+
+    def _publish_new_mode(self, source_id: str):
+        self.update_mode(source_id)
+        # Each source remembers its own volume; the UI is
+        # mode-aware and shows the active source's stored
+        # level. Without this re-publish, the slider keeps
+        # whatever value it had under the PREVIOUS source —
+        # e.g. set spotify=15, switch to analog=90, switch
+        # back to spotify, UI still reads 90 even though
+        # source_manager correctly restored 15.
+        if self.source_volume_getter is not None:
+            new_vol = self.source_volume_getter(source_id)
+            if new_vol is not None:
+                self.update_volume(new_vol)
+
     def _handle_locked_command(
         self,
         command_type: str,
@@ -331,23 +430,75 @@ class MQTTClient:
         try:
             if command_type == "set":
                 if action == "mode":
-                    if payload in self.sources_list:
-                        logger.info(f"MQTT mode command: {payload}")
-                        self.mode_callback(payload)
-                        self.update_mode(payload)
-                        # Each source remembers its own volume; the UI is
-                        # mode-aware and shows the active source's stored
-                        # level. Without this re-publish, the slider keeps
-                        # whatever value it had under the PREVIOUS source —
-                        # e.g. set spotify=15, switch to analog=90, switch
-                        # back to spotify, UI still reads 90 even though
-                        # source_manager correctly restored 15.
-                        if self.source_volume_getter is not None:
-                            new_vol = self.source_volume_getter(payload)
-                            if new_vol is not None:
-                                self.update_volume(new_vol)
+                    source_id, fade_ms = self._parse_mode_payload(payload)
+                    if source_id in self.sources_list:
+                        # Choosing Noise means "play noise": undo the card's
+                        # power-off so a routine can't switch to a silent room.
+                        if source_id == NOISE_SOURCE_ID and self.noise_callback is not None:
+                            if self.noise_callback({"on": True}):
+                                self.publish_noise_state()
+                        logger.info(f"MQTT mode command: {source_id}"
+                                    + (f" (fade {fade_ms} ms)" if fade_ms else ""))
+                        if fade_ms:
+                            self.mode_callback(source_id, fade_ms=fade_ms)
+                        else:
+                            self.mode_callback(source_id)
+                        self._publish_new_mode(source_id)
                     else:
                         logger.error(f"Invalid mode: {payload}. Available: {self.sources_list}")
+
+                elif action == "library" and sub_action == "play":
+                    # set/clients/<id>/library/play payload:
+                    #   {"items": [...], "loop": bool, "fade_ms": int}
+                    # ("item": "..." is accepted for a single track.)
+                    if self.library_play_callback is None or LIBRARY_SOURCE_ID not in self.sources_list:
+                        logger.warning("MQTT library/play but this device has no library source")
+                        return
+                    try:
+                        data = json.loads(payload or "{}")
+                    except Exception:
+                        logger.error(f"MQTT library/play: bad JSON payload: {payload!r}")
+                        return
+                    if not isinstance(data, dict):
+                        logger.error("MQTT library/play: payload must be an object")
+                        return
+                    items = data.get("items")
+                    if items is None and data.get("item"):
+                        items = [data["item"]]
+                    if not isinstance(items, list) or not items:
+                        logger.error(f"MQTT library/play: 'items' must be a non-empty list: {payload!r}")
+                        return
+                    loop = bool(data.get("loop", False))
+                    fade_ms = self._fade_ms(data.get("fade_ms"))
+                    logger.info(f"MQTT library/play: {len(items)} item(s), loop={loop}, fade={fade_ms}")
+                    if self.library_play_callback([str(i) for i in items], loop, fade_ms):
+                        self._publish_new_mode(LIBRARY_SOURCE_ID)
+
+                elif action == "library" and sub_action in ("toggle", "next", "prev"):
+                    if self.library_control_callback is None:
+                        logger.warning(f"MQTT library/{sub_action} but no callback wired")
+                    else:
+                        logger.info(f"MQTT library/{sub_action}")
+                        self.library_control_callback(sub_action)
+
+                elif action == "library" and sub_action == "seek":
+                    if self.library_seek_callback is None:
+                        logger.warning("MQTT library/seek but no callback wired")
+                    else:
+                        try:
+                            position_ms = int(float(payload))
+                        except ValueError:
+                            logger.error(f"MQTT library/seek: bad position {payload!r}")
+                            return
+                        logger.info(f"MQTT library/seek {position_ms} ms")
+                        self.library_seek_callback(position_ms)
+
+                elif action == "library" and sub_action == "stop":
+                    if self.library_stop_callback is None:
+                        logger.warning("MQTT library/stop but no callback wired")
+                    else:
+                        logger.info("MQTT library/stop")
+                        self.library_stop_callback()
 
                 elif action == "calibration" and sub_action:
                     # set/clients/<id>/calibration/<source_id> payload: "75"
@@ -414,6 +565,28 @@ class MQTTClient:
                         if self.eq_callback(enabled, bands):
                             self.publish_eq_state()
 
+                elif action == "noise":
+                    # set/clients/<id>/noise — payload JSON, any subset of
+                    #   {"on": bool, "color": "white"|"pink"|"brown",
+                    #    "low_cut": Hz, "high_cut": Hz}
+                    # NoiseSettings.set merges it with the stored settings
+                    # and rejects anything out of range.
+                    if self.noise_callback is None or NOISE_SOURCE_ID not in self.sources_list:
+                        logger.warning("MQTT noise command but this device has no noise source")
+                        return
+                    try:
+                        data = json.loads(payload or "{}")
+                    except Exception:
+                        logger.error(f"MQTT noise: bad JSON payload: {payload!r}")
+                        return
+                    if not isinstance(data, dict):
+                        logger.error("MQTT noise: payload must be an object")
+                        return
+                    logger.info(f"MQTT noise command: {data}")
+                    self.noise_callback(data)
+                    # Publish either way, so a rejected change snaps the UI back.
+                    self.publish_noise_state()
+
                 elif action == "ir" and sub_action == "feedback_volume":
                     # set/clients/<id>/ir/feedback_volume payload: "0".."100"
                     if self.ir_feedback_volume_callback is None:
@@ -451,6 +624,8 @@ class MQTTClient:
                     self.publish_ir_state()
                 elif action == "eq":
                     self.publish_eq_state()
+                elif action == "noise":
+                    self.publish_noise_state()
 
         except ValueError as e:
             logger.error(f"Error parsing command payload: {e}")
@@ -573,6 +748,32 @@ class MQTTClient:
         payload = json.dumps(self._collect_eq_state())
         self.client.publish(
             f"status/clients/{self.device_id}/eq", payload, retain=True
+        )
+
+    def publish_noise_state(self):
+        """Publish status/clients/<id>/noise — retained, like eq."""
+        if not self.connected or self.noise_getter is None:
+            return
+        try:
+            state = self.noise_getter()
+        except Exception as e:
+            logger.error(f"noise_getter raised: {e}")
+            return
+        self.client.publish(
+            f"status/clients/{self.device_id}/noise", json.dumps(state), retain=True
+        )
+
+    def publish_library_state(self, state: Optional[Dict] = None):
+        """Publish status/clients/<id>/library — retained. Called by the
+        LibraryPlayer watcher on each change (with `state`), and on a UI's
+        status request (without, to republish the last one)."""
+        if state is not None:
+            self._library_state = state
+        if not self.connected or self._library_state is None:
+            return
+        self.client.publish(
+            f"status/clients/{self.device_id}/library",
+            json.dumps(self._library_state), retain=True,
         )
 
     def _collect_ir_state(self) -> dict:
