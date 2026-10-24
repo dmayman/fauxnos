@@ -16,6 +16,11 @@ export function useMqtt() {
   // join sees current state without waiting for the next event.
   const [tracks, setTracks] = useState({})
   const [playback, setPlayback] = useState({})
+  // online: { [deviceId]: bool } from the retained status/clients/<id>/online
+  // topic, whose "offline" is the client's MQTT last will. A device missing
+  // here has never published it (not yet updated); callers fall back to
+  // the server's snapcast `connected` for those.
+  const [online, setOnline] = useState({})
   const clientRef = useRef(null)
 
   // Track last publish time per client to suppress echoes
@@ -37,6 +42,7 @@ export function useMqtt() {
       client.subscribe('status/clients/+/volume')
       client.subscribe('status/clients/+/mode')
       client.subscribe('status/clients/+/hello')
+      client.subscribe('status/clients/+/online')
       // Per-source calibration: 5-part topic with source_id at the tail
       client.subscribe('status/clients/+/calibration/+')
       // Now-playing topics published by server's PlaybackManager.
@@ -69,6 +75,8 @@ export function useMqtt() {
         // status message wins.
         lastPublishRef.current[deviceId] = 0
         setModes(prev => ({ ...prev, [deviceId]: msg.toString() }))
+      } else if (action === 'online') {
+        setOnline(prev => ({ ...prev, [deviceId]: msg.toString() === 'online' }))
       } else if (action === 'calibration' && parts.length >= 5) {
         const sourceId = parts[4]
         const key = `${deviceId}/${sourceId}`
@@ -227,6 +235,7 @@ export function useMqtt() {
     calibrations,
     tracks,
     playback,
+    online,
     publishVolume,
     setMode,
     publishCalibration,
