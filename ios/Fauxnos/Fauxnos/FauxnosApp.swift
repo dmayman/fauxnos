@@ -18,6 +18,10 @@ struct FauxnosApp: App {
         return FauxnosStore()
     }()
 
+    @Environment(\.scenePhase) private var scenePhase
+    /// When the app went to the background; cards re-sort if it was away long.
+    @State private var backgroundedAt: Date?
+
     init() { AppFonts.register() }
 
     var body: some Scene {
@@ -31,6 +35,19 @@ struct FauxnosApp: App {
                 .task { TablerIconCatalog.shared.warm() }
                 // Shake to reveal the debug menu (FX-85). No-op in Release.
                 .shakeDebugMenu()
+                .onChange(of: scenePhase) { _, phase in
+                    switch phase {
+                    case .background:
+                        backgroundedAt = Date()
+                    case .active:
+                        if let t = backgroundedAt, Date().timeIntervalSince(t) > 5 * 60 {
+                            store.settleCardOrder()
+                        }
+                        backgroundedAt = nil
+                    default:
+                        break
+                    }
+                }
         }
     }
 }

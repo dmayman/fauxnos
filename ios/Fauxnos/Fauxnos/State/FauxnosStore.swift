@@ -24,6 +24,8 @@ final class FauxnosStore: ObservableObject {
     @Published private(set) var apiError: String?
     @Published private(set) var isLoading = false
     @Published private(set) var lastUpdated: Date?
+    /// Frozen card order (group ids); see `displayGroups`.
+    @Published private var cardOrder: [String] = []
 
     // Friendly display names from /api/clients, keyed by client id (web nameMap).
     @Published private(set) var clientNames: [String: String] = [:]
@@ -138,6 +140,11 @@ final class FauxnosStore: ObservableObject {
         Task { await refresh() }
         Task { await refreshLibrary() }
         startAutoRefresh()
+        // Freeze the card order once rooms have reported what they're playing.
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            self?.settleCardOrder()
+        }
     }
 
     /// Optimistically mark a room's source (the MQTT `mode` echo confirms).
@@ -294,10 +301,29 @@ final class FauxnosStore: ObservableObject {
 
     // MARK: - Derived helpers for the view
 
-    /// Groups ordered for display: any actively playing media floats to the top
-    /// (then media-loaded-but-paused), everything else keeps its existing order.
-    /// Stable, so a routine refresh / position tick never reshuffles peers.
+    /// Groups in card order. The order is the media ranking (`rankedGroups`)
+    /// frozen by `settleCardOrder()`, so a card doesn't jump to the top when it
+    /// starts playing or drop when it pauses. Groups the frozen order doesn't
+    /// know (new, or before it's settled) follow in ranked order.
     var displayGroups: [SpeakerGroup] {
+        let ranked = rankedGroups
+        guard !cardOrder.isEmpty else { return ranked }
+        let pos = Dictionary(cardOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        return ranked.enumerated()
+            .sorted { (pos[$0.element.id] ?? .max, $0.offset) < (pos[$1.element.id] ?? .max, $1.offset) }
+            .map(\.element)
+    }
+
+    /// Re-rank the cards (playing media first, then paused media, then the
+    /// rest) and freeze that order. Run shortly after launch, once state has
+    /// arrived, and when the app returns after a long time in the background.
+    func settleCardOrder() {
+        cardOrder = rankedGroups.map(\.id)
+    }
+
+    /// Any actively playing media floats to the top (then media-loaded-but-
+    /// paused), everything else keeps its existing order. Stable.
+    private var rankedGroups: [SpeakerGroup] {
         liveGroups.enumerated()
             .sorted { a, b in
                 let ra = mediaRank(a.element), rb = mediaRank(b.element)
