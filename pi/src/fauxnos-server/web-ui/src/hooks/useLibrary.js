@@ -64,9 +64,15 @@ export function useLibraryState() {
     upload,
     deleteTrack: (id) => call(`/api/library/tracks/${id}`, 'DELETE'),
     updateTrack: (id, changes) => call(`/api/library/tracks/${id}`, 'PATCH', changes),
-    youtubePreview: (url) => apiFetch('/api/library/youtube/preview', {
-      method: 'POST', body: JSON.stringify({ url }),
-    }),
+    // Throws the server's own message (yt-dlp's reason), not just the status.
+    youtubePreview: async (url) => {
+      const res = await fetch('/api/library/youtube/preview', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw Object.assign(new Error(body.error || `Lookup failed (${res.status})`), { status: res.status })
+      return body
+    },
     createPlaylist: (name, trackIds) => call('/api/library/playlists', 'POST', { name, track_ids: trackIds }),
     renamePlaylist: (id, name) => call(`/api/library/playlists/${id}`, 'PATCH', { name }),
     addToPlaylist: (id, trackIds) => call(`/api/library/playlists/${id}`, 'PATCH', { add: trackIds }),

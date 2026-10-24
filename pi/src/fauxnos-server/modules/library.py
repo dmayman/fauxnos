@@ -358,6 +358,18 @@ class Library:
     def youtube_available() -> bool:
         return importlib.util.find_spec("yt_dlp") is not None
 
+    @staticmethod
+    def _ytdlp(*args: str) -> List[str]:
+        """A yt-dlp command line. YouTube makes yt-dlp run some JavaScript for
+        most videos ("This video is not available" without it), and yt-dlp
+        only looks for Deno on PATH, which the systemd service's PATH lacks,
+        so point it at Deno's install location explicitly."""
+        cmd = [sys.executable, "-m", "yt_dlp"]
+        deno = shutil.which("deno") or str(Path.home() / ".deno" / "bin" / "deno")
+        if Path(deno).is_file():
+            cmd += ["--js-runtimes", f"deno:{deno}"]
+        return cmd + list(args)
+
     def jobs(self) -> List[Dict]:
         # ponytail: jobs live in memory, so a server restart forgets them
         # (finished files stay in the library either way).
@@ -372,8 +384,7 @@ class Library:
         if not re.match(r"^https?://", url or ""):
             raise ValueError("Paste a full YouTube link")
         r = subprocess.run(
-            [sys.executable, "-m", "yt_dlp", "--no-playlist", "--skip-download",
-             "--dump-json", "--no-warnings", url],
+            self._ytdlp("--no-playlist", "--skip-download", "--dump-json", "--no-warnings", url),
             capture_output=True, text=True, timeout=120,
         )
         if r.returncode != 0:
@@ -411,10 +422,9 @@ class Library:
         tmp.mkdir(parents=True, exist_ok=True)
         try:
             # M4A audio only, so nothing is transcoded on the Pi.
-            cmd = [sys.executable, "-m", "yt_dlp", "--no-playlist",
-                   "-f", "bestaudio[ext=m4a]", "--write-thumbnail",
-                   "--print-json", "--no-progress",
-                   "-o", str(tmp / "audio.%(ext)s"), job["url"]]
+            cmd = self._ytdlp("--no-playlist", "-f", "bestaudio[ext=m4a]", "--write-thumbnail",
+                              "--print-json", "--no-progress",
+                              "-o", str(tmp / "audio.%(ext)s"), job["url"])
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
             if r.returncode != 0:
                 last = (r.stderr.strip().splitlines() or ["yt-dlp failed"])[-1]

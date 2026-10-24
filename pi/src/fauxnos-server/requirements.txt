@@ -20,8 +20,9 @@ paramiko>=3.4
 # Library: tags and cover art (titles fall back to file names without it)
 mutagen>=1.45
 
-# Library: YouTube import (the import is unavailable without it)
-yt-dlp
+# Library: YouTube import (the import is unavailable without it). [default]
+# adds yt-dlp-ejs; most videos also need Deno (install.sh installs it).
+yt-dlp[default]
 
 # Optional: Enhanced JSON support (for future use)
 # jsonschema>=4.0.0

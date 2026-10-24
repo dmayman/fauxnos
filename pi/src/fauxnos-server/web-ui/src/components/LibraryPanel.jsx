@@ -322,7 +322,7 @@ function YouTubeView({ onDone }) {
         if (url.trim() === link) setPreview(p)
         if (!p.importable) toast.error("That video has no M4A audio to import")
       } catch (e) {
-        toast.error(e.message.startsWith('503') ? "YouTube import isn't installed on the server" : "Couldn't find that video")
+        toast.error(e.status === 503 ? "YouTube import isn't installed on the server" : `Couldn't look that up: ${e.message}`)
       } finally {
         setLooking(false)
       }
