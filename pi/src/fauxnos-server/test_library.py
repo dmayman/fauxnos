@@ -123,5 +123,32 @@ def demo():
         print("ok: set/library/play resolves rooms, playlists and titles; the index is published")
 
 
+def test_youtube_match():
+    """Spotify → YouTube: the closest-length result wins; live/cover/remix
+    versions lose unless the title asks for them; nothing close → None."""
+    import modules.library as libmod
+    results = [
+        {"id": "live1", "title": "Song (Live at Wembley)", "duration": 200},
+        {"id": "long1", "title": "Song (Extended Mix)", "duration": 420},
+        {"id": "good1", "title": "Artist - Song (Official Audio)", "duration": 212},
+        {"id": "nolen", "title": "Song", "duration": None},
+    ]
+    real_run = libmod.subprocess.run
+    libmod.subprocess.run = lambda cmd, **kw: type("R", (), {
+        "returncode": 0, "stdout": "\n".join(json.dumps(r) for r in results)})()
+    try:
+        lib = Library(Path("/nonexistent"))
+        m = lib._youtube_match("Artist Song", "Song", 213000)
+        assert m["url"].endswith("good1") and m["duration_ms"] == 212000, m
+        m = lib._youtube_match("Artist Song live", "Song (Live)", 200000)
+        assert m["url"].endswith("live1"), m
+        results[:] = [{"id": "far", "title": "Song", "duration": 600}]
+        assert lib._youtube_match("Artist Song", "Song", 213000) is None
+    finally:
+        libmod.subprocess.run = real_run
+    print("ok: Spotify matches pick the closest-length, non-live version")
+
+
 if __name__ == "__main__":
     demo()
+    test_youtube_match()

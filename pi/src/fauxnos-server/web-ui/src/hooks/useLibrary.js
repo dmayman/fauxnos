@@ -11,6 +11,17 @@ import { apiFetch } from '../api'
 export const LibraryContext = createContext(null)
 export const useLibrary = () => useContext(LibraryContext)
 
+// POST {url} for a link preview. Throws the server's own message (yt-dlp's
+// or Spotify's reason), not just the status.
+async function lookup(path, url) {
+  const res = await fetch(path, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok) throw Object.assign(new Error(body.error || `Lookup failed (${res.status})`), { status: res.status })
+  return body
+}
+
 const EMPTY = { tracks: [], playlists: [], jobs: [], storage: null, youtube_available: false }
 
 export function useLibraryState() {
@@ -64,25 +75,17 @@ export function useLibraryState() {
     upload,
     deleteTrack: (id) => call(`/api/library/tracks/${id}`, 'DELETE'),
     updateTrack: (id, changes) => call(`/api/library/tracks/${id}`, 'PATCH', changes),
-    // Throws the server's own message (yt-dlp's reason), not just the status.
-    youtubePreview: async (url) => {
-      const res = await fetch('/api/library/youtube/preview', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }),
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok) throw Object.assign(new Error(body.error || `Lookup failed (${res.status})`), { status: res.status })
-      return body
-    },
+    youtubePreview: (url) => lookup('/api/library/youtube/preview', url),
+    spotifyPreview: (url) => lookup('/api/library/spotify/preview', url),
     createPlaylist: (name, trackIds) => call('/api/library/playlists', 'POST', { name, track_ids: trackIds }),
     renamePlaylist: (id, name) => call(`/api/library/playlists/${id}`, 'PATCH', { name }),
     addToPlaylist: (id, trackIds) => call(`/api/library/playlists/${id}`, 'PATCH', { add: trackIds }),
     removeFromPlaylist: (id, trackIds) => call(`/api/library/playlists/${id}`, 'PATCH', { remove: trackIds }),
     deletePlaylist: (id) => call(`/api/library/playlists/${id}`, 'DELETE'),
-    // title/artist/thumbnail come from the preview, so the import can show in
-    // the song list (with a spinner) before the download finishes.
-    importYoutube: (preview) => call('/api/library/youtube', 'POST', {
-      url: preview.url, title: preview.title, artist: preview.artist, thumbnail: preview.thumbnail,
-    }),
+    // job: {url, title, artist, thumbnail} so the import shows in the song
+    // list (with a spinner) before the download finishes, plus {tags, art_url}
+    // for a Spotify import's details and cover.
+    importYoutube: (job) => call('/api/library/youtube', 'POST', job),
     play: (clientId, trackIds) => apiFetch('/api/library/play', {
       method: 'POST', body: JSON.stringify({ client_id: clientId, track_ids: trackIds }),
     }),

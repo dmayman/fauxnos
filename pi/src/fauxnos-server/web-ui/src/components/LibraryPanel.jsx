@@ -3,6 +3,7 @@ import {
   IconX,
   IconUpload,
   IconBrandYoutube,
+  IconBrandSpotify,
   IconPlayerPlayFilled,
   IconPlus,
   IconDots,
@@ -22,7 +23,8 @@ import { homeIdOf } from '../lib/nowPlaying'
 /* ─────────────────────────────────────────────────────────────────────────────
  * LibraryPanel — the server-wide music library, as a side panel like the
  * device panel. Drop MP3/M4A files anywhere on it to upload; the Add menu
- * also uploads, imports from YouTube (its own page) and makes playlists.
+ * also uploads, imports from YouTube or Spotify (their own page) and makes
+ * playlists.
  * Filter pills switch between songs, artists, albums and playlists, which
  * open into their songs. Clicking a song plays it (and the rest of the list
  * after it) in a room; a song playing anywhere shows bars over its art.
@@ -301,10 +303,34 @@ function CollectionRow({ title, subtitle, art, onOpen, menu, Fallback }) {
   )
 }
 
-/* Add from YouTube: paste a link, the details load on their own, Import. */
-function YouTubeView({ onDone }) {
+/* Add from a link — YouTube, or Spotify (details from Spotify, audio from
+   the closest YouTube match). Paste it, the details load on their own,
+   Import queues it in the background. */
+const LINK_SOURCES = {
+  youtube: {
+    placeholder: 'Paste a YouTube link',
+    looking: 'Finding the video…',
+    preview: (lib, link) => lib.youtubePreview(link),
+    // The import job: what shows in the list while it runs.
+    job: (p) => ({ url: p.url, title: p.title, artist: p.artist, thumbnail: p.thumbnail }),
+    canImport: (p) => p.importable,
+  },
+  spotify: {
+    placeholder: 'Paste a Spotify song link',
+    looking: 'Finding the song and its audio…',
+    preview: (lib, link) => lib.spotifyPreview(link),
+    job: (p) => ({
+      url: p.match.url, title: p.title, artist: p.artist, thumbnail: p.thumbnail,
+      tags: { title: p.title, artist: p.artist }, art_url: p.thumbnail,
+    }),
+    canImport: (p) => !!p.match,
+  },
+}
+
+function LinkImportView({ source, onDone }) {
   const lib = useLibrary()
   const toast = useToast()
+  const src = LINK_SOURCES[source]
   const [url, setUrl] = useState('')
   const [preview, setPreview] = useState(null)
   const [looking, setLooking] = useState(false)
@@ -312,27 +338,29 @@ function YouTubeView({ onDone }) {
 
   useEffect(() => {
     const link = url.trim()
-    if (!/^https?:\/\/\S+$/.test(link) || link === lookedUp.current) return undefined
+    if (!/^(https?:\/\/|spotify:)\S+$/.test(link) || link === lookedUp.current) return undefined
     const t = setTimeout(async () => {
       lookedUp.current = link
       setPreview(null)
       setLooking(true)
       try {
-        const p = await lib.youtubePreview(link)
+        const p = await src.preview(lib, link)
         if (url.trim() === link) setPreview(p)
-        if (!p.importable) toast.error("That video has no M4A audio to import")
+        if (!src.canImport(p)) {
+          toast.error(source === 'spotify' ? "Couldn't find matching audio for that song" : 'That video has no M4A audio to import')
+        }
       } catch (e) {
-        toast.error(e.status === 503 ? "YouTube import isn't installed on the server" : `Couldn't look that up: ${e.message}`)
+        toast.error(e.status === 503 ? "Importing isn't installed on the server" : `Couldn't look that up: ${e.message}`)
       } finally {
         setLooking(false)
       }
     }, 500)
     return () => clearTimeout(t)
-  }, [url, lib, toast])
+  }, [url, lib, toast, src, source])
 
   const startImport = async () => {
     try {
-      await lib.importYoutube(preview)
+      await lib.importYoutube(src.job(preview))
       onDone()
     } catch {
       toast.error("Couldn't start the import")
@@ -344,18 +372,20 @@ function YouTubeView({ onDone }) {
       <input
         className="fx-input"
         type="url"
-        placeholder="Paste a YouTube link"
+        placeholder={src.placeholder}
         value={url}
         onChange={(e) => setUrl(e.target.value)}
         autoFocus
-        aria-label="YouTube link"
+        aria-label={src.placeholder}
       />
       {looking && (
-        <div className="fx-lib-youtube-looking"><span className="fx-spinner" /> Finding the video…</div>
+        <div className="fx-lib-youtube-looking"><span className="fx-spinner" /> {src.looking}</div>
       )}
       {preview && (
         <div className="fx-lib-youtube-card">
-          {preview.thumbnail && <img src={preview.thumbnail} alt="" />}
+          {preview.thumbnail && (
+            <img src={preview.thumbnail} alt="" className={source === 'spotify' ? 'square' : ''} />
+          )}
           <div className="fx-lib-youtube-meta">
             <span className="fx-lib-row-title">{preview.title}</span>
             <span className="fx-lib-row-sub">
@@ -363,9 +393,16 @@ function YouTubeView({ onDone }) {
             </span>
             {preview.duration_ms && <span className="fx-lib-row-sub">{fmtDuration(preview.duration_ms)}</span>}
           </div>
-          <button type="button" className="fx-btn sm primary" disabled={!preview.importable} onClick={startImport}>
+          <button type="button" className="fx-btn sm primary" disabled={!src.canImport(preview)} onClick={startImport}>
             Import
           </button>
+        </div>
+      )}
+      {preview?.match && (
+        <div className="fx-lib-youtube-match">
+          <span>Audio from YouTube:</span>{' '}
+          <a href={preview.match.url} target="_blank" rel="noreferrer">{preview.match.title}</a>
+          {[preview.match.channel, fmtDuration(preview.match.duration_ms)].filter(Boolean).map(x => ` · ${x}`).join('')}
         </div>
       )}
     </div>
@@ -417,7 +454,7 @@ function ImportingRow({ job }) {
 export default function LibraryPanel({ groups, clients, mqtt, onClose }) {
   const lib = useLibrary()
   const toast = useToast()
-  const [view, setView] = useState('browse') // 'browse' | 'youtube'
+  const [view, setView] = useState('browse') // 'browse' | 'youtube' | 'spotify'
   const [filter, setFilter] = useState('songs')
   const [dragging, setDragging] = useState(false)
   const [modal, setModal] = useState(null)
@@ -608,19 +645,21 @@ export default function LibraryPanel({ groups, clients, mqtt, onClose }) {
     <PanelContext.Provider value={panelActions}>
       <div className={`fx-side-panel wide fx-library-panel${dragging ? ' is-dragging' : ''}`} {...dragHandlers}>
         <div className="fx-device-panel-head">
-          {view === 'youtube' && (
+          {view !== 'browse' && (
             <button type="button" className="fx-icon-btn" aria-label="Back" onClick={() => setView('browse')}>
               <IconArrowLeft size={18} />
             </button>
           )}
-          <span className="fx-h2" style={{ flex: 1 }}>{view === 'youtube' ? 'Add from YouTube' : 'Library'}</span>
+          <span className="fx-h2" style={{ flex: 1 }}>
+            {view === 'youtube' ? 'Add from YouTube' : view === 'spotify' ? 'Add from Spotify' : 'Library'}
+          </span>
           <button className="fx-icon-btn" onClick={onClose} aria-label="Close">
             <IconX size={18} />
           </button>
         </div>
 
-        {view === 'youtube' ? (
-          <YouTubeView onDone={() => setView('browse')} />
+        {view === 'youtube' || view === 'spotify' ? (
+          <LinkImportView key={view} source={view} onDone={() => setView('browse')} />
         ) : (
           <>
             {!page && (
@@ -639,6 +678,16 @@ export default function LibraryPanel({ groups, clients, mqtt, onClose }) {
                         }}
                       >
                         From YouTube
+                      </MenuItem>
+                      <MenuItem
+                        icon={IconBrandSpotify}
+                        onClick={() => {
+                          close()
+                          if (lib.youtube_available) setView('spotify')
+                          else toast.error("Importing isn't installed on the server")
+                        }}
+                      >
+                        From Spotify
                       </MenuItem>
                       <MenuItem icon={IconPlaylist} onClick={() => { close(); panelActions.newPlaylist() }}>New playlist</MenuItem>
                     </>

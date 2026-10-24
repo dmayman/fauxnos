@@ -15,6 +15,10 @@ room's MPD at /library/<path>. This module adds what the UI needs on top:
   are written into the file's own tags.
 - YouTube import: yt-dlp pulls the audio as M4A (no transcoding on the Pi)
   in a background job, then tags it and keeps the thumbnail as cover art.
+- Spotify links: the song's public details (title, artist, duration, cover)
+  come from Spotify's embed page; the audio is the closest-length match from
+  a YouTube search, imported the same way and tagged with Spotify's details.
+  Spotify's own audio is DRM-protected and never touched.
 
 A track's id is a hash of its path, so it's stable across rescans and
 restarts, and changes only if the file is renamed or moved.
@@ -62,6 +66,23 @@ def safe_filename(name: str) -> str:
     name = Path(name).name
     name = re.sub(r"[\\/:*?\"<>|\x00-\x1f]", "_", name).strip(" .")
     return name or "track"
+
+
+def _find_key(obj, key):
+    """The first dict anywhere in nested JSON that has `key`, or None."""
+    if isinstance(obj, dict):
+        if key in obj:
+            return obj
+        children = obj.values()
+    elif isinstance(obj, list):
+        children = obj
+    else:
+        return None
+    for child in children:
+        found = _find_key(child, key)
+        if found is not None:
+            return found
+    return None
 
 
 def _first(tags, *keys) -> Optional[str]:
@@ -406,6 +427,77 @@ class Library:
             logger.info(f"oEmbed couldn't read {url} ({e}); asking yt-dlp")
         return self._youtube_preview_ytdlp(url)
 
+    def spotify_preview(self, url: str) -> Dict:
+        """A Spotify song's details, plus the YouTube video whose audio would
+        be imported (`match`, or None if nothing close was found)."""
+        if not self.youtube_available():
+            raise RuntimeError("yt-dlp isn't installed on the server")
+        m = re.search(r"(?:open\.spotify\.com/(?:intl-[\w-]+/)?track/|spotify:track:)([A-Za-z0-9]+)", url or "")
+        if not m:
+            raise ValueError("Paste a Spotify song link")
+        req = urllib.request.Request(f"https://open.spotify.com/embed/track/{m.group(1)}",
+                                     headers={"User-Agent": "fauxnos-library/1.0"})
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                html = resp.read().decode("utf-8", "replace")
+            data = json.loads(re.search(
+                r'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>', html, re.S).group(1))
+            entity = _find_key(data, "entity")["entity"]
+        except Exception as e:
+            logger.warning(f"Spotify details failed for {url}: {e}")
+            raise ValueError("Couldn't read that Spotify song")
+        title = entity.get("name") or entity.get("title")
+        artist = ", ".join(a["name"] for a in entity.get("artists") or [] if a.get("name")) or None
+        images = (entity.get("visualIdentity") or {}).get("image") or []
+        cover = max(images, key=lambda i: i.get("maxWidth") or 0)["url"] if images else None
+        duration_ms = entity.get("duration")
+        return {
+            "url": url,
+            "title": title,
+            "artist": artist,
+            "album": None,
+            "duration_ms": duration_ms,
+            "thumbnail": cover,
+            "match": self._youtube_match(f"{artist or ''} {title}".strip(), title, duration_ms),
+        }
+
+    def _youtube_match(self, query: str, title: str, duration_ms: Optional[int]) -> Optional[Dict]:
+        """The YouTube search result most likely to be this song: closest in
+        length, avoiding live/cover/remix/sped-up versions the title doesn't
+        ask for. A flat search, so no JavaScript challenge (a few seconds)."""
+        r = subprocess.run(
+            self._ytdlp("--flat-playlist", "--dump-json", "--no-warnings", f"ytsearch6:{query}"),
+            capture_output=True, text=True, timeout=60,
+        )
+        wanted = (title or "").casefold()
+        best, best_score = None, None
+        for line in r.stdout.splitlines():
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if not e.get("id"):
+                continue
+            name = (e.get("title") or "").casefold()
+            score = 0.0
+            if duration_ms and e.get("duration"):
+                score += abs(e["duration"] * 1000 - duration_ms) / 1000  # seconds off
+            elif duration_ms:
+                score += 30  # unknown length: possible, not preferred
+            for word in ("live", "cover", "remix", "sped up", "slowed", "karaoke", "instrumental", "8d"):
+                if word in name and word not in wanted:
+                    score += 60
+            if best_score is None or score < best_score:
+                best, best_score = e, score
+        if best is None or best_score > 45:
+            return None
+        return {
+            "url": f"https://www.youtube.com/watch?v={best['id']}",
+            "title": best.get("title"),
+            "channel": best.get("channel") or best.get("uploader"),
+            "duration_ms": int(best["duration"] * 1000) if best.get("duration") else None,
+        }
+
     def _youtube_preview_ytdlp(self, url: str) -> Dict:
         r = subprocess.run(
             self._ytdlp("--no-playlist", "--skip-download", "--dump-json", "--no-warnings", url),
@@ -428,7 +520,11 @@ class Library:
         }
 
     def start_youtube_import(self, url: str, title: Optional[str] = None,
-                             artist: Optional[str] = None, thumbnail: Optional[str] = None) -> Dict:
+                             artist: Optional[str] = None, thumbnail: Optional[str] = None,
+                             tags: Optional[Dict] = None, art_url: Optional[str] = None) -> Dict:
+        """Import a video's audio in the background. `tags` (title/artist/
+        album) override what YouTube says, and `art_url` replaces the video
+        thumbnail as cover art — both used for Spotify imports."""
         if not self.youtube_available():
             raise RuntimeError("yt-dlp isn't installed on the server")
         if not re.match(r"^https?://", url or ""):
@@ -436,7 +532,9 @@ class Library:
         # title/artist/thumbnail (from the preview) show the job in the list
         # until the download finishes and the real song replaces it.
         job = {"id": uuid.uuid4().hex[:12], "url": url, "status": "running",
-               "title": title or None, "artist": artist or None, "thumbnail": thumbnail or None, "error": None, "track_id": None, "started_at": time.time()}
+               "title": title or None, "artist": artist or None, "thumbnail": thumbnail or None,
+               "tags": {k: v for k, v in (tags or {}).items() if k in ("title", "artist", "album") and v},
+               "art_url": art_url or None, "error": None, "track_id": None, "started_at": time.time()}
         with self._lock:
             self._jobs[job["id"]] = job
         threading.Thread(target=self._run_youtube, args=(job,), daemon=True).start()
@@ -460,9 +558,10 @@ class Library:
             if not audio.is_file():
                 raise RuntimeError("No M4A audio was available for this video")
 
-            title = info.get("track") or info.get("title") or "YouTube audio"
-            artist = info.get("artist") or re.sub(r" - Topic$", "", info.get("uploader") or "") or None
-            album = info.get("album")
+            override = job.get("tags") or {}
+            title = override.get("title") or info.get("track") or info.get("title") or "YouTube audio"
+            artist = override.get("artist") or info.get("artist") or re.sub(r" - Topic$", "", info.get("uploader") or "") or None
+            album = override.get("album") or info.get("album")
             job["title"] = title
             if mutagen is not None:
                 tags = MP4(audio)
@@ -482,6 +581,14 @@ class Library:
             shutil.move(str(audio), dest)
             tid = track_id(dest.relative_to(self.root).as_posix())
             thumb = next((p for p in tmp.iterdir() if p.suffix.lower() in ART_EXTENSIONS), None)
+            if job.get("art_url"):
+                try:
+                    with urllib.request.urlopen(job["art_url"], timeout=15) as resp:
+                        cover = tmp / "cover.jpg"
+                        cover.write_bytes(resp.read())
+                    thumb = cover
+                except Exception as e:
+                    logger.warning(f"Cover download failed ({e}); using the video thumbnail")
             if thumb:
                 self.art_dir.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(thumb), self.art_dir / f"{tid}{thumb.suffix.lower()}")

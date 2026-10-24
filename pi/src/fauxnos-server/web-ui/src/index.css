@@ -4820,6 +4820,9 @@ label.fx-source-setting { cursor: pointer; }
   border-radius: var(--fx-r-sm);
 }
 .fx-lib-youtube-card img { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; flex-shrink: 0; }
+.fx-lib-youtube-card img.square { width: 64px; height: 64px; }
+.fx-lib-youtube-match { font-size: var(--fx-text-sm); color: var(--fx-text-2); }
+.fx-lib-youtube-match a { color: var(--fx-text); }
 .fx-lib-youtube-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 
 /* Push transitions between list pages (panel and Browse). */

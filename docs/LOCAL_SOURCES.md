@@ -85,7 +85,12 @@ fine. Manage it from **Library** at the top of the web UI:
 
 - Upload MP3 or M4A files by dropping them on the panel, or from **Add**.
 - **Add → From YouTube** looks up a link and imports its audio as M4A,
-  with the thumbnail as cover art (needs `yt-dlp` on the server).
+  with the thumbnail as cover art. Needs `yt-dlp` and Deno on the server
+  (install.sh installs both); most videos fail without Deno.
+- **Add → From Spotify** reads a song's title, artist, length and cover
+  from Spotify's public embed page, and imports the audio of the YouTube
+  video closest in length (shown before you import), tagged with
+  Spotify's details. Spotify's own audio is DRM-protected and isn't used.
 - Browse by song, artist, album or playlist. Click a song to play it, with
   the rest of the list after it, in a room you pick.
 - Edit a song's title, artist and album (written into the file's tags),
@@ -105,6 +110,7 @@ next listing.
 | `PATCH`/`DELETE /api/library/tracks/<id>` | Edit title/artist/album, or delete |
 | `POST /api/library/playlists`, `PATCH`/`DELETE …/<id>` | Playlists |
 | `POST /api/library/youtube/preview`, `POST /api/library/youtube` | YouTube look-up and import |
+| `POST /api/library/spotify/preview` | Spotify song details and its YouTube match |
 | `POST /api/library/play` | `{client_id, track_ids}`: play on a room |
 
 ## Commands (MQTT, on the fauxnos broker)

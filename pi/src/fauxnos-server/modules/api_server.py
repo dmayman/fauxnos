@@ -485,6 +485,10 @@ class FauxnosAPIServer:
         def library_youtube_preview():
             return self.handle_library_youtube_preview()
 
+        @app.route('/api/library/spotify/preview', methods=['POST'])
+        def library_spotify_preview():
+            return self.handle_library_spotify_preview()
+
         @app.route('/api/library/play', methods=['POST'])
         def library_play():
             return self.handle_library_play()
@@ -3724,6 +3728,17 @@ rm -- "$0"
         except RuntimeError as e:
             return jsonify({"error": str(e)}), 503
 
+    def handle_library_spotify_preview(self):
+        """POST /api/library/spotify/preview {url} — a Spotify song's details
+        and the YouTube match whose audio would be imported."""
+        data = request.get_json(silent=True) or {}
+        try:
+            return jsonify(self.library.spotify_preview((data.get("url") or "").strip()))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 503
+
     def handle_library_create_playlist(self):
         data = request.get_json(silent=True) or {}
         name = (data.get("name") or "").strip()
@@ -3747,13 +3762,16 @@ rm -- "$0"
         return jsonify(playlist)
 
     def handle_library_youtube(self):
-        """POST /api/library/youtube {url, title?, artist?, thumbnail?} — start a
-        background import job (the extras show it in the list while it runs)."""
+        """POST /api/library/youtube {url, title?, artist?, thumbnail?, tags?,
+        art_url?} — start a background import job. title/artist/thumbnail show
+        it in the list while it runs; tags and art_url (from a Spotify preview)
+        override YouTube's details and thumbnail."""
         data = request.get_json(silent=True) or {}
         try:
             job = self.library.start_youtube_import(
                 (data.get("url") or "").strip(), title=data.get("title"),
-                artist=data.get("artist"), thumbnail=data.get("thumbnail"))
+                artist=data.get("artist"), thumbnail=data.get("thumbnail"),
+                tags=data.get("tags"), art_url=data.get("art_url"))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except RuntimeError as e:
