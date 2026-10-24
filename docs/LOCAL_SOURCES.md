@@ -137,12 +137,18 @@ starts playback into the still-muted sink, then switches to `library`:
 set/clients/<id>/library/play  {"item": "lullabies/twinkle.mp3"}
 set/clients/<id>/library/play  {"items": ["a.mp3", "b.mp3"], "loop": true, "fade_ms": 5000}
 set/clients/<id>/library/stop  ""
+set/clients/<id>/library/stop  {"fade_ms": 60000}
 ```
 
 - `item`/`items` are paths under the library folder, or full URLs (internet
   radio works too).
 - `loop: true` repeats a single item on its own, or several items as a
   playlist.
+- `fade_ms` on `play` fades the music in. From another source it's a
+  crossfade (below). If the room is already on Library, which is where a
+  faded `stop` leaves it, the library sink starts silent and ramps up.
+- `fade_ms` on `stop` fades the music to silence, then stops MPD. See
+  [Fading to silence](#fading-to-silence). An empty payload stops at once.
 
 **Play by name (Home Assistant).** The server keeps the library index on
 `status/library/index` (retained: every song's `id`, `path`, `title`,
@@ -184,6 +190,30 @@ else switches instantly.
   source's leave hooks.
 - Fades are capped at 10 minutes.
 
+### Fading to silence
+
+A crossfade needs a second source to fade to. `library/stop` with
+`fade_ms` fades the music out with nothing taking its place:
+
+```
+set/clients/<id>/library/stop  {"fade_ms": 60000}
+```
+
+- The command returns at once. A background thread ramps `librarysink`
+  down over `fade_ms`, on the same thread and schedule as a crossfade.
+- At the end MPD stops, and the sink goes back to Library's stored
+  volume with nothing playing into it. The room stays on Library,
+  silent, and the volume slider never moves. The next `play` starts at
+  the normal level, or fades in from silence if it has `fade_ms`.
+- It lands like a crossfade does. A switch, a volume change, or a
+  `library/play` mid-fade stops MPD at once and then does its own job,
+  so a fade can never cut off music started after it.
+- A faded `play` mid-fade-out turns around from the level the fade had
+  reached. So does a faded `stop` mid-fade-in. Neither jumps to full
+  volume first.
+- If Library isn't the room's audible source, `stop` with `fade_ms` just
+  stops MPD at once, the same as an empty payload.
+
 ## A routine, end to end
 
 Bedtime (a song, 10 minutes) drifting into sleep (noise, all night) is two
@@ -196,13 +226,17 @@ set/clients/fauxnos003/library/play  {"item": "bedtime/goodnight.mp3", "loop": t
 set/clients/fauxnos003/mode          {"source": "noise", "fade_ms": 60000}
 ```
 
-The lights side is Home Assistant's job. Wiring HA to these topics is the
-next piece: either a mosquitto bridge plus MQTT discovery, or HA
-publishing straight to this broker.
+Ending the song with no noise after it is one command too:
 
-## Not done yet
+```
+set/clients/fauxnos003/library/stop  {"fade_ms": 60000}
+```
 
-- **Home Assistant bridge.** See above.
+The lights side is Home Assistant's job. Home Assistant reaches these
+topics through a mosquitto bridge on its own broker, which relays one
+room's `set/…` out and its `status/…` in under a `fauxnos/` prefix. The
+bridge config and the office routine that drives it live in the
+home-server repo (`stacks/home-automation/`), not here.
 
 ## Verifying on a device
 
@@ -223,3 +257,9 @@ hardware can show:
 5. Put an MP3 in `~/fauxnos-library/` on the server, publish
    `library/play`, then publish `mode` with a 30 s fade to noise. You
    should hear a smooth crossfade, and MPD should stop at the end.
+6. Play something from the library, then publish `library/stop
+   {"fade_ms": 20000}`. The music should fade to silence over 20 s and
+   `status/clients/<id>/library` should then read `"state": "stop"`, with
+   `status/clients/<id>/volume` unchanged. Then publish `library/play`
+   with `"fade_ms": 10000`: it should fade in from silence, not start at
+   full volume.

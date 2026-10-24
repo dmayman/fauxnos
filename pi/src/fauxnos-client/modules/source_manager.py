@@ -86,12 +86,16 @@ class SourceManager:
         # EVC message always writes the mixer even if the pad is 0.
         self.output_pad_db: Optional[int] = None
 
-        # In-flight crossfade, started by switch_source(fade_ms=...) and
-        # stepped by a background thread so the switch itself returns at
-        # once. `_fade` is {"from": SourceConfig, "to": SourceConfig} while
-        # one runs. Bumping `_fade_gen` (under `_fade_lock`) retires the
-        # running thread; every step re-checks it under the same lock, so
-        # no stale step can land after a newer switch has taken over.
+        # In-flight fade, stepped by a background thread so the command
+        # that started it returns at once. `_fade` is one of:
+        #   {"from": SourceConfig, "to": SourceConfig}  a crossfade, from
+        #       switch_source(fade_ms=...)
+        #   {"source": SourceConfig, "on_done": callable | None}  one
+        #       source's own sink ramping, from fade_in_source /
+        #       fade_out_source (library/play and library/stop with fade_ms)
+        # Bumping `_fade_gen` (under `_fade_lock`) retires the running
+        # thread; every step re-checks it under the same lock, so no stale
+        # step can land after a newer command has taken over.
         self._fade_lock = threading.Lock()
         self._fade_gen = 0
         self._fade: Optional[Dict[str, SourceConfig]] = None
@@ -479,20 +483,29 @@ class SourceManager:
         self.current_source = new.id
         self._save_state()
 
+        def step(frac: float):
+            self.pulse.set_sink_volume(prev.sink, round(from_level * (1 - frac)))
+            self.pulse.set_sink_volume(new.sink, round(to_level * frac))
+
         with self._fade_lock:
-            self._fade_gen += 1
-            gen = self._fade_gen
-            self._fade = {"from": prev, "to": new}
+            self._launch_fade_locked({"from": prev, "to": new}, step, fade_ms,
+                                     f"Fade to {new.label} complete")
+        return True
+
+    def _launch_fade_locked(self, fade: Dict, step: Callable[[float], None],
+                            fade_ms: int, done_message: str):
+        """Make `fade` the running fade and step it on a thread. Caller holds _fade_lock."""
+        self._fade_gen += 1
+        self._fade = fade
         threading.Thread(
             target=self._run_fade,
-            args=(gen, prev, new, from_level, to_level, fade_ms),
+            args=(self._fade_gen, step, fade_ms, done_message),
             name="source-fade",
             daemon=True,
         ).start()
-        return True
 
-    def _run_fade(self, gen: int, prev: SourceConfig, new: SourceConfig,
-                  from_level: int, to_level: int, fade_ms: int):
+    def _run_fade(self, gen: int, step: Callable[[float], None], fade_ms: int,
+                  done_message: str):
         steps = max(1, fade_ms // self.FADE_STEP_MS)
         interval = fade_ms / steps / 1000.0
         # Step on a fixed schedule, not sleep-after-write: each step costs
@@ -504,19 +517,119 @@ class SourceManager:
             with self._fade_lock:
                 if gen != self._fade_gen:
                     return  # settled by a newer switch / volume change
-                frac = i / steps
-                self.pulse.set_sink_volume(prev.sink, round(from_level * (1 - frac)))
-                self.pulse.set_sink_volume(new.sink, round(to_level * frac))
+                step(i / steps)
         with self._fade_lock:
             if gen != self._fade_gen:
                 return
             self._finish_fade_locked()
-        self.logger.info(f"Fade to {new.label} complete")
+        self.logger.info(done_message)
+
+    # ── Fading one source in or out ───────────────────────────────────────
+    #
+    # A crossfade needs a second sink to fade from. These ramp the active
+    # source's own sink instead, for "start this from silence" and "fade
+    # this to silence, then stop it". They share the crossfade's thread,
+    # generation counter and landing rules: a switch, a volume change or
+    # another fade mid-ramp lands it first.
+
+    def fade_out_source(self, source_id: str, fade_ms: int,
+                        on_done: Optional[Callable[[], object]] = None) -> bool:
+        """Ramp the active source's sink to silence, then call on_done.
+
+        on_done stops the producer (for the library: MPD). Afterwards the
+        sink goes back to the source's stored level with nothing playing
+        into it, so the next play starts at the normal volume and the
+        stored volume never changes. If a fade is landed early, on_done
+        runs at that moment.
+
+        Returns False and does nothing when source_id isn't the active
+        internal source; the caller then stops it outright.
+        """
+        source = self.config_manager.get_source(source_id)
+        if fade_ms <= 0 or source is None or source.type != 'internal' or not source.sink:
+            return False
+        with self._fade_lock:
+            if self.current_source != source_id:
+                return False
+            from_level = self._take_over_locked(source)
+            self.logger.info(f"Fading {source.label} out over {fade_ms} ms")
+            self._launch_fade_locked(
+                {"source": source, "on_done": on_done},
+                self._level_step(source, from_level, 0), fade_ms,
+                f"Fade-out of {source.label} complete",
+            )
+        return True
+
+    def fade_in_source(self, source_id: str, fade_ms: int,
+                       start: Callable[[], bool]) -> bool:
+        """Start the active source from silence and ramp it up.
+
+        Mutes the source's sink, calls start() (for the library: queue and
+        play on MPD), then ramps the sink up to the stored level. For a
+        source that's already active, where there's nothing to crossfade
+        from. If start() fails, the sink goes straight back to its level.
+        """
+        source = self.config_manager.get_source(source_id)
+        if source is None or source.type != 'internal' or not source.sink:
+            return False
+        with self._fade_lock:
+            if self.current_source != source_id:
+                return False
+            self._take_over_locked(source)
+            self.pulse.set_sink_volume(source.sink, 0)
+            if not start():
+                self._assert_route(source)
+                return False
+            if fade_ms <= 0:
+                self._assert_route(source)
+                return True
+            self.logger.info(f"Fading {source.label} in over {fade_ms} ms")
+            self._launch_fade_locked(
+                {"source": source, "on_done": None},
+                self._level_step(source, 0, self._active_pa_level(source)), fade_ms,
+                f"Fade-in of {source.label} complete",
+            )
+        return True
+
+    def _level_step(self, source: SourceConfig, from_level: int, to_level: int):
+        def step(frac: float):
+            self.pulse.set_sink_volume(source.sink, round(from_level + (to_level - from_level) * frac))
+        return step
+
+    def _take_over_locked(self, source: SourceConfig) -> int:
+        """Clear the way for a new ramp on the active `source`'s sink.
+
+        Returns the sink's level now, which the new ramp starts from. A
+        ramp already running on this sink is retired where it stands
+        (no on_done, no jump), so fade-in → fade-out turns around
+        smoothly. A crossfade into this source is landed, and the sink is
+        put back at the level it had reached. Caller holds _fade_lock.
+        """
+        level = self.pulse.get_sink_volume(source.sink)
+        if level is None:
+            level = self._active_pa_level(source)
+        if self._fade is not None:
+            if self._fade.get("source") is not None and self._fade["source"].id == source.id:
+                self._fade = None
+                self._fade_gen += 1
+            else:
+                self._finish_fade_locked()
+                self.pulse.set_sink_volume(source.sink, level)
+        return level
+
+    @staticmethod
+    def _fade_from_id(fade: Optional[Dict]) -> Optional[str]:
+        """The source a crossfade is leaving; None for no fade or a one-sink ramp."""
+        return fade["from"].id if fade is not None and "from" in fade else None
 
     def is_fading_from(self, source_id: str) -> bool:
         """True while a crossfade away from `source_id` is still running."""
         with self._fade_lock:
-            return self._fade is not None and self._fade["from"].id == source_id
+            return self._fade_from_id(self._fade) == source_id
+
+    def settle_fade(self, next_source_id: Optional[str] = None):
+        """Land any running fade now. See _settle_fade."""
+        self._settle_fade(next_source_id=next_source_id)
 
     def _settle_fade(self, next_source_id: Optional[str] = None):
         """Jump any running fade to its end state before acting on the sinks.
@@ -530,7 +643,7 @@ class SourceManager:
         with self._fade_lock:
             if self._fade is None:
                 return
-            skip_leave = next_source_id is not None and self._fade["from"].id == next_source_id
+            skip_leave = next_source_id is not None and self._fade_from_id(self._fade) == next_source_id
             self._finish_fade_locked(skip_leave=skip_leave)
 
     def _finish_fade_locked(self, skip_leave: bool = False):
@@ -538,6 +651,19 @@ class SourceManager:
         fade, self._fade = self._fade, None
         self._fade_gen += 1  # retire the fade thread, if it's still stepping
         if fade is None:
+            return
+        if "source" in fade:
+            # A one-sink ramp. A fade-out ends silent with its producer
+            # stopped; then (like a fade-in) the sink returns to the
+            # source's normal route and stored level.
+            source = fade["source"]
+            if fade.get("on_done") is not None:
+                self.pulse.mute_sink(source.sink)
+                try:
+                    fade["on_done"]()
+                except Exception as e:
+                    self.logger.error(f"Fade-out of {source.label}: stopping failed: {e}")
+            self._assert_route(source)
             return
         prev, new = fade["from"], fade["to"]
         self.pulse.mute_sink(prev.sink)

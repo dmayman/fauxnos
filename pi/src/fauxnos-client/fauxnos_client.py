@@ -166,7 +166,7 @@ class FauxnosClient:
             # that value to go-librespot so Spotify phone slider tracks.
             evc_mirror_callback=self.source_manager.apply_external_mirror,
             library_play_callback=self._library_play if self.library_player else None,
-            library_stop_callback=self.library_player.stop if self.library_player else None,
+            library_stop_callback=self._library_stop if self.library_player else None,
             library_control_callback=self.library_player.control if self.library_player else None,
             library_seek_callback=self.library_player.seek if self.library_player else None,
             noise_callback=self.noise_settings.set if self.noise_settings else None,
@@ -470,10 +470,33 @@ class FauxnosClient:
         Playback starts before the switch, into the still-muted
         librarysink, so the track is already flowing when the sink comes
         up (instantly, or over fade_ms).
+
+        Already on Library (say, parked there after a faded stop), there
+        is no other sink to crossfade from, so a fade_ms play starts the
+        library sink from silence and ramps it up instead.
         """
-        if not self.library_player.play(items, loop=loop):
+        def play():
+            return self.library_player.play(items, loop=loop)
+
+        if fade_ms and self.source_manager.get_current_source() == LIBRARY_SOURCE_ID:
+            return self.source_manager.fade_in_source(LIBRARY_SOURCE_ID, fade_ms, play)
+        # Land a library fade-out first, so its stop can't cut this play.
+        self.source_manager.settle_fade(next_source_id=LIBRARY_SOURCE_ID)
+        if not play():
             return False
         return self.source_manager.switch_source(LIBRARY_SOURCE_ID, fade_ms=fade_ms)
+
+    def _library_stop(self, fade_ms: int = 0) -> bool:
+        """MQTT library/stop: stop the local MPD, fading out first if asked.
+
+        The fade only happens while Library is the room's audible source;
+        otherwise (or with no fade_ms) MPD stops at once. The room stays
+        on Library, silent, at its stored volume.
+        """
+        if fade_ms and self.source_manager.fade_out_source(
+                LIBRARY_SOURCE_ID, fade_ms, on_done=self.library_player.stop):
+            return True
+        return self.library_player.stop()
 
     def _set_ir_feedback_volume(self, volume_pct: int):
         """
