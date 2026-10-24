@@ -17,7 +17,9 @@ Topic schema:
                                       to the `library` source. Items are
                                       paths under the server's library
                                       folder, or full URLs.
-    set/clients/<deviceId>/library/stop  payload: (ignored)
+    set/clients/<deviceId>/library/stop  payload: "" to stop now, or
+                                      {"fade_ms": 60000} to fade to
+                                      silence first, then stop
     set/clients/<deviceId>/library/{toggle,next,prev}  payload: (ignored)
                                       transport for the Library player
     set/clients/<deviceId>/library/seek  payload: "104000" (ms)
@@ -93,7 +95,7 @@ class MQTTClient:
                  evc_state_callback: Optional[Callable[[bool, int], None]] = None,
                  evc_mirror_callback: Optional[Callable[[int], None]] = None,
                  library_play_callback: Optional[Callable[[List[str], bool, int], bool]] = None,
-                 library_stop_callback: Optional[Callable[[], bool]] = None,
+                 library_stop_callback: Optional[Callable[[int], bool]] = None,
                  library_control_callback: Optional[Callable[[str], bool]] = None,
                  library_seek_callback: Optional[Callable[[int], bool]] = None,
                  noise_callback: Optional[Callable[[Dict], bool]] = None,
@@ -127,7 +129,9 @@ class MQTTClient:
             library_play_callback: (items, loop, fade_ms) → bool. Queue items on
                 the local MPD and switch to the library source. Wired to
                 FauxnosClient._library_play.
-            library_stop_callback: () → bool. Stop local MPD playback.
+            library_stop_callback: (fade_ms) → bool. Stop local MPD playback,
+                after fading the library to silence when fade_ms > 0. Wired
+                to FauxnosClient._library_stop.
             library_control_callback: (action) → bool. Library transport:
                 toggle, next or prev. Wired to LibraryPlayer.control.
             library_seek_callback: (position_ms) → bool. Wired to
@@ -420,6 +424,18 @@ class MQTTClient:
                 return str(data.get("source", "")), cls._fade_ms(data.get("fade_ms"))
         return text, 0
 
+    @classmethod
+    def _parse_stop_payload(cls, payload: str) -> int:
+        """A library/stop payload is empty (stop now) or JSON {"fade_ms"}."""
+        text = (payload or "").strip()
+        if not text.startswith("{"):
+            return 0
+        try:
+            data = json.loads(text)
+        except Exception:
+            return 0
+        return cls._fade_ms(data.get("fade_ms")) if isinstance(data, dict) else 0
+
     def _publish_new_mode(self, source_id: str):
         self.update_mode(source_id)
         # Each source remembers its own volume; the UI is
@@ -511,8 +527,9 @@ class MQTTClient:
                     if self.library_stop_callback is None:
                         logger.warning("MQTT library/stop but no callback wired")
                     else:
-                        logger.info("MQTT library/stop")
-                        self.library_stop_callback()
+                        fade_ms = self._parse_stop_payload(payload)
+                        logger.info("MQTT library/stop" + (f" (fade {fade_ms} ms)" if fade_ms else ""))
+                        self.library_stop_callback(fade_ms)
 
                 elif action == "calibration" and sub_action:
                     # set/clients/<id>/calibration/<source_id> payload: "75"

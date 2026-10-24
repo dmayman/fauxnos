@@ -28,7 +28,7 @@ def make(sources=("spotify", "noise", "library")):
     c.mode_callback = lambda sid, fade_ms=0: c.calls.append(("mode", sid, fade_ms)) or True
     c.source_volume_getter = lambda sid: {"noise": 30, "library": 40}.get(sid, 50)
     c.library_play_callback = lambda items, loop, fade: c.calls.append(("play", items, loop, fade)) or True
-    c.library_stop_callback = lambda: c.calls.append(("stop",)) or True
+    c.library_stop_callback = lambda fade_ms: c.calls.append(("stop", fade_ms)) or True
     c.noise_callback = None
     c.library_control_callback = lambda action: c.calls.append(("control", action)) or True
     c.library_seek_callback = lambda ms: c.calls.append(("seek", ms)) or True
@@ -72,7 +72,7 @@ def test_library_play():
         c._handle_command("set", "library", bad, "play")
     assert len(c.calls) == 2, "malformed play payloads must be rejected"
     c._handle_command("set", "library", "", "stop")
-    assert c.calls[-1] == ("stop",)
+    assert c.calls[-1] == ("stop", 0)
     print("ok: library/play queues items (item or items), switches mode; library/stop stops")
 
 
@@ -109,9 +109,22 @@ def test_library_transport_and_now_playing():
     print("ok: library transport and seek reach the player; now-playing is parsed from mpc")
 
 
+def test_library_stop_fade_payload():
+    c = make()
+    c._handle_command("set", "library", json.dumps({"fade_ms": 60000}), "stop")
+    assert c.calls[-1] == ("stop", 60000), c.calls
+    c._handle_command("set", "library", json.dumps({"fade_ms": 99999999}), "stop")
+    assert c.calls[-1] == ("stop", MAX_FADE_MS)
+    for junk in ("", "{not json", json.dumps({"fade_ms": "x"}), json.dumps([1])):
+        c._handle_command("set", "library", junk, "stop")
+        assert c.calls[-1] == ("stop", 0), (junk, c.calls[-1])
+    print("ok: library/stop takes {fade_ms}; empty or bad payloads stop at once")
+
+
 if __name__ == "__main__":
     test_parse_mode_payload()
     test_mode_with_and_without_fade()
     test_library_play()
     test_library_play_without_library_source()
     test_library_transport_and_now_playing()
+    test_library_stop_fade_payload()
