@@ -24,6 +24,8 @@ final class FauxnosStore: ObservableObject {
     @Published private(set) var apiError: String?
     @Published private(set) var isLoading = false
     @Published private(set) var lastUpdated: Date?
+    /// Frozen card order (group ids); see `displayGroups`.
+    @Published private var cardOrder: [String] = []
 
     // Friendly display names from /api/clients, keyed by client id (web nameMap).
     @Published private(set) var clientNames: [String: String] = [:]
@@ -44,10 +46,25 @@ final class FauxnosStore: ObservableObject {
     // Rooms whose external volume controller (an amp that owns its own volume)
     // has stopped answering the server. Drives the controller toast.
     @Published private(set) var unresponsiveControllers: Set<String> = []
+    // Noise settings and Library player state per room (status/clients/<id>/
+    // noise and /library), and MQTT presence (status/clients/<id>/online,
+    // "offline" being the room's last will). A room missing from `online`
+    // has never published presence (not yet updated) — the REST view stands.
+    @Published var noise: [String: NoiseState] = [:]
+    @Published var libraryNow: [String: LibraryNowPlaying] = [:]
+    @Published private(set) var online: [String: Bool] = [:]
+
+    // The server-wide music library (GET /api/library). Set from the Library
+    // extension (FauxnosStore+Library.swift), hence the internal setter.
+    @Published var library: LibraryIndex = .empty
+    @Published var libraryLoaded = false
+    /// One-line status message for Library actions (toast in the Library UI).
+    @Published var libraryToast: LibraryToast?
+    var libraryPollTask: Task<Void, Never>?
 
     let config: ServerConfig
-    private let api: APIClient
-    private var mqtt: MQTTClient?
+    let api: APIClient
+    private(set) var mqtt: MQTTClient?
     private var refreshTask: Task<Void, Never>?
 
     // Outbound volume state (FX-18). Mirrors web `useMqtt`: optimistic write,
@@ -82,6 +99,9 @@ final class FauxnosStore: ObservableObject {
             "status/clients/+/playback",
             "status/clients/+/volume_controller",
             "status/clients/+/calibration/+",
+            "status/clients/+/noise",
+            "status/clients/+/library",
+            "status/clients/+/online",
         ]
         #if DEBUG
         // FX-77 dev control bus: a Mac tuning page publishes here; never shipped.
@@ -118,7 +138,19 @@ final class FauxnosStore: ObservableObject {
     func start() {
         connectMQTT()
         Task { await refresh() }
+        Task { await refreshLibrary() }
         startAutoRefresh()
+        // Freeze the card order once rooms have reported what they're playing.
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            self?.settleCardOrder()
+        }
+    }
+
+    /// Optimistically mark a room's source (the MQTT `mode` echo confirms).
+    /// Internal so the Library extension can use it after a play.
+    func setModeOptimistic(_ sourceId: String, clientId: String) {
+        modes[clientId] = sourceId
     }
 
     func refresh() async {
@@ -241,6 +273,22 @@ final class FauxnosStore: ObservableObject {
             } else {
                 unresponsiveControllers.remove(deviceId)
             }
+        case "noise":
+            if let n = try? Self.decoder.decode(NoiseState.self, from: payload) {
+                noise[deviceId] = n
+            }
+        case "library":
+            if payload.isEmpty {
+                libraryNow[deviceId] = nil
+            } else if let l = try? Self.decoder.decode(LibraryNowPlaying.self, from: payload) {
+                libraryNow[deviceId] = l
+            }
+        case "online":
+            switch String(decoding: payload, as: UTF8.self) {
+            case "online": online[deviceId] = true
+            case "offline": online[deviceId] = false
+            default: online[deviceId] = nil
+            }
         case "hello":
             // Hello can carry an initial volume-ish snapshot; M1 only mines it
             // for nothing required, but decode defensively so a future field
@@ -253,11 +301,30 @@ final class FauxnosStore: ObservableObject {
 
     // MARK: - Derived helpers for the view
 
-    /// Groups ordered for display: any actively playing media floats to the top
-    /// (then media-loaded-but-paused), everything else keeps its existing order.
-    /// Stable, so a routine refresh / position tick never reshuffles peers.
+    /// Groups in card order. The order is the media ranking (`rankedGroups`)
+    /// frozen by `settleCardOrder()`, so a card doesn't jump to the top when it
+    /// starts playing or drop when it pauses. Groups the frozen order doesn't
+    /// know (new, or before it's settled) follow in ranked order.
     var displayGroups: [SpeakerGroup] {
-        groups.enumerated()
+        let ranked = rankedGroups
+        guard !cardOrder.isEmpty else { return ranked }
+        let pos = Dictionary(cardOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
+        return ranked.enumerated()
+            .sorted { (pos[$0.element.id] ?? .max, $0.offset) < (pos[$1.element.id] ?? .max, $1.offset) }
+            .map(\.element)
+    }
+
+    /// Re-rank the cards (playing media first, then paused media, then the
+    /// rest) and freeze that order. Run shortly after launch, once state has
+    /// arrived, and when the app returns after a long time in the background.
+    func settleCardOrder() {
+        cardOrder = rankedGroups.map(\.id)
+    }
+
+    /// Any actively playing media floats to the top (then media-loaded-but-
+    /// paused), everything else keeps its existing order. Stable.
+    private var rankedGroups: [SpeakerGroup] {
+        liveGroups.enumerated()
             .sorted { a, b in
                 let ra = mediaRank(a.element), rb = mediaRank(b.element)
                 return ra == rb ? a.offset < b.offset : ra < rb
@@ -265,9 +332,29 @@ final class FauxnosStore: ObservableObject {
             .map(\.element)
     }
 
+    /// Groups minus rooms that report themselves offline over MQTT (and any
+    /// group left empty). snapserver keeps a dead room "connected" until its
+    /// TCP connection times out; MQTT presence knows within ~30 s.
+    var liveGroups: [SpeakerGroup] {
+        groups.compactMap { g in
+            let live = g.clients.filter { online[$0.id] != false }
+            if live.count == g.clients.count { return g }
+            return live.isEmpty ? nil : g.replacingClients(live)
+        }
+    }
+
     private func mediaRank(_ g: SpeakerGroup) -> Int {
-        guard track(for: g)?.hasMeta == true else { return 2 }
-        return playback(for: g)?.isPlaying == true ? 0 : 1
+        guard let home = homeClientId(of: g) else { return 2 }
+        switch currentSource(of: g) {
+        case "library":
+            guard let now = libraryNow[home], now.hasSong else { return 2 }
+            return now.isPlaying ? 0 : 1
+        case "noise":
+            return noise[home]?.isOn == false ? 2 : 1
+        default:
+            guard track(for: g)?.hasMeta == true else { return 2 }
+            return playback(for: g)?.isPlaying == true ? 0 : 1
+        }
     }
 
     /// Mirror of the web's home-client resolution: explicit field, else the
@@ -545,7 +632,7 @@ final class FauxnosStore: ObservableObject {
     var allClients: [SnapClient] {
         var seen = Set<String>()
         var out: [SnapClient] = []
-        for g in groups {
+        for g in liveGroups {
             for c in g.clients where seen.insert(c.id).inserted { out.append(c) }
         }
         return out.sorted {
@@ -576,6 +663,7 @@ extension FauxnosStore {
     /// (not in the Preview file) because the overlay properties are
     /// `private(set)`; only same-file code may seed them. Fixtures: `PreviewData`.
     static func preview(groups: [SpeakerGroup] = PreviewData.groups,
+                        modes: [String: String] = PreviewData.modes,
                         connected: Bool = true,
                         unresponsiveControllers: Set<String> = []) -> FauxnosStore {
         // Seed art-tint colors up front so cards theme on first render rather
@@ -585,12 +673,16 @@ extension FauxnosStore {
         let store = FauxnosStore()
         store.groups = groups
         store.volumes = PreviewData.volumes
-        store.modes = PreviewData.modes
+        store.modes = modes
         store.tracks = PreviewData.tracks
         store.playback = PreviewData.playback
         store.clientNames = PreviewData.names
         store.connectionState = connected ? .connected : .disconnected
         store.unresponsiveControllers = unresponsiveControllers
+        store.noise = PreviewData.noise
+        store.libraryNow = PreviewData.libraryNow
+        store.library = PreviewData.library
+        store.libraryLoaded = true
         store.lastUpdated = Date()
         return store
     }

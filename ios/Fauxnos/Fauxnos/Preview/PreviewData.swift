@@ -167,5 +167,37 @@ enum PreviewData {
 
     /// The full list, one of each variant.
     static let groups: [SpeakerGroup] = [groupV1, groupV3, groupV2, groupV4]
+
+    // MARK: Noise + Library fixtures
+
+    static let noise: [String: NoiseState] = [
+        "fauxnos002": NoiseState(on: true, color: "brown", lowCut: 80, highCut: 6000),
+        "fauxnos004": NoiseState(on: true, color: "pink", lowCut: 120, highCut: 4000),
+    ]
+
+    static let libraryNow: [String: LibraryNowPlaying] = [
+        "fauxnos003": LibraryNowPlaying(state: "play", file: "http://fauxnos.local/library/twinkle.mp3",
+                                        path: "twinkle.mp3", position: 1, queueLength: 3,
+                                        elapsedMs: 42_000, durationMs: 151_000,
+                                        updatedAt: Date().timeIntervalSince1970 * 1000),
+    ]
+
+    /// Launch with `-previewData` (DEBUG) to run on these fixtures with the
+    /// Noise and Library cards showing, and no network.
+    static let demoModes = modes.merging(["fauxnos003": "library", "fauxnos004": "noise"]) { $1 }
+
+    static let library = LibraryIndex(
+        tracks: [
+            LibraryTrack(id: "t1", path: "twinkle.mp3", title: "Twinkle Twinkle", artist: "Mom",
+                         album: "Lullabies", durationMs: 151_000, size: 2_400_000, art: nil),
+            LibraryTrack(id: "t2", path: "hush.mp3", title: "Hush Little Baby", artist: "Mom",
+                         album: "Lullabies", durationMs: 118_000, size: 1_900_000, art: nil),
+            LibraryTrack(id: "t3", path: "moon.m4a", title: "Goodnight Moon", artist: "Dad",
+                         album: "Bedtime Stories", durationMs: 205_000, size: 3_100_000, art: nil),
+        ],
+        playlists: [LibraryPlaylist(id: "p1", name: "Bedtime", trackIds: ["t1", "t3"])],
+        storage: LibraryStorage(total: 64_000_000_000, used: 10_000_000_000, free: 54_000_000_000),
+        jobs: [],
+        youtubeAvailable: true)
 }
 #endif
