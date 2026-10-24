@@ -103,6 +103,10 @@ class LibraryPlayer:
             return False
         return self._mpc(action)
 
+    def seek(self, position_ms: int) -> bool:
+        """Jump to a position in the current song."""
+        return self._mpc("seek", str(max(0, int(position_ms)) // 1000))
+
     def library_path(self, url: str) -> Optional[str]:
         """The library-relative path of a server URL, or None for other URLs."""
         prefix = f"http://{self.server_host}:{self.server_port}/library/"

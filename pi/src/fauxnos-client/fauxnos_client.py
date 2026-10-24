@@ -168,6 +168,7 @@ class FauxnosClient:
             library_play_callback=self._library_play if self.library_player else None,
             library_stop_callback=self.library_player.stop if self.library_player else None,
             library_control_callback=self.library_player.control if self.library_player else None,
+            library_seek_callback=self.library_player.seek if self.library_player else None,
             noise_callback=self.noise_settings.set if self.noise_settings else None,
             noise_getter=self.noise_settings.get if self.noise_settings else None,
         )

@@ -20,6 +20,7 @@ Topic schema:
     set/clients/<deviceId>/library/stop  payload: (ignored)
     set/clients/<deviceId>/library/{toggle,next,prev}  payload: (ignored)
                                       transport for the Library player
+    set/clients/<deviceId>/library/seek  payload: "104000" (ms)
     set/clients/<deviceId>/eq         payload: {"enabled": true,
                                                 "bands": {"125": 6.0, ...}}
     set/clients/<deviceId>/noise      payload: {"on": true, "color": "pink",
@@ -87,6 +88,7 @@ class MQTTClient:
                  library_play_callback: Optional[Callable[[List[str], bool, int], bool]] = None,
                  library_stop_callback: Optional[Callable[[], bool]] = None,
                  library_control_callback: Optional[Callable[[str], bool]] = None,
+                 library_seek_callback: Optional[Callable[[int], bool]] = None,
                  noise_callback: Optional[Callable[[Dict], bool]] = None,
                  noise_getter: Optional[Callable[[], Dict]] = None,
                  broker_host: Optional[str] = None,
@@ -121,6 +123,8 @@ class MQTTClient:
             library_stop_callback: () → bool. Stop local MPD playback.
             library_control_callback: (action) → bool. Library transport:
                 toggle, next or prev. Wired to LibraryPlayer.control.
+            library_seek_callback: (position_ms) → bool. Wired to
+                LibraryPlayer.seek.
             noise_callback: (changes) → bool. Merge + apply noise settings.
                 Wired to NoiseSettings.set.
             noise_getter: () → {"color","low_cut","high_cut"}. Wired to
@@ -156,6 +160,7 @@ class MQTTClient:
         self.library_play_callback = library_play_callback
         self.library_stop_callback = library_stop_callback
         self.library_control_callback = library_control_callback
+        self.library_seek_callback = library_seek_callback
         self._library_state = None
         self.noise_callback = noise_callback
         self.noise_getter = noise_getter
@@ -475,6 +480,18 @@ class MQTTClient:
                     else:
                         logger.info(f"MQTT library/{sub_action}")
                         self.library_control_callback(sub_action)
+
+                elif action == "library" and sub_action == "seek":
+                    if self.library_seek_callback is None:
+                        logger.warning("MQTT library/seek but no callback wired")
+                    else:
+                        try:
+                            position_ms = int(float(payload))
+                        except ValueError:
+                            logger.error(f"MQTT library/seek: bad position {payload!r}")
+                            return
+                        logger.info(f"MQTT library/seek {position_ms} ms")
+                        self.library_seek_callback(position_ms)
 
                 elif action == "library" and sub_action == "stop":
                     if self.library_stop_callback is None:

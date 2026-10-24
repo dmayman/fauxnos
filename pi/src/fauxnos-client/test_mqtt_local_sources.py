@@ -31,6 +31,7 @@ def make(sources=("spotify", "noise", "library")):
     c.library_stop_callback = lambda: c.calls.append(("stop",)) or True
     c.noise_callback = None
     c.library_control_callback = lambda action: c.calls.append(("control", action)) or True
+    c.library_seek_callback = lambda ms: c.calls.append(("seek", ms)) or True
     return c
 
 
@@ -98,7 +99,14 @@ def test_library_transport_and_now_playing():
         ("pause", "Mom - Twinkle.mp3", 2, 3, 14000, 120000), np
     lp.subprocess.run = lambda cmd, **kw: type("R", (), {"returncode": 0, "stdout": "volume: n/a\n"})()
     assert p.now_playing()["state"] == "stop"
-    print("ok: library transport reaches the player; now-playing is parsed from mpc")
+    c._handle_command("set", "library", "104000", "seek")
+    c._handle_command("set", "library", "soon", "seek")
+    assert [x for x in c.calls if x[0] == "seek"] == [("seek", 104000)], c.calls
+    seeks = []
+    lp.subprocess.run = lambda cmd, **kw: seeks.append(cmd) or type("R", (), {"returncode": 0, "stderr": ""})()
+    p.seek(104900)
+    assert seeks[-1][-2:] == ["seek", "104"], seeks[-1]
+    print("ok: library transport and seek reach the player; now-playing is parsed from mpc")
 
 
 if __name__ == "__main__":

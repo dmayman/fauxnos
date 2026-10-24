@@ -253,10 +253,11 @@ export function useMqtt() {
     }
   }, [])
 
-  /** Library transport on a room: 'toggle' | 'next' | 'prev'. */
-  const publishLibraryControl = useCallback((clientId, action) => {
+  /** Library transport on a room: 'toggle' | 'next' | 'prev', or 'seek'
+   *  with a position in ms as the payload. */
+  const publishLibraryControl = useCallback((clientId, action, payload = '') => {
     if (clientRef.current?.connected) {
-      clientRef.current.publish(`set/clients/${clientId}/library/${action}`, '')
+      clientRef.current.publish(`set/clients/${clientId}/library/${action}`, String(payload))
     }
   }, [])
 

@@ -838,8 +838,18 @@ function LibraryMediaCard({ clientId, libraryState, onLibraryControl }) {
     position_ms: libraryState.elapsed_ms || 0,
     updated_at: libraryState.updated_at,
   } : null)
-  const pos = Math.max(0, Math.min(livePos, duration || livePos))
+  // While dragging the scrubber, show the drag (scrub, 0-100); seek on release.
+  const [scrub, setScrub] = useState(null)
+  const progressHover = useSliderHover()
+  const pos = scrub != null && duration
+    ? (scrub / 100) * duration
+    : Math.max(0, Math.min(livePos, duration || livePos))
   const pct = duration > 0 ? (pos / duration) * 100 : 0
+  const commitSeek = () => {
+    if (scrub == null || !duration) return
+    onLibraryControl('seek', Math.round((scrub / 100) * duration))
+    setScrub(null)
+  }
   const art = artUrl(track)
 
   return (
@@ -874,8 +884,30 @@ function LibraryMediaCard({ clientId, libraryState, onLibraryControl }) {
           <div className="fx-group-progress">
             <div className="fx-group-progress-bar">
               <span className="fx-time-track">{fmtTime(pos)}</span>
-              <div className="fx-group-progress-track">
+              <div
+                className="fx-group-progress-track"
+                ref={progressHover.ref}
+                onPointerMove={progressHover.onPointerMove}
+                onPointerLeave={progressHover.onPointerLeave}
+              >
+                <div className="fx-group-progress-hover" />
                 <div className="fx-group-progress-fill" style={{ width: `${pct}%` }} />
+                <div className="fx-group-progress-thumb" style={{ left: `${pct}%` }} />
+                {duration > 0 && (
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={0.1}
+                    value={pct}
+                    className="fx-group-progress-input"
+                    aria-label="Seek"
+                    onChange={(e) => setScrub(parseFloat(e.target.value))}
+                    onPointerUp={commitSeek}
+                    onKeyUp={commitSeek}
+                    onBlur={commitSeek}
+                  />
+                )}
               </div>
               <span className="fx-time-track">{duration ? fmtTime(duration) : ''}</span>
             </div>
@@ -1229,7 +1261,7 @@ export default function GroupCard({
       noise: mqtt.noise?.[homeClientId],
       onNoiseChange: (changes) => mqtt.publishNoise?.(homeClientId, changes),
       libraryState: mqtt.library?.[homeClientId],
-      onLibraryControl: (action) => mqtt.publishLibraryControl?.(homeClientId, action),
+      onLibraryControl: (action, payload) => mqtt.publishLibraryControl?.(homeClientId, action, payload),
       empty: isEmptyMedia,
       groupName: nameMap[homeClientId] || homeClient?.host?.name || homeClientId,
     }
