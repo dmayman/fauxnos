@@ -9,7 +9,14 @@ import SwiftUI
 
 @main
 struct FauxnosApp: App {
-    @StateObject private var store = FauxnosStore()
+    @StateObject private var store: FauxnosStore = {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("-previewData") {
+            return .preview(modes: PreviewData.demoModes)
+        }
+        #endif
+        return FauxnosStore()
+    }()
 
     init() { AppFonts.register() }
 
@@ -17,7 +24,7 @@ struct FauxnosApp: App {
         WindowGroup {
             GroupsListView()
                 .environmentObject(store)
-                .task { store.start() }
+                .task { if store.lastUpdated == nil { store.start() } }
                 // Build the Tabler custom-icon map off-main at launch so the
                 // first source-picker open is instant rather than blocking the
                 // main thread on the font-charset walk (FX-76).

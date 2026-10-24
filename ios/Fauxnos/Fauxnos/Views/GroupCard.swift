@@ -38,6 +38,8 @@ struct GroupCard: View {
     @State private var showDeviceMenu = false
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
+    @State private var showNoiseTune = false
+    @State private var showLibraryBrowse = false
 
     // MARK: Derived state (mirrors web GroupCard)
 
@@ -54,16 +56,29 @@ struct GroupCard: View {
     private var source: String? { store.currentSource(of: group) }
 
     private var isMulti: Bool { group.clients.count > 1 }
-    // Spotify is the only source with a media player — other sources (AirPlay,
-    // Vinyl, Alexa, …) are local-per-device and carry no track metadata, so they
-    // render as a plain device card (V2) rather than the album-art media lockup.
-    private var hasMedia: Bool { source == "spotify" && track?.hasMeta == true }
+    // Media sources: Spotify (with a track), Noise (generated art + colour,
+    // cuts and power) and Library (the room's own player). Other sources
+    // (AirPlay, Vinyl, Alexa, …) carry no metadata, so they render as a plain
+    // device card (V2) rather than the album-art media lockup.
+    private var isNoise: Bool { source == "noise" }
+    private var isLibrary: Bool { source == "library" }
+    private var hasMedia: Bool { (source == "spotify" && track?.hasMeta == true) || isNoise || isLibrary }
+    /// The cover for whichever source is on (Spotify art, Noise art, Library
+    /// cover) — also the key for the card tint.
+    private var artURLString: String? { store.artURLString(for: group) }
+    private var noiseState: NoiseState? { store.noiseState(for: group) }
+    private var libraryNow: LibraryNowPlaying? { store.libraryNowPlaying(for: group) }
+    private var libraryTrack: LibraryTrack? { store.libraryTrack(forClient: homeId) }
+    /// Noise switched off, or Library with nothing loaded: the art and title dim.
+    private var mediaDimmed: Bool {
+        (isNoise && noiseState?.isOn == false) || (isLibrary && libraryNow?.hasSong != true)
+    }
     private var showMediaCard: Bool { hasMedia || isMulti }   // V1/V3/V4
     private var isEmptyMedia: Bool { isMulti && !hasMedia }    // V4 zero-state
     private var hasControls: Bool { source == "spotify" && hasMedia }
 
     private var palette: ArtPalette {
-        if hasMedia, let raw = artStore.color(for: track?.artUrl) {
+        if hasMedia, let raw = artStore.color(for: artURLString) {
             return buildArtPalette(from: raw, dark: colorScheme == .dark)
         }
         // FX-87: idle / no-art cards take the SAME translucent treatment as a
@@ -150,7 +165,13 @@ struct GroupCard: View {
         // palette updates a beat after the flip (it waits on async color
         // extraction of the new cover), so the tint settles in just behind it.
         .animation(.easeInOut(duration: 0.5), value: palette)
-        .task(id: track?.artUrl) { artStore.ensure(track?.artUrl) }
+        .task(id: artURLString) { artStore.ensure(artURLString) }
+        .sheet(isPresented: $showNoiseTune) {
+            if let home = homeId { NoiseTuneSheet(clientId: home).environmentObject(store) }
+        }
+        .sheet(isPresented: $showLibraryBrowse) {
+            if let home = homeId { LibraryBrowseSheet(clientId: home).environmentObject(store) }
+        }
         // The device menu (group-membership editor) opens from any row's name
         // chevron + the "All" chevron — a bottom sheet rather than the popover
         // the source picker uses, since composing a group is a heavier task.
@@ -185,6 +206,13 @@ struct GroupCard: View {
         VStack(alignment: .leading, spacing: Space.md) {
             HStack(alignment: .center, spacing: Space.lg) {
                 albumArt
+                    .opacity(mediaDimmed ? 0.45 : 1)
+                    .animation(.fxEase, value: mediaDimmed)
+                if isNoise {
+                    noiseHeader
+                } else if isLibrary {
+                    libraryHeader
+                } else {
                 VStack(alignment: .leading, spacing: Space.sm) {
                     // FX-79: title + artist cross-fade and slide top-to-bottom on a
                     // track change, cascaded (title leads, artist follows a beat
@@ -199,10 +227,181 @@ struct GroupCard: View {
                     if hasControls { transportActions }
                 }
                 Spacer(minLength: 0)
+                }
             }
             if hasControls { progressBar }
+            if isLibrary, libraryNow?.hasSong == true { libraryProgressBar }
         }
         .padding(Space.xl)
+    }
+
+    // MARK: Noise media (web NoiseMediaCard)
+
+    private var noiseColor: String { noiseState?.colorName ?? "brown" }
+    private var noiseOn: Bool { noiseState?.isOn != false }
+
+    /// Title (the colour menu) with power on the right, and Tune under it,
+    /// which opens the band graph. Title and Tune dim while noise is off.
+    private var noiseHeader: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(alignment: .center, spacing: Space.sm) {
+                Menu {
+                    ForEach(NoiseColor.allCases) { c in
+                        Button {
+                            Haptics.select()
+                            if let home = homeId { store.setNoise(["color": c.rawValue], clientId: home) }
+                        } label: {
+                            if c.rawValue == noiseColor { Label(c.label, systemImage: "checkmark") } else { Text(c.label) }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: Space.xs) {
+                        Text("\(noiseColor.capitalized) noise")
+                            .font(FxFont.titleTrack).foregroundStyle(FX.text).lineLimit(1)
+                        TablerIcon(glyph: .chevronDown, size: 14).mediaMuted(faint, additive: mediaAdditive)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .opacity(noiseOn ? 1 : 0.45)
+                .accessibilityLabel("Noise colour: \(noiseColor)")
+                Spacer(minLength: 0)
+                noisePowerButton
+            }
+            Button {
+                Haptics.tap()
+                showNoiseTune = true
+            } label: {
+                HStack(spacing: 6) {
+                    SourceIcon(icon: "outline:adjustments-horizontal", sourceId: nil, size: 17)
+                    Text("Tune").font(FxFont.metaTrack)
+                }
+                .foregroundStyle(palette.accent)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .opacity(noiseOn ? 1 : 0.45)
+            .accessibilityLabel("Tune low and high cuts")
+        }
+        .animation(.fxEase, value: noiseOn)
+    }
+
+    /// Filled with the accent while noise plays; plain while it's off.
+    private var noisePowerButton: some View {
+        Button {
+            Haptics.tap()
+            if let home = homeId { store.setNoise(["on": !noiseOn], clientId: home) }
+        } label: {
+            SourceIcon(icon: "outline:power", sourceId: nil, size: 20)
+                .foregroundStyle(noiseOn ? palette.accent : FX.text2)
+                .frame(width: 40, height: 40)
+                .background(Circle().fill(noiseOn ? palette.accent.opacity(0.18) : .clear))
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(noiseOn ? "Turn noise off" : "Turn noise on")
+    }
+
+    // MARK: Library media (web LibraryMediaCard)
+
+    private var libraryTitle: String {
+        if let t = libraryTrack { return t.title }
+        if let file = libraryNow?.file, libraryNow?.hasSong == true {
+            let name = (file.removingPercentEncoding ?? file).split(separator: "/").last.map(String.init) ?? file
+            return (name as NSString).deletingPathExtension
+        }
+        return "Nothing playing"
+    }
+
+    private var librarySubtitle: String? {
+        guard let t = libraryTrack else { return nil }
+        let parts = [t.artist, t.album].compactMap { $0 }.filter { !$0.isEmpty }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// Song + transport, with the browse button (pick something else to play
+    /// here) on the right, lined up with the rows' source trigger.
+    private var libraryHeader: some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack(alignment: .top, spacing: Space.sm) {
+                VStack(alignment: .leading, spacing: 0) {
+                    NowPlayingText(text: libraryTitle, font: FxFont.titleTrack, color: FX.text)
+                    if let sub = librarySubtitle {
+                        NowPlayingText(text: sub, font: FxFont.metaTrack, color: palette.accent, delay: 0.08)
+                    }
+                }
+                .opacity(mediaDimmed ? 0.45 : 1)
+                Spacer(minLength: 0)
+                Button {
+                    Haptics.tap()
+                    showLibraryBrowse = true
+                } label: {
+                    HStack(spacing: Space.xs) {
+                        SourceIcon(icon: "outline:music-search", sourceId: nil, size: 22).foregroundStyle(FX.text)
+                        TablerIcon(glyph: .chevronDown, size: 14).mediaMuted(faint, additive: mediaAdditive)
+                    }
+                    .frame(height: 40)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Browse the library")
+            }
+            if libraryNow?.hasSong == true { libraryTransport }
+        }
+    }
+
+    private var libraryTransport: some View {
+        HStack(spacing: Space.sm) {
+            TransportButton(asset: "MediaPrev", label: "Previous", tint: palette.accent) {
+                if let home = homeId { store.libraryControl("prev", clientId: home) }
+            }
+            Button {
+                if let home = homeId { store.libraryControl("toggle", clientId: home) }
+            } label: {
+                MediaGlyph(libraryNow?.isPlaying == true ? "MediaPause" : "MediaPlay", size: 20)
+                    .foregroundStyle(palette.accent)
+            }
+            .buttonStyle(MediaButtonStyle(tint: palette.accent))
+            .accessibilityLabel(libraryNow?.isPlaying == true ? "Pause" : "Play")
+            TransportButton(asset: "MediaNext", label: "Next", tint: palette.accent) {
+                if let home = homeId { store.libraryControl("next", clientId: home) }
+            }
+        }
+    }
+
+    /// Library scrubber: the room reports position + time; we interpolate
+    /// while playing and seek on release (device: mpc seek).
+    @ViewBuilder
+    private var libraryProgressBar: some View {
+        let duration = Double(libraryNow?.durationMs ?? libraryTrack?.durationMs ?? 0)
+        if duration > 0 {
+            TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                let live = libraryPosition(at: context.date, duration: duration)
+                let pos = scrubbing ? scrubValue : live
+                VStack(spacing: 2) {
+                    ScrubBar(value: pos, duration: duration, accent: palette.accent, track: palette.trackTint) {
+                        scrubbing = true; scrubValue = live
+                        dragController.controlsEngaged = true
+                    } onScrub: { scrubValue = $0 } onCommit: { v in
+                        Haptics.tap()
+                        if let home = homeId { store.librarySeek(Int(v), clientId: home) }
+                        scrubbing = false; dragController.controlsEngaged = false
+                    }
+                    HStack(spacing: 0) {
+                        Text(fmtTime(pos)).font(FxFont.timeTrack).monospacedDigit().mediaMuted(muted, additive: mediaAdditive)
+                        Spacer(minLength: Space.sm)
+                        Text(fmtTime(duration)).font(FxFont.timeTrack).monospacedDigit().mediaMuted(muted, additive: mediaAdditive)
+                    }
+                }
+            }
+        }
+    }
+
+    private func libraryPosition(at now: Date, duration: Double) -> Double {
+        guard let l = libraryNow else { return 0 }
+        let base = Double(l.elapsedMs ?? 0)
+        guard l.isPlaying else { return min(base, duration) }
+        let t0 = l.updatedAt ?? (now.timeIntervalSince1970 * 1000)
+        return min(max(base + (now.timeIntervalSince1970 * 1000) - t0, 0), duration)
     }
 
     private var emptyMediaRegion: some View {
@@ -229,7 +428,7 @@ struct GroupCard: View {
     /// back face. The source glyph is the no-cover fallback, exactly as before.
     private var albumArt: some View {
         FlippingAlbumArt(
-            artURL: hasMedia ? track?.artUrl : nil,
+            artURL: hasMedia ? artURLString : nil,
             size: 100,
             cornerRadius: Radius.art,
             borderColor: FX.line,

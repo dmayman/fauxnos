@@ -177,6 +177,146 @@ struct APIClient {
         try await post("api/groups/return-home", json: ["client_id": clientId])
     }
 
+    // MARK: - Library (server-wide music library; docs/LOCAL_SOURCES.md)
+
+    /// One request with any method and an optional JSON body. Returns the raw
+    /// body; a non-2xx throws `.http` (callers that care read the server's
+    /// `{"error": …}` message via `errorMessage(_:)`).
+    @discardableResult
+    func send(_ method: String, _ path: String, json body: [String: Any]? = nil,
+              timeout: TimeInterval = 15) async throws -> Data {
+        guard let url = URL(string: "\(config.apiBaseURL.absoluteString)/\(path)") else {
+            throw APIError.badURL
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.timeoutInterval = timeout
+        if let body {
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        }
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            throw APIError.transport(error)
+        }
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
+            throw LibraryRequestError(status: http.statusCode, message: Self.errorMessage(data))
+        }
+        return data
+    }
+
+    /// The server's `{"error": "…"}` text, if any.
+    static func errorMessage(_ data: Data) -> String? {
+        (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["error"] as? String
+    }
+
+    private func decode<T: Decodable>(_ data: Data, as type: T.Type = T.self) throws -> T {
+        do { return try Self.makeDecoder().decode(T.self, from: data) }
+        catch { throw APIError.decoding(error) }
+    }
+
+    func fetchLibrary() async throws -> LibraryIndex {
+        try await get("api/library")
+    }
+
+    /// Play songs (in this order) in a room — `POST /api/library/play`. The
+    /// room switches to the Library source; its player state echoes over MQTT.
+    func playLibrary(clientId: String, trackIds: [String]) async throws {
+        try await send("POST", "api/library/play", json: ["client_id": clientId, "track_ids": trackIds])
+    }
+
+    func updateTrack(_ id: String, title: String, artist: String, album: String) async throws {
+        try await send("PATCH", "api/library/tracks/\(id)", json: ["title": title, "artist": artist, "album": album])
+    }
+
+    func deleteTrack(_ id: String) async throws {
+        try await send("DELETE", "api/library/tracks/\(id)")
+    }
+
+    func createPlaylist(name: String, trackIds: [String]) async throws {
+        try await send("POST", "api/library/playlists", json: ["name": name, "track_ids": trackIds])
+    }
+
+    func updatePlaylist(_ id: String, name: String? = nil, add: [String]? = nil, remove: [String]? = nil) async throws {
+        var body: [String: Any] = [:]
+        if let name { body["name"] = name }
+        if let add { body["add"] = add }
+        if let remove { body["remove"] = remove }
+        try await send("PATCH", "api/library/playlists/\(id)", json: body)
+    }
+
+    func deletePlaylist(_ id: String) async throws {
+        try await send("DELETE", "api/library/playlists/\(id)")
+    }
+
+    func youtubePreview(_ url: String) async throws -> LinkPreview {
+        try decode(try await send("POST", "api/library/youtube/preview", json: ["url": url], timeout: 60))
+    }
+
+    func spotifyPreview(_ url: String) async throws -> LinkPreview {
+        try decode(try await send("POST", "api/library/spotify/preview", json: ["url": url], timeout: 90))
+    }
+
+    /// Queue a background import of a video's audio. `tags`/`artUrl` carry a
+    /// Spotify song's details and cover; title/artist/thumbnail show the job
+    /// in the song list while it runs.
+    func importYoutube(url: String, title: String?, artist: String?, thumbnail: String?,
+                       tags: [String: String]? = nil, artUrl: String? = nil) async throws {
+        var body: [String: Any] = ["url": url]
+        if let title { body["title"] = title }
+        if let artist { body["artist"] = artist }
+        if let thumbnail { body["thumbnail"] = thumbnail }
+        if let tags { body["tags"] = tags }
+        if let artUrl { body["art_url"] = artUrl }
+        try await send("POST", "api/library/youtube", json: body)
+    }
+
+    /// Upload MP3/M4A files (multipart field `file`). Returns how many the
+    /// server added; per-file rejections come back as messages.
+    func uploadLibrary(files: [URL]) async throws -> (added: Int, errors: [String]) {
+        guard let url = URL(string: "\(config.apiBaseURL.absoluteString)/api/library/upload") else {
+            throw APIError.badURL
+        }
+        let boundary = "fauxnos-\(UUID().uuidString)"
+        var body = Data()
+        for file in files {
+            let accessed = file.startAccessingSecurityScopedResource()
+            defer { if accessed { file.stopAccessingSecurityScopedResource() } }
+            let data = try Data(contentsOf: file)
+            let mime = file.pathExtension.lowercased() == "m4a" ? "audio/mp4" : "audio/mpeg"
+            body.append(Data("--\(boundary)\r\n".utf8))
+            body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"\(file.lastPathComponent)\"\r\n".utf8))
+            body.append(Data("Content-Type: \(mime)\r\n\r\n".utf8))
+            body.append(data)
+            body.append(Data("\r\n".utf8))
+        }
+        body.append(Data("--\(boundary)--\r\n".utf8))
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 300
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        let (data, response) = try await session.upload(for: request, from: body)
+        let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let added = (json?["added"] as? [Any])?.count ?? 0
+        let errors = (json?["errors"] as? [[String: Any]])?.compactMap { e -> String? in
+            guard let msg = e["error"] as? String else { return nil }
+            return "\(e["file"] as? String ?? "File"): \(msg)"
+        } ?? []
+        if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode), added == 0 {
+            throw LibraryRequestError(status: http.statusCode, message: errors.first ?? Self.errorMessage(data))
+        }
+        return (added, errors)
+    }
+
+    /// Cover art for a library song (`/library-art/<file>`).
+    func libraryArtURL(_ art: String?) -> URL? {
+        guard let art, !art.isEmpty else { return nil }
+        return URL(string: "\(config.apiBaseURL.absoluteString)/library-art/\(art)")
+    }
+
     /// Restart the fauxnos-server process (`POST /api/server/restart`). The
     /// server schedules a detached `systemctl --user restart` ~1s out and
     /// returns 202 immediately, so this call resolves before the bounce
@@ -184,6 +324,13 @@ struct APIClient {
     func restartServer() async throws {
         try await post("api/server/restart")
     }
+}
+
+/// A failed Library call, carrying the server's own message when it sent one.
+struct LibraryRequestError: LocalizedError {
+    let status: Int
+    let message: String?
+    var errorDescription: String? { message ?? "Server returned HTTP \(status)" }
 }
 
 /// Transport actions the server whitelists (`handle_post_client_playback`).

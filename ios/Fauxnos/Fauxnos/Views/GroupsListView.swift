@@ -40,6 +40,7 @@ struct GroupsListView: View {
     @State private var settingsShown = false
     @State private var settingsFrame: CGRect = .zero
     @State private var confirmRestart = false
+    @State private var showLibrary = false
 
     private static let settingsAnimation: Animation = .spring(response: 0.32, dampingFraction: 0.74)
     private static let settingsCloseAnimation: Animation = .spring(response: 0.28, dampingFraction: 0.62)
@@ -57,8 +58,9 @@ struct GroupsListView: View {
         #if DEBUG
         if let demo = dev.s("demo.art") { return demo }
         #endif
-        for g in store.displayGroups where store.currentSource(of: g) == "spotify" {
-            if let t = store.track(for: g), t.hasMeta, let s = t.artUrl { return s }
+        // Spotify, Noise or Library — whichever playing group has a cover.
+        for g in store.displayGroups {
+            if let s = store.artURLString(for: g) { return s }
         }
         return nil
     }
@@ -173,6 +175,7 @@ struct GroupsListView: View {
                                       crossfade: backdropCrossfade,
                                       scrollOpacity: wordmarkScrollOpacity)
                     }
+                    libraryToolbarItem
                     gearToolbarItem
                 }
                 // Fade the wordmark out as the list scrolls up into the bar.
@@ -217,6 +220,7 @@ struct GroupsListView: View {
         // the gear the same way the source dropdown anchors to its trigger.
         .overlay { settingsMenuLayer }
         .tint(FX.text)
+        .sheet(isPresented: $showLibrary) { LibraryScreen().environmentObject(store) }
         .environmentObject(dragController)
         .environmentObject(sourceMenu)
         // Restart interrupts audio in every room, so it's a confirmed action.
@@ -243,6 +247,31 @@ struct GroupsListView: View {
         } else {
             ToolbarItem(placement: .topBarTrailing) { gearContent }
         }
+    }
+
+    /// The leading "Library" button — the server-wide library (web header's
+    /// Library pill). Bare glyph like the gear, same adaptive colour and fade.
+    @ToolbarContentBuilder
+    private var libraryToolbarItem: some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .topBarLeading) { libraryButton }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .topBarLeading) { libraryButton }
+        }
+    }
+
+    private var libraryButton: some View {
+        SourceIcon(icon: "outline:playlist", sourceId: nil, size: 22)
+            .foregroundStyle(wordmarkStyle.color)
+            .blendMode(wordmarkStyle.blend)
+            .opacity(wordmarkScrollOpacity)
+            .padding(.trailing, Space.md)
+            .padding(.vertical, Space.sm)
+            .contentShape(Rectangle())
+            .onTapGesture { Haptics.tap(); showLibrary = true }
+            .accessibilityLabel("Library")
+            .accessibilityAddTraits(.isButton)
     }
 
     /// The gear glyph itself + the geometry reader that captures its global frame
