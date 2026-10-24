@@ -1,0 +1,23 @@
+[Unit]
+Description=Fauxnos noise generator (sox → noisesink, local)
+# pulseaudio must own noisesink before pacat tries to write to it.
+After=pulseaudio.service
+Wants=pulseaudio.service
+# Never hit systemd's start-rate limit and give up (see Restart= below).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Optional: FAUXNOS_NOISE_COLOR=white|pink|brown (default brown).
+EnvironmentFile=-%h/.config/fauxnos/noise.env
+# {CLIENT_DIR} is filled in by setup-client.py (setup_local_sources).
+ExecStart={CLIENT_DIR}/scripts/noise-generator.sh
+# This is the sleep source, so it must not stay down. Restart on ANY
+# exit — a PulseAudio restart kills pacat, which ends the pipeline
+# cleanly from systemd's point of view — and never give up.
+Restart=always
+RestartSec=1
+
+# No [Install] section on purpose: the source manager starts this when
+# the `noise` source becomes active and stops it on leave (see the
+# noise source's on_enter_command / on_leave_command).

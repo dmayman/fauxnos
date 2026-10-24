@@ -38,13 +38,18 @@ const FALLBACK_DAC_OVERLAYS = [
 
 // Built-in source definitions. Spotify + AirPlay are always shown
 // (shairport-sync is installed on every fauxnos device by install.sh,
-// so AirPlay is a first-class default). Analog is gated by has_adc
-// and can be added/removed via the + menu — clicking + Analog In
-// flips has_adc=true server-side and re-renders.
+// so AirPlay is a first-class default). So are Noise + Library, the
+// on-device local sources (sox and MPD, also installed everywhere — see
+// docs/LOCAL_SOURCES.md). Analog is gated by has_adc and can be
+// added/removed via the + menu — clicking + Analog In flips
+// has_adc=true server-side and re-renders. Mirrors the server's
+// _DEFAULT_BUILTIN_SOURCES.
 const BUILTIN_DEFS = [
-  { id: 'spotify', label: 'Spotify',   vc: 'snapcast', alwaysOn: true },
-  { id: 'airplay', label: 'AirPlay',   vc: 'external', alwaysOn: true },
-  { id: 'analog',  label: 'Analog In', vc: 'self',     gatedBy: 'has_adc' },
+  { id: 'spotify', label: 'Spotify',   vc: 'snapcast', sink: 'snapsink',    alwaysOn: true },
+  { id: 'airplay', label: 'AirPlay',   vc: 'external', sink: 'airplaysink', alwaysOn: true },
+  { id: 'noise',   label: 'Noise',     vc: 'self',     sink: 'noisesink',   alwaysOn: true },
+  { id: 'library', label: 'Library',   vc: 'self',     sink: 'librarysink', alwaysOn: true },
+  { id: 'analog',  label: 'Analog In', vc: 'self',     sink: 'analogsink',  gatedBy: 'has_adc' },
 ]
 const BUILTIN_IDS = new Set(BUILTIN_DEFS.map(d => d.id))
 
@@ -228,7 +233,7 @@ export default function DevicePanel({ client, mqtt, onClose, onRefresh, onUpdate
     .filter(def => def.alwaysOn || (def.gatedBy === 'has_adc' && hasAdc))
     .map(def => sources.find(s => s.id === def.id) || {
       id: def.id, label: def.label, type: 'internal', category: 'default',
-      sink: def.id === 'analog' ? 'analogsink' : 'snapsink',
+      sink: def.sink,
       starting_volume: 50, volume_controller: def.vc,
     })
 

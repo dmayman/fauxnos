@@ -32,6 +32,13 @@ load-module module-null-sink sink_name=snapsink sink_properties="device.descript
 # while airplay is the active source so the externally-attenuated
 # audio passes through transparently.
 load-module module-null-sink sink_name=airplaysink sink_properties="device.description='AirPlay Output'"
+# noisesink — fauxnos-noise.service (sox → pacat) writes generated noise
+# here. Generated on the device itself, on purpose: overnight noise must
+# not depend on the server, snapcast or Wi-Fi. See docs/LOCAL_SOURCES.md.
+load-module module-null-sink sink_name=noisesink sink_properties="device.description='Noise Output'"
+# librarysink — the device's own MPD (fauxnos-mpd.service) plays here,
+# streaming MP3s over HTTP from the server's /library/ folder.
+load-module module-null-sink sink_name=librarysink sink_properties="device.description='Library Output'"
 
 # --- Analog Input Loopback ---
 # Pipes your analog input directly to the 'analogsink' virtual sink.
@@ -77,7 +84,9 @@ load-module module-ladspa-sink sink_name=eq_sink sink_master=alsa_output.platfor
 #
 # latency_msec=80: chosen for the 5-loopback case on a Pi Zero 2 W to
 # avoid underrun cascades. Pi 3B+ has more headroom so could likely run
-# lower, but kept consistent for now.
+# lower, but kept consistent for now. noisesink + librarysink (2026-10)
+# bring it to six live loopbacks; if a Zero 2 W starts crackling, this
+# is the first place to look.
 #
 # A default.pa edit only takes effect after PA restart, so install.sh
 # below mark_reboot_needed's any time this file's mtime is newer than
@@ -89,6 +98,8 @@ load-module module-loopback source=systemsink.monitor sink=eq_sink latency_msec=
 load-module module-loopback source=analogsink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-analogsink-out
 load-module module-loopback source=snapsink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-snapsink-out
 load-module module-loopback source=airplaysink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-airplaysink-out
+load-module module-loopback source=noisesink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-noisesink-out
+load-module module-loopback source=librarysink.monitor sink=eq_sink latency_msec=80 sink_input_properties=media.role=fauxnos-librarysink-out
 
 # --- Set Default Sink ---
 # This makes 'snapsink' the default. Applications that don't specify a

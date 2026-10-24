@@ -87,12 +87,13 @@ sudo apt install playerctl dbus-x11 libglib2.0-bin
 **Audio Sources**
 - **Internal**: Direct PulseAudio routing (Spotify, Multiroom/Snapcast, Analog)
 - **External**: API-controlled sources (Alexa, Vinyl, Aux)
+- **Local**: Noise (generated on-device) and Library (device MPD streaming from the server) — see `docs/LOCAL_SOURCES.md`
 
 ## Development Patterns
 
 ### Audio Source Switching
 - Configuration-driven source definitions
-- Smooth volume fade transitions between sources
+- Source switches are instant by default; a switch can opt into a crossfade with `fade_ms` (background thread, see `docs/LOCAL_SOURCES.md`)
 - Automatic switching based on audio detection (analog input) and Spotify playback events
 - Per-source volume memory and external control integration
 

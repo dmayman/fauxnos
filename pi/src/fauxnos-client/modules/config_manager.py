@@ -74,6 +74,14 @@ class SourceConfig:
     # — analog could pulse an "amp off" external API, etc.
     on_leave_command: Optional[str] = None
 
+    # Optional shell command to run when this source becomes (or is
+    # re-asserted as) the active source. Fired async, like
+    # on_leave_command, and re-run on every route re-assertion, so it
+    # must be idempotent. Primary use: noise runs `systemctl --user start
+    # fauxnos-noise.service` — starting it again is a no-op, and a
+    # generator that died gets brought back.
+    on_enter_command: Optional[str] = None
+
 
 @dataclass
 class ButtonPinConfig:
@@ -232,6 +240,7 @@ class ConfigManager:
                 control_url=source_data.get('control_url'),
                 control_payload=source_data.get('control_payload'),
                 on_leave_command=source_data.get('on_leave_command'),
+                on_enter_command=source_data.get('on_enter_command'),
             )
 
         return sources

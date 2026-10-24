@@ -151,6 +151,12 @@ install_system_dependencies() {
         # latency between packets and breaks snapcast's TCP stream
         # (audio cutouts under sustained playback, diagnosed 2026-05-27).
         iw
+        # Local sources (docs/LOCAL_SOURCES.md): sox generates the Noise
+        # source on-device; mpd + mpc are the Library player, which
+        # streams MP3s from the server's /library/ folder.
+        sox
+        mpd
+        mpc
     )
     local pip_pkgs=(requests pyyaml paho-mqtt websocket-client)
 
@@ -340,6 +346,13 @@ configure_system() {
     # so the system one has nothing to contribute.
     log "Disabling system shairport-sync.service (we use the user-level service)..."
     sudo systemctl disable --now shairport-sync.service 2>/dev/null || true
+
+    # Disable the apt-installed system mpd (service + socket). It listens
+    # on :6600 as the `mpd` user with no access to our PulseAudio session,
+    # which would stop our user-level fauxnos-mpd.service (the Library
+    # source) from binding the port at all.
+    log "Disabling system mpd.service (we use the user-level fauxnos-mpd)..."
+    sudo systemctl disable --now mpd.service mpd.socket 2>/dev/null || true
 
     # Enable user service lingering for automatic startup
     log "Enabling user service lingering for automatic startup..."
@@ -658,13 +671,18 @@ download_client_code() {
         "configs/systemd/fauxnos-roam-watchdog.timer"
         "configs/shairport-sync/fauxnos.conf"
         "configs/shairport-sync/claim-source.sh"
+        "configs/systemd/fauxnos-noise.service"
+        "configs/systemd/fauxnos-mpd.service"
+        "configs/mpd/fauxnos.conf"
     )
 
-    # Standalone helper scripts installed outside $INSTALL_DIR (see
-    # configure_roam_watchdog). Kept in their own array so it's obvious
-    # these aren't imported by fauxnos_client.py.
+    # Standalone helper scripts, not imported by fauxnos_client.py. The
+    # roam watchdog is copied outside $INSTALL_DIR (see
+    # configure_roam_watchdog); the noise generator runs in place from
+    # fauxnos-noise.service.
     local script_files=(
         "scripts/wifi-roam-watchdog.py"
+        "scripts/noise-generator.sh"
     )
 
     # Python modules
@@ -675,6 +693,7 @@ download_client_code() {
         "modules/go_librespot.py"
         "modules/gpio_buttons.py"
         "modules/ir_listener.py"
+        "modules/library_player.py"
         "modules/logger.py"
         "modules/mqtt_client.py"
         "modules/pulse_controller.py"
@@ -727,6 +746,7 @@ download_client_code() {
     chmod +x fauxnos_client.py 2>/dev/null || true
     chmod +x install.sh 2>/dev/null || true
     chmod +x pi-setup.sh 2>/dev/null || true
+    chmod +x scripts/noise-generator.sh 2>/dev/null || true
 
     log_success "Client code downloaded to: $INSTALL_DIR"
 }
