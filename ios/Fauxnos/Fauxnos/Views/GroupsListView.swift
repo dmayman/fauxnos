@@ -41,6 +41,8 @@ struct GroupsListView: View {
     @State private var settingsFrame: CGRect = .zero
     @State private var confirmRestart = false
     @State private var showLibrary = false
+    /// Measured height of the open source menu, to decide whether it opens up.
+    @State private var sourceMenuHeight: CGFloat = 0
 
     private static let settingsAnimation: Animation = .spring(response: 0.32, dampingFraction: 0.74)
     private static let settingsCloseAnimation: Animation = .spring(response: 0.28, dampingFraction: 0.62)
@@ -340,19 +342,29 @@ struct GroupsListView: View {
         if let id = sourceMenu.openGroupId,
            let group = store.displayGroups.first(where: { $0.id == id }) {
             let f = sourceMenu.triggerFrame
-            ZStack(alignment: .topLeading) {
-                // Invisible scrim: a tap anywhere outside the menu closes it.
-                Color.black.opacity(0.001)
-                    .contentShape(Rectangle())
-                    .onTapGesture { sourceMenu.close() }
-                SourcePickerMenu(group: group) { sourceMenu.close() }
-                    // Pop up from the trigger corner: scale + fade driven by
-                    // `shown` (an explicit scaleEffect, so the glass scales too).
-                    .scaleEffect(sourceMenu.shown ? 1 : 0.7, anchor: .topTrailing)
-                    .opacity(sourceMenu.shown ? 1 : 0)
-                    // Fixed 260-wide card: right edge under the trigger's right
-                    // edge, hugging just below it. `.offset` is render-only.
-                    .offset(x: max(Space.lg, f.maxX - 260), y: f.maxY + 2)
+            GeometryReader { screen in
+                // Open below the trigger unless that would run off the bottom
+                // and there's more room above — then open upward instead.
+                let h = sourceMenuHeight
+                let bottomLimit = screen.size.height - screen.safeAreaInsets.bottom - Space.sm
+                let topLimit = screen.safeAreaInsets.top + Space.sm
+                let up = f.maxY + 2 + h > bottomLimit && f.minY - topLimit > bottomLimit - f.maxY
+                let y = up ? max(topLimit, f.minY - 2 - h) : f.maxY + 2
+                ZStack(alignment: .topLeading) {
+                    // Invisible scrim: a tap anywhere outside the menu closes it.
+                    Color.black.opacity(0.001)
+                        .contentShape(Rectangle())
+                        .onTapGesture { sourceMenu.close() }
+                    SourcePickerMenu(group: group) { sourceMenu.close() }
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { sourceMenuHeight = $0 }
+                        // Pop from the trigger corner: scale + fade driven by
+                        // `shown` (an explicit scaleEffect, so the glass scales too).
+                        .scaleEffect(sourceMenu.shown ? 1 : 0.7, anchor: up ? .bottomTrailing : .topTrailing)
+                        .opacity(sourceMenu.shown ? 1 : 0)
+                        // Fixed 260-wide card: right edge under the trigger's right
+                        // edge, hugging its bottom (or top). `.offset` is render-only.
+                        .offset(x: max(Space.lg, f.maxX - 260), y: y)
+                }
             }
             // Span the whole screen ignoring the safe area so this layer's origin is
             // the true screen origin — matching the `.global` trigger frame the menu
