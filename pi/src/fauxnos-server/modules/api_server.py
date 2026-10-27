@@ -3604,7 +3604,7 @@ rm -- "$0"
     #   set/library/play      {"room": "<client id or room name>",
     #                          "tracks": ["<id, path or title>", ...]
     #                            or "playlist": "<name or id>",
-    #                          "loop": false, "fade_ms": 0}
+    #                          "loop": false, "shuffle": false, "fade_ms": 0}
     #
     # set/library/play resolves the names here and sends the room's player
     # set/clients/<id>/library/play with the files.
@@ -3659,6 +3659,8 @@ rm -- "$0"
             self.log(f"set/library/play: no matching songs in {data}", "WARNING")
             return
         payload_out = {"items": [t["path"] for t in tracks], "loop": bool(data.get("loop", False))}
+        if data.get("shuffle"):
+            payload_out["shuffle"] = True
         if data.get("fade_ms"):
             payload_out["fade_ms"] = data["fade_ms"]
         self.log(f"set/library/play: {len(tracks)} song(s) on {room}")
@@ -3794,7 +3796,7 @@ rm -- "$0"
         return jsonify(job), 202
 
     def handle_library_play(self):
-        """POST /api/library/play {client_id, track_ids, loop?} — play on a room.
+        """POST /api/library/play {client_id, track_ids, loop?, shuffle?} — play on a room.
 
         Sends the room's MPD the tracks' library paths (set/clients/<id>/
         library/play), which also switches the room to the Library source.
@@ -3808,8 +3810,10 @@ rm -- "$0"
         items = [paths[t] for t in track_ids if t in paths]
         if not items:
             return jsonify({"error": "None of those tracks are in the library"}), 404
-        payload = json.dumps({"items": items, "loop": bool(data.get("loop", False))})
-        if not self._publish_mqtt(f"set/clients/{client_id}/library/play", payload):
+        payload = {"items": items, "loop": bool(data.get("loop", False))}
+        if data.get("shuffle"):
+            payload["shuffle"] = True
+        if not self._publish_mqtt(f"set/clients/{client_id}/library/play", json.dumps(payload)):
             return jsonify({"error": "MQTT broker unavailable"}), 503
         return jsonify({"status": "ok", "count": len(items)})
 

@@ -114,13 +114,16 @@ def demo():
         srv._handle_library_mqtt_play(json.dumps({"room": "fauxnos003", "tracks": ["twinkle"], "fade_ms": 3000}).encode())
         assert sent[-1] == ("set/clients/fauxnos003/library/play",
                             {"items": ["Twinkle.mp3"], "loop": False, "fade_ms": 3000}), sent[-1]
+        srv._handle_library_mqtt_play(json.dumps({"room": "Office", "playlist": "Bedtime", "shuffle": True}).encode())
+        assert sent[-1] == ("set/clients/fauxnos003/library/play",
+                            {"items": ["b.mp3", "Twinkle.mp3"], "loop": False, "shuffle": True}), sent[-1]
         srv._handle_library_mqtt_play(json.dumps({"room": "Garage", "tracks": ["twinkle"]}).encode())
         srv._handle_library_mqtt_play(json.dumps({"room": "Office", "tracks": ["nope"]}).encode())
-        assert len(sent) == 2, "unknown rooms and songs must not send anything"
+        assert len(sent) == 3, "unknown rooms and songs must not send anything"
         srv._publish_library_index()
         topic, index = sent[-1]
         assert topic == "status/library/index" and len(index["tracks"]) == 2 and index["playlists"][0]["name"] == "Bedtime"
-        print("ok: set/library/play resolves rooms, playlists and titles; the index is published")
+        print("ok: set/library/play resolves rooms, playlists and titles, passes shuffle; the index is published")
 
 
 def test_youtube_match():

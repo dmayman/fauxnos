@@ -233,7 +233,7 @@ class FakePlayer:
     def __init__(self, calls, ok=True):
         self.calls, self.ok = calls, ok
 
-    def play(self, items, loop=False):
+    def play(self, items, loop=False, shuffle=False):
         self.calls.append(("play", tuple(items)))
         return self.ok
 
