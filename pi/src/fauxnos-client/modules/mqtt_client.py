@@ -12,7 +12,8 @@ Topic schema:
                                       {"source": "noise", "fade_ms": 8000}
                                       to crossfade (routines; UI sends plain)
     set/clients/<deviceId>/library/play  payload: {"items": ["lullabies/x.mp3"],
-                                                   "loop": false, "fade_ms": 0}
+                                                   "loop": false, "shuffle": false,
+                                                   "fade_ms": 0}
                                       plays on this device's MPD and switches
                                       to the `library` source. Items are
                                       paths under the server's library
@@ -94,7 +95,7 @@ class MQTTClient:
                  eq_getter: Optional[Callable[[], Dict]] = None,
                  evc_state_callback: Optional[Callable[[bool, int], None]] = None,
                  evc_mirror_callback: Optional[Callable[[int], None]] = None,
-                 library_play_callback: Optional[Callable[[List[str], bool, int], bool]] = None,
+                 library_play_callback: Optional[Callable[[List[str], bool, int, bool], bool]] = None,
                  library_stop_callback: Optional[Callable[[int], bool]] = None,
                  library_control_callback: Optional[Callable[[str], bool]] = None,
                  library_seek_callback: Optional[Callable[[int], bool]] = None,
@@ -126,7 +127,7 @@ class MQTTClient:
             ir_learn_cancel_callback: () → bool. Cancel an in-flight learn.
                 Wired to IRListener.cancel_learning. Returns False if no
                 learn was active.
-            library_play_callback: (items, loop, fade_ms) → bool. Queue items on
+            library_play_callback: (items, loop, fade_ms, shuffle) → bool. Queue items on
                 the local MPD and switch to the library source. Wired to
                 FauxnosClient._library_play.
             library_stop_callback: (fade_ms) → bool. Stop local MPD playback,
@@ -479,7 +480,7 @@ class MQTTClient:
 
                 elif action == "library" and sub_action == "play":
                     # set/clients/<id>/library/play payload:
-                    #   {"items": [...], "loop": bool, "fade_ms": int}
+                    #   {"items": [...], "loop": bool, "shuffle": bool, "fade_ms": int}
                     # ("item": "..." is accepted for a single track.)
                     if self.library_play_callback is None or LIBRARY_SOURCE_ID not in self.sources_list:
                         logger.warning("MQTT library/play but this device has no library source")
@@ -499,9 +500,11 @@ class MQTTClient:
                         logger.error(f"MQTT library/play: 'items' must be a non-empty list: {payload!r}")
                         return
                     loop = bool(data.get("loop", False))
+                    shuffle = bool(data.get("shuffle", False))
                     fade_ms = self._fade_ms(data.get("fade_ms"))
-                    logger.info(f"MQTT library/play: {len(items)} item(s), loop={loop}, fade={fade_ms}")
-                    if self.library_play_callback([str(i) for i in items], loop, fade_ms):
+                    logger.info(f"MQTT library/play: {len(items)} item(s), loop={loop}, "
+                                f"shuffle={shuffle}, fade={fade_ms}")
+                    if self.library_play_callback([str(i) for i in items], loop, fade_ms, shuffle):
                         self._publish_new_mode(LIBRARY_SOURCE_ID)
 
                 elif action == "library" and sub_action in ("toggle", "next", "prev"):

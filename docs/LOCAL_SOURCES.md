@@ -111,7 +111,7 @@ next listing.
 | `POST /api/library/playlists`, `PATCH`/`DELETE …/<id>` | Playlists |
 | `POST /api/library/youtube/preview`, `POST /api/library/youtube` | YouTube look-up and import |
 | `POST /api/library/spotify/preview` | Spotify song details and its YouTube match |
-| `POST /api/library/play` | `{client_id, track_ids}`: play on a room |
+| `POST /api/library/play` | `{client_id, track_ids, loop?, shuffle?}`: play on a room |
 
 ## Commands (MQTT, on the fauxnos broker)
 
@@ -135,7 +135,7 @@ starts playback into the still-muted sink, then switches to `library`:
 
 ```
 set/clients/<id>/library/play  {"item": "lullabies/twinkle.mp3"}
-set/clients/<id>/library/play  {"items": ["a.mp3", "b.mp3"], "loop": true, "fade_ms": 5000}
+set/clients/<id>/library/play  {"items": ["a.mp3", "b.mp3"], "loop": true, "shuffle": true, "fade_ms": 5000}
 set/clients/<id>/library/stop  ""
 set/clients/<id>/library/stop  {"fade_ms": 60000}
 ```
@@ -144,6 +144,8 @@ set/clients/<id>/library/stop  {"fade_ms": 60000}
   radio works too).
 - `loop: true` repeats a single item on its own, or several items as a
   playlist.
+- `shuffle: true` plays the items in random order (MPD's random mode). With
+  `loop`, each pass is reshuffled. A play without it turns random mode off.
 - `fade_ms` on `play` fades the music in. From another source it's a
   crossfade (below). If the room is already on Library, which is where a
   faded `stop` leaves it, the library sink starts silent and ramps up.
@@ -156,12 +158,13 @@ set/clients/<id>/library/stop  {"fade_ms": 60000}
 it changes. To play, publish to the server, which resolves the names:
 
 ```
-set/library/play  {"room": "Office", "playlist": "Bedtime", "loop": true}
+set/library/play  {"room": "Office", "playlist": "Bedtime", "loop": true, "shuffle": true}
 set/library/play  {"room": "fauxnos003", "tracks": ["Twinkle Twinkle", "Hush Little Baby"], "fade_ms": 3000}
 ```
 
 - `room` is a client id or room name. `tracks` are ids, paths or titles
   (case-insensitive); `playlist` is a name or id.
+- `loop`, `shuffle` and `fade_ms` pass through to the room's player.
 - Unknown rooms, playlists or songs are logged on the server and ignored.
 
 **Library transport and now-playing.** Each device reports its player,

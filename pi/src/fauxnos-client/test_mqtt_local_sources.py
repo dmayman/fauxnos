@@ -27,7 +27,8 @@ def make(sources=("spotify", "noise", "library")):
     c.calls = []
     c.mode_callback = lambda sid, fade_ms=0: c.calls.append(("mode", sid, fade_ms)) or True
     c.source_volume_getter = lambda sid: {"noise": 30, "library": 40}.get(sid, 50)
-    c.library_play_callback = lambda items, loop, fade: c.calls.append(("play", items, loop, fade)) or True
+    c.library_play_callback = lambda items, loop, fade, shuffle=False: c.calls.append(
+        ("play", items, loop, fade) + (("shuffle",) if shuffle else ())) or True
     c.library_stop_callback = lambda fade_ms: c.calls.append(("stop", fade_ms)) or True
     c.noise_callback = None
     c.library_control_callback = lambda action: c.calls.append(("control", action)) or True
@@ -74,6 +75,23 @@ def test_library_play():
     c._handle_command("set", "library", "", "stop")
     assert c.calls[-1] == ("stop", 0)
     print("ok: library/play queues items (item or items), switches mode; library/stop stops")
+
+
+def test_library_play_shuffle():
+    c = make()
+    c._handle_command("set", "library", json.dumps({"items": ["a.mp3", "b.mp3"], "shuffle": True}), "play")
+    assert c.calls == [("play", ["a.mp3", "b.mp3"], False, 0, "shuffle")], c.calls
+
+    from modules import library_player as lp
+    p = lp.LibraryPlayer(server_host="fauxnos000.local")
+    cmds = []
+    lp.subprocess.run = lambda cmd, **kw: cmds.append(cmd[-2:]) or type("R", (), {"returncode": 0, "stderr": ""})()
+    assert p.play(["a.mp3", "b.mp3"], loop=True, shuffle=True)
+    assert ["random", "on"] in cmds and ["repeat", "on"] in cmds, cmds
+    cmds.clear()
+    assert p.play(["a.mp3", "b.mp3"])
+    assert ["random", "off"] in cmds, "a plain play must turn a previous shuffle off"
+    print("ok: library/play shuffle sets MPD random mode, and a plain play clears it")
 
 
 def test_library_play_without_library_source():
@@ -125,6 +143,7 @@ if __name__ == "__main__":
     test_parse_mode_payload()
     test_mode_with_and_without_fade()
     test_library_play()
+    test_library_play_shuffle()
     test_library_play_without_library_source()
     test_library_transport_and_now_playing()
     test_library_stop_fade_payload()

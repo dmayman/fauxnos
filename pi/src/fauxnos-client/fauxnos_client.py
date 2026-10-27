@@ -464,7 +464,7 @@ class FauxnosClient:
         if self.source_manager.switch_source(self.ANALOG_SOURCE_ID):
             self.mqtt_client.update_mode(self.ANALOG_SOURCE_ID)
 
-    def _library_play(self, items, loop: bool, fade_ms: int) -> bool:
+    def _library_play(self, items, loop: bool, fade_ms: int, shuffle: bool = False) -> bool:
         """MQTT library/play: queue on the local MPD, then switch to it.
 
         Playback starts before the switch, into the still-muted
@@ -476,7 +476,7 @@ class FauxnosClient:
         library sink from silence and ramps it up instead.
         """
         def play():
-            return self.library_player.play(items, loop=loop)
+            return self.library_player.play(items, loop=loop, shuffle=shuffle)
 
         if fade_ms and self.source_manager.get_current_source() == LIBRARY_SOURCE_ID:
             return self.source_manager.fade_in_source(LIBRARY_SOURCE_ID, fade_ms, play)

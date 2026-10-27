@@ -67,11 +67,13 @@ class LibraryPlayer:
             return False
         return True
 
-    def play(self, items: List[str], loop: bool = False) -> bool:
+    def play(self, items: List[str], loop: bool = False, shuffle: bool = False) -> bool:
         """Replace the queue with `items` and start playing.
 
         loop=True repeats: a single item repeats on its own (MPD `single`
-        mode), several items repeat as a playlist.
+        mode), several items repeat as a playlist. shuffle=True plays in
+        random order (MPD `random` mode), reshuffled on each pass when
+        looping.
         """
         urls = [self.resolve(i) for i in items if i and str(i).strip()]
         if not urls:
@@ -85,12 +87,14 @@ class LibraryPlayer:
                 return False
         repeat = "on" if loop else "off"
         single = "on" if loop and len(urls) == 1 else "off"
-        if not (self._mpc("repeat", repeat) and self._mpc("single", single)):
+        random = "on" if shuffle else "off"
+        if not (self._mpc("repeat", repeat) and self._mpc("single", single)
+                and self._mpc("random", random)):
             return False
         if not self._mpc("play"):
             return False
 
-        self.logger.info(f"Library playing {len(urls)} item(s), loop={loop}: {urls[0]}")
+        self.logger.info(f"Library playing {len(urls)} item(s), loop={loop}, shuffle={shuffle}: {urls[0]}")
         return True
 
     def stop(self) -> bool:
