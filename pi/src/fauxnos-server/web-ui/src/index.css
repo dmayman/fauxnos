@@ -4822,6 +4822,9 @@ label.fx-source-setting { cursor: pointer; }
 .fx-lib-youtube-match { font-size: var(--fx-text-base); color: var(--fx-text-2); }
 .fx-lib-youtube-match a { color: var(--fx-text); }
 .fx-lib-youtube-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.fx-lib-link-source { display: flex; align-items: center; gap: var(--fx-2); font-size: var(--fx-text-base); font-weight: 600; color: var(--fx-text); }
+.fx-lib-link-looking { font-weight: 400; color: var(--fx-text-2); }
+.fx-lib-link-running { display: flex; flex-direction: column; margin-top: var(--fx-3); }
 
 /* Push transitions between list pages (panel and Browse). */
 @keyframes fx-push-forward { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
