@@ -673,7 +673,11 @@ class MQTTClient:
 
         try:
             logger.info(f"Starting MQTT client for {self.display_name} -> {self.broker_host}:{self.broker_port}")
-            self.client.connect(self.broker_host, self.broker_port, KEEPALIVE_S)
+            # connect_async, not connect: connect() resolves the broker inline,
+            # and at boot mDNS often isn't up yet, so it raised before
+            # loop_start() and the client never retried. The loop thread
+            # retries the first connection itself.
+            self.client.connect_async(self.broker_host, self.broker_port, KEEPALIVE_S)
             self.client.loop_start()
 
             # Wait for connection (up to 10s)
